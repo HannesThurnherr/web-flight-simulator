@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import * as Cesium from 'cesium';
 import { Missile } from '../weapon/missile';
+import { AIM120 } from '../weapon/aim120';
 import { Bullet } from '../weapon/bullet';
 import { Flare } from '../weapon/flare';
 import { soundManager } from '../utils/soundManager';
@@ -13,8 +14,13 @@ export class WeaponSystem {
 		this.playerModel = playerModel;
 
 		this.weapons = [
-			{ id: 'gun', name: 'M61A1 CANNON', ammo: Infinity, maxAmmo: Infinity, fireRate: 0.05, lastFire: 0 },
-			{ id: 'missile', name: 'AIM-9 SIDEWINDER', ammo: 50, maxAmmo: 50, fireRate: 1.0, lastFire: 0, type: 'AIM-9' }
+			{ id: 'gun',     name: 'M61A1 CANNON',    ammo: Infinity, maxAmmo: Infinity, fireRate: 0.05, lastFire: 0 },
+			// AIM-9: short-range IR, lock required, tight forward cone, <10 km.
+			{ id: 'missile', name: 'AIM-9 SIDEWINDER', ammo: 6,  maxAmmo: 6,  fireRate: 1.0,
+			  lastFire: 0, type: 'AIM-9',    lockRange: 10000, lockCone: 0.985, lockTime: 2.0 },
+			// AIM-120D: active-radar BVR, wider cone, much longer range.
+			{ id: 'missile', name: 'AIM-120D AMRAAM',  ammo: 4,  maxAmmo: 4,  fireRate: 1.5,
+			  lastFire: 0, type: 'AIM-120',  lockRange: 80000, lockCone: 0.92,  lockTime: 1.0 },
 		];
 
 		this.flareWeapon = { id: 'flare', name: 'MJU-7A', ammo: 30, maxAmmo: 30, fireRate: 0.2, lastFire: 0 };
@@ -29,7 +35,7 @@ export class WeaponSystem {
 		this.gunHeat = 0;
 
 		this.lockTime = 0;
-		this.lockRequiredTime = 2.0;
+		this.lockRequiredTime = 2.0; // overridden per-weapon when locking
 		this.lockStatus = 'NONE';
 		this.lockingTarget = null;
 
@@ -184,19 +190,29 @@ export class WeaponSystem {
 			const missileOffset = new THREE.Vector3(15.0 * side, -15.0, 0.0);
 
 			const launchPos = this.calculateWeaponPos(missileOffset) || startPos;
-
 			const target = this.target;
-			const missile = new Missile(
-				this.scene,
-				this.viewer,
-				launchPos,
-				playerState.heading,
-				playerState.pitch,
-				playerState.speed,
-				target,
-				this.onKill
-			);
-			this.projectiles.push(missile);
+
+			// Dispatch on weapon type. AIM-120 gets the BVR-optimized class;
+			// anything else (AIM-9 today, other IR weapons later) uses the
+			// base Missile class.
+			// playerState carries team='friendly'; pass it as the launcher so
+			// team/signature are set at construction. Same call signature is
+			// used by NPC firing in npcSystem.
+			let projectile;
+			if (weapon.type === 'AIM-120') {
+				projectile = new AIM120(
+					this.scene, this.viewer, launchPos,
+					playerState.heading, playerState.pitch, playerState.speed,
+					target, this.onKill, playerState,
+				);
+			} else {
+				projectile = new Missile(
+					this.scene, this.viewer, launchPos,
+					playerState.heading, playerState.pitch, playerState.speed,
+					target, this.onKill, playerState,
+				);
+			}
+			this.projectiles.push(projectile);
 
 			try { soundManager.play('missile-fire'); } catch (e) { }
 		}
@@ -262,11 +278,12 @@ export class WeaponSystem {
 
 		if (currentWeapon.id === 'missile') {
 			const potentialTarget = this.findPotentialTarget(playerState);
+			const lockTimeReq = currentWeapon.lockTime || this.lockRequiredTime;
 
 			if (potentialTarget) {
 				if (this.lockingTarget === potentialTarget) {
 					this.lockTime += dt;
-					if (this.lockTime >= this.lockRequiredTime) {
+					if (this.lockTime >= lockTimeReq) {
 						this.lockStatus = 'LOCKED';
 						this.target = potentialTarget;
 					} else {
@@ -339,11 +356,15 @@ export class WeaponSystem {
 			}
 		}
 
+		// Pass every possible target (player + NPCs) to each projectile.
+		// Friendly-fire / self-kill is filtered inside the missile via
+		// `missile.team` and `missile.launcher`.
 		const npcs = playerState.npcs || [];
+		const targets = [playerState, ...npcs];
 
 		for (let i = this.projectiles.length - 1; i >= 0; i--) {
 			const p = this.projectiles[i];
-			p.update(dt, npcs);
+			p.update(dt, targets);
 			const hasTrail = p.trail && p.trail.length > 0;
 			if (!p.active && !hasTrail) {
 				this.projectiles.splice(i, 1);
@@ -362,8 +383,14 @@ export class WeaponSystem {
 	findPotentialTarget(playerState) {
 		if (!playerState.npcs || playerState.npcs.length === 0) return null;
 
+		// Use the currently-selected weapon's lock envelope. AIM-120 has a
+		// much wider cone and 8× the range of the AIM-9.
+		const weapon = this.getCurrentWeapon();
+		const lockRange = weapon && weapon.lockRange ? weapon.lockRange : 10000;
+		const lockCone  = weapon && weapon.lockCone  ? weapon.lockCone  : 0.985;
+
 		let bestTarget = null;
-		let maxDot = 0.985;
+		let maxDot = lockCone;
 
 		for (const npc of playerState.npcs) {
 			if (npc.destroyed) continue;
@@ -371,7 +398,7 @@ export class WeaponSystem {
 			const dot = this.calculateDotProduct(playerState, npc);
 			if (dot > maxDot) {
 				const dist = this.calculateDist(playerState, npc);
-				if (dist < 10000) {
+				if (dist < lockRange) {
 					bestTarget = npc;
 					maxDot = dot;
 				}

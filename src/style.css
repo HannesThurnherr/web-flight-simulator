@@ -1546,9 +1546,18 @@ input[type="range"]::-webkit-slider-thumb {
 .npc-marker-container {
 	position: absolute;
 	pointer-events: none;
-	display: flex;
-	flex-direction: column;
-	align-items: center;
+	/*
+	 * Previously used flex-column + align-items:center, which made the
+	 * container sized to include the label underneath. The translate(-50%,
+	 * -50%) applied in JS then centered that combined column on the NPC —
+	 * which pushed the diamond / lock box upward by half the label's
+	 * height, making the bounding box appear to sit with its bottom edge
+	 * (roughly) at the NPC. Now the container is sized to the visual
+	 * wrapper only (32×32), so -50%/-50% centers the box exactly on the
+	 * NPC, and the label is positioned absolutely below it.
+	 */
+	width: 32px;
+	height: 32px;
 	color: #fff;
 	text-shadow: 0 0 8px rgba(255, 255, 255, 0.6);
 	z-index: 15;
@@ -1561,7 +1570,6 @@ input[type="range"]::-webkit-slider-thumb {
 	display: flex;
 	justify-content: center;
 	align-items: center;
-	margin-bottom: 5px;
 }
 
 .npc-diamond {
@@ -1603,9 +1611,15 @@ input[type="range"]::-webkit-slider-thumb {
 }
 
 .npc-label {
+	position: absolute;
+	top: 100%;
+	left: 50%;
+	transform: translateX(-50%);
+	margin-top: 8px;
 	font-size: 12px;
 	text-align: center;
 	line-height: 1.2;
+	white-space: pre;
 }
 
 .npc-offscreen-dot {

@@ -80,8 +80,539 @@ export class HUD {
 		this.createHorizon();
 		this.createMissileCrosshair();
 		this.createCompass();
+		this.createFlightDataPanel();
+		this.createStallWarning();
+		this.createAfterburnerIndicator();
+		this.createMissileDebugPanel();
+		this.createMissileMarkerLayer();
+		this.createMouseSteeringOverlay();
+		this.createRwrScope();
 		this.resizeMinimap();
 		window.addEventListener('resize', () => this.resizeMinimap());
+	}
+
+	// RWR scope: round display, your nose points to the top, hostile radars
+	// currently illuminating the aircraft show up as chevrons at their
+	// bearing. Radius maps inversely to signal strength — strong painters
+	// draw close to centre, like a real scope.
+	createRwrScope() {
+		const NS = 'http://www.w3.org/2000/svg';
+		const size = 100;
+		const svg = document.createElementNS(NS, 'svg');
+		svg.id = 'rwr-scope';
+		svg.setAttribute('width',  size);
+		svg.setAttribute('height', size);
+		svg.setAttribute('viewBox', `0 0 ${size} ${size}`);
+		// Offset right of screen center so the scope doesn't overlap the
+		// compass heading tape that lives along the top middle.
+		svg.style.cssText = `
+			position: absolute;
+			top: 16px;
+			left: 75%;
+			transform: translateX(-50%);
+			pointer-events: none;
+			z-index: 10;
+			filter: drop-shadow(0 0 4px rgba(0,0,0,0.6));
+		`;
+
+		const cx = size / 2, cy = size / 2, r = size / 2 - 4;
+		const ring = (radius) => {
+			const el = document.createElementNS(NS, 'circle');
+			el.setAttribute('cx', cx); el.setAttribute('cy', cy);
+			el.setAttribute('r', radius);
+			el.setAttribute('fill', 'rgba(0, 20, 0, 0.55)');
+			el.setAttribute('stroke', 'rgba(0, 255, 0, 0.5)');
+			el.setAttribute('stroke-width', 1);
+			return el;
+		};
+		svg.appendChild(ring(r));
+		svg.appendChild(ring(r * 0.66));
+		svg.appendChild(ring(r * 0.33));
+
+		// Tick marks at N/E/S/W relative to the aircraft nose (nose = up).
+		const tick = (ang, len) => {
+			const a = ang - Math.PI / 2; // -π/2 so 0 rad points up
+			const x1 = cx + Math.cos(a) * r;
+			const y1 = cy + Math.sin(a) * r;
+			const x2 = cx + Math.cos(a) * (r - len);
+			const y2 = cy + Math.sin(a) * (r - len);
+			const line = document.createElementNS(NS, 'line');
+			line.setAttribute('x1', x1); line.setAttribute('y1', y1);
+			line.setAttribute('x2', x2); line.setAttribute('y2', y2);
+			line.setAttribute('stroke', 'rgba(0, 255, 0, 0.7)');
+			line.setAttribute('stroke-width', 1.2);
+			return line;
+		};
+		for (let i = 0; i < 4; i++) svg.appendChild(tick(i * Math.PI / 2, 8));
+
+		// "NOSE" cue at top so it's unambiguous which way is forward.
+		const noseLabel = document.createElementNS(NS, 'text');
+		noseLabel.setAttribute('x', cx);
+		noseLabel.setAttribute('y', 10);
+		noseLabel.setAttribute('fill', '#0f0');
+		noseLabel.setAttribute('font-family', 'AceCombat, monospace');
+		noseLabel.setAttribute('font-size', '8');
+		noseLabel.setAttribute('text-anchor', 'middle');
+		noseLabel.textContent = 'RWR';
+		svg.appendChild(noseLabel);
+
+		// Container for contact chevrons; rebuilt each frame in update.
+		const contactGroup = document.createElementNS(NS, 'g');
+		contactGroup.id = 'rwr-contacts';
+		svg.appendChild(contactGroup);
+
+		this.uiContainer.appendChild(svg);
+		this.rwrScope = { svg, contactGroup, size, cx, cy, r };
+	}
+
+	updateRwrScope(state) {
+		const s = this.rwrScope;
+		if (!s) return;
+		const rwr = state && state.rwr;
+		// Clear previous contacts.
+		while (s.contactGroup.firstChild) s.contactGroup.removeChild(s.contactGroup.firstChild);
+		if (!rwr || rwr.size === 0) return;
+
+		const NS = 'http://www.w3.org/2000/svg';
+		for (const [, c] of rwr) {
+			// Bearing is in the aircraft's body frame (0 = nose, +right).
+			// SVG angle = bearing - π/2 so nose goes to top of scope.
+			const ang = (c.bearing || 0) - Math.PI / 2;
+			// Stronger signal → closer to centre, like a real scope.
+			const strength = Math.max(0, Math.min(1, c.strength || 0.1));
+			const radius = s.r * (1 - 0.75 * strength);
+			const x = s.cx + Math.cos(ang) * radius;
+			const y = s.cy + Math.sin(ang) * radius;
+
+			const color = c.lockType === 'track' ? '#ff4040' : '#ffcc00';
+
+			// Chevron: triangle pointing toward the aircraft centre, i.e.
+			// showing the bearing the threat is on.
+			const chev = document.createElementNS(NS, 'polygon');
+			const size = 5;
+			const toCenterAng = Math.atan2(s.cy - y, s.cx - x);
+			const p = (t, perp) => {
+				const ax = Math.cos(toCenterAng + perp) * t;
+				const ay = Math.sin(toCenterAng + perp) * t;
+				return [x + ax, y + ay];
+			};
+			const [x1, y1] = p(size, 0);
+			const [x2, y2] = p(size * 0.8,  Math.PI * 0.85);
+			const [x3, y3] = p(size * 0.8, -Math.PI * 0.85);
+			chev.setAttribute('points', `${x1},${y1} ${x2},${y2} ${x3},${y3}`);
+			chev.setAttribute('fill', color);
+			chev.setAttribute('stroke', '#000');
+			chev.setAttribute('stroke-width', 0.6);
+			s.contactGroup.appendChild(chev);
+
+			// Small label showing lock type.
+			if (c.lockType === 'track') {
+				const lbl = document.createElementNS(NS, 'text');
+				lbl.setAttribute('x', x);
+				lbl.setAttribute('y', y + 13);
+				lbl.setAttribute('fill', '#ff4040');
+				lbl.setAttribute('font-family', 'AceCombat, monospace');
+				lbl.setAttribute('font-size', '7');
+				lbl.setAttribute('text-anchor', 'middle');
+				lbl.textContent = 'STT';
+				s.contactGroup.appendChild(lbl);
+			}
+		}
+	}
+
+	// SVG overlay that shows a line from screen center to the cursor plus a
+	// dot at each end, visible only when mouse-steering mode is active.
+	// Drawn with SVG because single-pixel diagonal lines look crisper than
+	// CSS transforms and don't need per-frame width/angle trig in JS.
+	createMouseSteeringOverlay() {
+		const NS = 'http://www.w3.org/2000/svg';
+		const svg = document.createElementNS(NS, 'svg');
+		svg.id = 'mouse-steering-overlay';
+		svg.setAttribute('width',  '100%');
+		svg.setAttribute('height', '100%');
+		svg.style.cssText = `
+			position: absolute; top: 0; left: 0;
+			width: 100%; height: 100%;
+			pointer-events: none;
+			z-index: 25;
+			display: none;
+		`;
+
+		const line = document.createElementNS(NS, 'line');
+		line.setAttribute('stroke', '#0f0');
+		line.setAttribute('stroke-width', '1.2');
+		line.setAttribute('stroke-opacity', '0.7');
+		line.setAttribute('stroke-dasharray', '4 4');
+		svg.appendChild(line);
+
+		const centerDot = document.createElementNS(NS, 'circle');
+		centerDot.setAttribute('r', '3');
+		centerDot.setAttribute('fill', '#0f0');
+		svg.appendChild(centerDot);
+
+		const cursorDot = document.createElementNS(NS, 'circle');
+		cursorDot.setAttribute('r', '5');
+		cursorDot.setAttribute('fill', 'none');
+		cursorDot.setAttribute('stroke', '#0f0');
+		cursorDot.setAttribute('stroke-width', '1.5');
+		svg.appendChild(cursorDot);
+
+		const badge = document.createElementNS(NS, 'text');
+		badge.setAttribute('fill', '#0f0');
+		badge.setAttribute('font-family', 'AceCombat, monospace');
+		badge.setAttribute('font-size', '11');
+		badge.setAttribute('letter-spacing', '2');
+		badge.textContent = 'MOUSE STEER';
+		svg.appendChild(badge);
+
+		this.uiContainer.appendChild(svg);
+		this.mouseSteerOverlay = { svg, line, centerDot, cursorDot, badge };
+	}
+
+	updateMouseSteeringOverlay(state) {
+		const o = this.mouseSteerOverlay;
+		if (!o) return;
+		if (!state.mouseSteering) {
+			o.svg.style.display = 'none';
+			return;
+		}
+		o.svg.style.display = 'block';
+
+		const cx = window.innerWidth  / 2;
+		const cy = window.innerHeight / 2;
+		const x  = state.cursorX ?? cx;
+		const y  = state.cursorY ?? cy;
+
+		o.line.setAttribute('x1', cx); o.line.setAttribute('y1', cy);
+		o.line.setAttribute('x2', x);  o.line.setAttribute('y2', y);
+		o.centerDot.setAttribute('cx', cx); o.centerDot.setAttribute('cy', cy);
+		o.cursorDot.setAttribute('cx', x);  o.cursorDot.setAttribute('cy', y);
+		o.badge.setAttribute('x', cx + 10);
+		o.badge.setAttribute('y', cy - 10);
+	}
+
+	// Separate DOM layer for live missile labels. Keeping a pool of marker
+	// elements keyed on missile identity avoids thrashing the DOM every
+	// frame for an airborne missile's label update.
+	createMissileMarkerLayer() {
+		this.missileMarkers = new Map();
+		this.missileMarkerLayer = document.createElement('div');
+		this.missileMarkerLayer.id = 'missile-markers-layer';
+		this.missileMarkerLayer.style.cssText = `
+			position: absolute; top: 0; left: 0;
+			width: 100%; height: 100%;
+			pointer-events: none; z-index: 14;
+		`;
+		this.uiContainer.appendChild(this.missileMarkerLayer);
+	}
+
+	_createMissileMarkerElement() {
+		// Anchor the container's (left, top) at the missile's screen position.
+		// Dot and label are absolutely positioned inside, so the dot is
+		// exactly on the missile and the label floats to its right — no
+		// flex layout games that shift the anchor when label width changes.
+		const el = document.createElement('div');
+		el.className = 'missile-marker';
+		el.style.cssText = `
+			position: absolute;
+			width: 0; height: 0;
+			pointer-events: none;
+			color: #ffc040;
+			font-family: 'AceCombat', monospace;
+			font-size: 11px;
+			letter-spacing: 1px;
+			text-shadow: 0 0 6px rgba(255, 180, 0, 0.8);
+		`;
+		const dot = document.createElement('div');
+		dot.style.cssText = `
+			position: absolute;
+			left: -4px; top: -4px;
+			width: 8px; height: 8px;
+			border-radius: 50%;
+			background: #ffc040;
+			box-shadow: 0 0 8px rgba(255, 180, 0, 0.9);
+		`;
+		const label = document.createElement('div');
+		label.style.cssText = `
+			position: absolute;
+			left: 10px; top: -8px;
+			white-space: nowrap;
+		`;
+		el.appendChild(dot);
+		el.appendChild(label);
+		this.missileMarkerLayer.appendChild(el);
+		return { el, dot, label };
+	}
+
+	updateMissileMarkers(state) {
+		if (!this.missileMarkerLayer) return;
+		// Both pools: player's outgoing + NPC-fired incoming. We want ALL
+		// live missiles the player should know about on the HUD.
+		const playerPool = (state.weaponSystem && state.weaponSystem.projectiles) || [];
+		const npcPool    = (state.npcProjectiles) || [];
+		const projectiles = playerPool.concat(npcPool);
+
+		const viewer = getViewer();
+		if (!viewer) { this._hideAllMissileMarkers(); return; }
+
+		const scene  = viewer.scene;
+		const camera = scene.camera;
+		const activeIds = new Set();
+		const playerTeam = state.team || 'friendly';
+
+		for (let i = 0; i < projectiles.length; i++) {
+			const m = projectiles[i];
+			// Only AMRAAM-ish missiles get labels — otherwise the HUD clutters
+			// fast with bullets & AIM-9 tags.
+			if (!m.active || typeof m.boostRemaining !== 'number') continue;
+
+			// Visibility rule: the pilot always knows what *they* launched
+			// (friendly outgoing). Hostile incoming missiles only appear if
+			// one of the pilot's sensor channels has a contact on them —
+			// so a very stealthy, never-detected missile would never show,
+			// and a detected one flips on live as MAWS picks it up.
+			const isOwnTeam = (m.team || 'friendly') === playerTeam;
+			const detected = isOwnTeam ||
+				(state.contacts && state.contacts.has(m));
+			if (!detected) continue;
+
+			const id = m.id || (m.id = `m${i}-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`);
+			activeIds.add(id);
+
+			let marker = this.missileMarkers.get(id);
+			if (!marker) {
+				marker = this._createMissileMarkerElement();
+				this.missileMarkers.set(id, marker);
+			}
+			// Color per team: own missiles stay amber (existing cue), hostile
+			// in red so an incoming launch is unmistakable.
+			const color = isOwnTeam ? '#ffc040' : '#ff4040';
+			marker.dot.style.background = color;
+			marker.dot.style.boxShadow  = `0 0 8px ${color}`;
+			marker.label.style.color    = color;
+			marker.el.style.textShadow  = `0 0 6px ${color}`;
+
+			const pos = Cesium.Cartesian3.fromDegrees(m.lon, m.lat, m.alt);
+			const direction = Cesium.Cartesian3.subtract(pos, camera.position, new Cesium.Cartesian3());
+			const depth = Cesium.Cartesian3.dot(direction, camera.direction);
+			const transformFunc = Cesium.SceneTransforms.worldToWindowCoordinates || Cesium.SceneTransforms.wgs84ToWindowCoordinates;
+			const windowPos = transformFunc ? transformFunc(scene, pos) : null;
+
+			const onScreen = windowPos && depth > 0 &&
+				windowPos.x >= 0 && windowPos.x <= window.innerWidth &&
+				windowPos.y >= 0 && windowPos.y <= window.innerHeight;
+
+			if (!onScreen) {
+				marker.el.style.display = 'none';
+				continue;
+			}
+			marker.el.style.display = 'flex';
+			marker.el.style.left = `${windowPos.x}px`;
+			marker.el.style.top  = `${windowPos.y}px`;
+
+			const spd = Math.round(m.speed);
+			const phase = m.boostRemaining > 0 ? 'BOOST' : 'COAST';
+			const typeTag = m.type || 'MSL';
+			const prefix = isOwnTeam ? '' : 'INBOUND ';
+			marker.label.innerText = `${prefix}${typeTag} ${phase}  ${spd}m/s`;
+		}
+
+		// Prune markers whose missile is gone (destroyed or despawned).
+		for (const [id, marker] of this.missileMarkers) {
+			if (!activeIds.has(id)) {
+				marker.el.remove();
+				this.missileMarkers.delete(id);
+			}
+		}
+	}
+
+	_hideAllMissileMarkers() {
+		for (const [, m] of this.missileMarkers) m.el.style.display = 'none';
+	}
+
+	// Compact list of all in-flight missiles. One line per missile — type,
+	// phase, range-to-target, target name, heading error. Hidden when none
+	// are airborne. For detailed stats on a specific missile the player can
+	// open the map view (M) and click it.
+	createMissileDebugPanel() {
+		if (document.getElementById('missile-debug-panel')) return;
+		const p = document.createElement('div');
+		p.id = 'missile-debug-panel';
+		p.style.cssText = `
+			position: absolute;
+			top: 16px;
+			right: 16px;
+			padding: 8px 12px;
+			border: 1px solid rgba(255, 180, 0, 0.6);
+			background: rgba(30, 20, 0, 0.55);
+			color: #ffc040;
+			font-family: 'AceCombat', monospace;
+			font-size: 12px;
+			line-height: 1.45;
+			letter-spacing: 1px;
+			text-shadow: 0 0 6px rgba(255, 180, 0, 0.7);
+			pointer-events: none;
+			z-index: 10;
+			min-width: 240px;
+			display: none;
+		`;
+		this.uiContainer.appendChild(p);
+		this.missilePanel = p;
+	}
+
+	updateMissileDebugPanel(state) {
+		if (!this.missilePanel) return;
+		const projectiles = (state.weaponSystem && state.weaponSystem.projectiles) || [];
+		const active = projectiles.filter(p => p.active && typeof p.boostRemaining === 'number');
+		if (active.length === 0) { this.missilePanel.style.display = 'none'; return; }
+
+		const rows = [
+			`<div style="font-weight:bold; margin-bottom:4px;">MSL IN FLIGHT  ${active.length}</div>`,
+		];
+		for (let i = 0; i < active.length; i++) {
+			const m = active[i];
+			const d = m.debug || {};
+			const typeTag = (m.type || 'MSL').padEnd(7);
+			const phase   = m.boostRemaining > 0 ? `BOOST ${m.boostRemaining.toFixed(1)}s` : 'COAST      ';
+			const rng     = typeof d.rangeToTarget === 'number'
+				? `${(d.rangeToTarget / 1000).toFixed(1)}km`.padStart(6)
+				: '  —  ';
+			const tgt     = (d.targetName || (m.target && m.target.name) || '—').slice(0, 14);
+			const hdgErr  = typeof d.headingError === 'number' ? d.headingError : 0;
+			const errTxt  = `err ${hdgErr.toFixed(0)}°`;
+			const errCol  = Math.abs(hdgErr) > 20 ? '#ff4040'
+				: (Math.abs(hdgErr) > 5 ? '#ffcc00' : '#40ff40');
+			rows.push(
+				`<div style="white-space:pre; font-family:monospace;">` +
+				`${(i + 1).toString().padStart(2)}: ${typeTag} ${phase}  ${rng}  ` +
+				`<span style="color:${errCol}">${errTxt.padEnd(9)}</span>` +
+				`<span style="opacity:0.75">tgt ${tgt}</span>` +
+				`</div>`,
+			);
+		}
+		this.missilePanel.innerHTML = rows.join('');
+		this.missilePanel.style.display = 'block';
+	}
+
+	// Phase 5 HUD: AoA / G-load / VSI readouts plus stall & AB indicators.
+	// All styled to match the existing green-monochrome avionics look so the
+	// new readouts don't feel bolted-on.
+	createFlightDataPanel() {
+		if (document.getElementById('flight-data-panel')) return;
+		const panel = document.createElement('div');
+		panel.id = 'flight-data-panel';
+		panel.style.cssText = `
+			position: absolute;
+			top: 50%;
+			left: 16px;
+			transform: translateY(-50%);
+			padding: 10px 14px;
+			border: 1px solid rgba(0, 255, 0, 0.4);
+			background: rgba(0, 20, 0, 0.35);
+			color: #0f0;
+			font-family: 'AceCombat', monospace;
+			font-size: 14px;
+			line-height: 1.5;
+			letter-spacing: 1px;
+			text-shadow: 0 0 6px rgba(0, 255, 0, 0.7);
+			pointer-events: none;
+			z-index: 10;
+			min-width: 130px;
+		`;
+		panel.innerHTML = `
+			<div><span style="opacity:0.7">AOA </span><span id="hud-aoa">  0.0°</span></div>
+			<div><span style="opacity:0.7">G   </span><span id="hud-g">  1.0</span></div>
+			<div><span style="opacity:0.7">V/S </span><span id="hud-vs">    0</span></div>
+			<div><span style="opacity:0.7">SLIP</span><span id="hud-beta">  0.0°</span></div>
+			<div style="margin-top:8px; display:flex; align-items:center;">
+				<span style="opacity:0.7; margin-right:6px;">THR</span>
+				<div id="hud-thrust-bar" style="
+					position:relative;
+					width:90px; height:10px;
+					border:1px solid rgba(0,255,0,0.5);
+					background:rgba(0,20,0,0.5);
+				">
+					<!-- Fill: 0..100% of bar = 0..mil thrust. -->
+					<div id="hud-thrust-fill" style="
+						position:absolute; top:0; left:0; height:100%;
+						background:#0f0;
+						width:0%;
+					"></div>
+					<!-- AB overlay: glows amber when afterburner lit. -->
+					<div id="hud-thrust-ab" style="
+						position:absolute; top:0; left:0; height:100%;
+						width:100%;
+						background:repeating-linear-gradient(
+							45deg, rgba(255,180,0,0.85), rgba(255,180,0,0.85) 4px,
+							rgba(255,120,0,0.6) 4px, rgba(255,120,0,0.6) 8px);
+						opacity:0;
+						transition:opacity 0.12s;
+					"></div>
+				</div>
+				<span id="hud-thrust-pct" style="margin-left:6px; min-width:30px;">  0%</span>
+			</div>
+		`;
+		this.uiContainer.appendChild(panel);
+		this.aoaElem       = document.getElementById('hud-aoa');
+		this.gElem         = document.getElementById('hud-g');
+		this.vsElem        = document.getElementById('hud-vs');
+		this.betaElem      = document.getElementById('hud-beta');
+		this.thrustFill    = document.getElementById('hud-thrust-fill');
+		this.thrustAB      = document.getElementById('hud-thrust-ab');
+		this.thrustPctElem = document.getElementById('hud-thrust-pct');
+	}
+
+	createStallWarning() {
+		if (document.getElementById('stall-warning')) return;
+		const w = document.createElement('div');
+		w.id = 'stall-warning';
+		w.style.cssText = `
+			position: absolute;
+			top: 28%;
+			left: 50%;
+			transform: translateX(-50%);
+			padding: 6px 16px;
+			color: #ff4040;
+			border: 2px solid #ff4040;
+			background: rgba(40, 0, 0, 0.3);
+			font-family: 'AceCombat', monospace;
+			font-size: 22px;
+			font-weight: bold;
+			letter-spacing: 3px;
+			text-shadow: 0 0 10px rgba(255, 64, 64, 0.9);
+			pointer-events: none;
+			z-index: 20;
+			display: none;
+		`;
+		w.innerText = 'STALL';
+		this.uiContainer.appendChild(w);
+		this.stallElem = w;
+	}
+
+	createAfterburnerIndicator() {
+		if (document.getElementById('ab-indicator')) return;
+		const ind = document.createElement('div');
+		ind.id = 'ab-indicator';
+		ind.style.cssText = `
+			position: absolute;
+			bottom: 80px;
+			left: 16px;
+			padding: 4px 10px;
+			color: #ffcc00;
+			border: 1px solid #ffcc00;
+			background: rgba(40, 20, 0, 0.3);
+			font-family: 'AceCombat', monospace;
+			font-size: 14px;
+			letter-spacing: 2px;
+			text-shadow: 0 0 8px rgba(255, 200, 0, 0.8);
+			pointer-events: none;
+			z-index: 10;
+			opacity: 0;
+			transition: opacity 0.15s ease-in-out;
+		`;
+		ind.innerText = 'A/B';
+		this.uiContainer.appendChild(ind);
+		this.abElem = ind;
 	}
 
 	createMissileCrosshair() {
@@ -132,6 +663,71 @@ export class HUD {
 		if (horizon) horizon.appendChild(cross);
 		else this.uiContainer.appendChild(cross);
 		this.missileCrosshair = cross;
+	}
+
+	// Refresh the AoA / G / VSI / sideslip readouts plus stall & AB cues.
+	// Stall warning fires when α exceeds ~80% of the stall angle, giving the
+	// pilot a buffer before lift actually drops. G and AoA change color as
+	// they approach their respective limits to communicate risk at a glance.
+	updateFlightData(state) {
+		if (!this.aoaElem) return;
+
+		const alphaDeg = (state.alpha || 0) * 180 / Math.PI;
+		const betaDeg  = (state.sideslip || 0) * 180 / Math.PI;
+		const g        = state.loadFactor || 0;
+		const vsFpm    = Math.round((state.verticalSpeed || 0) * 196.85); // m/s → ft/min
+
+		this.aoaElem.innerText = `${alphaDeg.toFixed(1).padStart(6)}°`;
+		this.gElem.innerText   = `${g.toFixed(1).padStart(5)}`;
+		this.vsElem.innerText  = `${vsFpm >= 0 ? '+' : ''}${vsFpm.toString().padStart(5)}`;
+		this.betaElem.innerText = `${betaDeg.toFixed(1).padStart(6)}°`;
+
+		// Color cues: amber when approaching limits, red when at/beyond.
+		const aoaAbs = Math.abs(alphaDeg);
+		let aoaColor = '#0f0';
+		if (aoaAbs > 16) aoaColor = '#ff4040';
+		else if (aoaAbs > 12) aoaColor = '#ffcc00';
+		this.aoaElem.style.color = aoaColor;
+
+		const gAbs = Math.abs(g);
+		let gColor = '#0f0';
+		if (state.gLimiterActive) gColor = '#ff40ff'; // magenta = FBW limiter active
+		else if (gAbs > 9) gColor = '#ff4040';
+		else if (gAbs > 7) gColor = '#ffcc00';
+		this.gElem.style.color = gColor;
+
+		// Stall warning: 0.8 × stall α (≈ 14.4°) — same threshold a real
+		// stick-shaker would fire at.
+		const stall = aoaAbs > 14.4;
+		if (this.stallElem) {
+			if (stall) {
+				this.stallElem.style.display = 'block';
+				// Blink: modulate opacity on a fast timer.
+				const phase = (Date.now() / 120) | 0;
+				this.stallElem.style.opacity = (phase & 1) ? '1' : '0.35';
+			} else {
+				this.stallElem.style.display = 'none';
+			}
+		}
+
+		if (this.abElem) {
+			this.abElem.style.opacity = state.isBoosting ? '1' : '0';
+		}
+
+		// Thrust bar: green fill scales with throttle; amber AB overlay lights
+		// whenever afterburner is engaged. The fill tracks mil-thrust fraction
+		// (0 → full dry thrust), so the bar at 100% = military power.
+		if (this.thrustFill) {
+			const thr = Math.max(0, Math.min(1, state.throttle || 0));
+			this.thrustFill.style.width = `${(thr * 100).toFixed(0)}%`;
+		}
+		if (this.thrustAB) {
+			this.thrustAB.style.opacity = state.isBoosting ? '1' : '0';
+		}
+		if (this.thrustPctElem) {
+			const pct = Math.round((state.throttle || 0) * 100);
+			this.thrustPctElem.innerText = `${state.isBoosting ? 'AB' : pct.toString().padStart(3)}${state.isBoosting ? '  ' : '%'}`;
+		}
 	}
 
 	showMissileCrosshair(shouldShow) {
@@ -558,6 +1154,12 @@ export class HUD {
 
 		this.speedElem.innerText = Math.round(state.speed).toString().padStart(3, '0');
 
+		this.updateFlightData(state);
+		this.updateMissileDebugPanel(state);
+		this.updateMissileMarkers(state);
+		this.updateMouseSteeringOverlay(state);
+		this.updateRwrScope(state);
+
 		if (state.weaponSystem) {
 			this.updateWeapons(state.weaponSystem);
 		}
@@ -804,8 +1406,17 @@ export class HUD {
 		const viewer = getViewer();
 		if (!viewer) return;
 
+		// Filter through the player's own sensor contacts: the HUD shows only
+		// NPCs that at least one channel (radar / IR / visual) has picked up.
+		// Stealth jets, low-signature cruise missiles, and NPCs outside the
+		// radar cone will simply not appear until something sees them.
+		const contactsMap = playerState && playerState.contacts;
+		const visible = (contactsMap && contactsMap.size > 0)
+			? npcs.filter(n => contactsMap.has(n))
+			: [];
+
 		const activeIds = new Set();
-		if (npcs && npcs.length > 0) {
+		if (visible.length > 0) {
 			this.npcContainer.style.display = 'block';
 			const scene = viewer.scene;
 			const camera = scene.camera;
@@ -814,7 +1425,7 @@ export class HUD {
 			const scratchPos = new Cesium.Cartesian3();
 			const scratchPlayerPos = new Cesium.Cartesian3();
 
-			npcs.forEach(npc => {
+			visible.forEach(npc => {
 				Cesium.Cartesian3.fromDegrees(npc.lon, npc.lat, npc.alt, undefined, scratchPos);
 				Cesium.Cartesian3.fromDegrees(playerState.lon, playerState.lat, playerState.alt, undefined, scratchPlayerPos);
 				const dist = Cesium.Cartesian3.distance(scratchPos, scratchPlayerPos);
@@ -923,9 +1534,22 @@ export class HUD {
 		}
 
 		const distKm = (dist / 1000).toFixed(1);
-		const labelText = `${npc.name}\n${distKm} KM`;
-		if (marker.label.innerText !== labelText) {
-			marker.label.innerText = labelText;
+		// Which channels of the player's sensor suite currently hold this
+		// contact? Lit letter = live detection on that channel, dimmed = no
+		// detection. Lets the pilot see at a glance whether a contact is
+		// radar-only (lose it by going below RWR horizon), visual-only
+		// (close-in stealth jet), etc.
+		const contact = state.contacts && state.contacts.get(npc);
+		const ch = (letter, live, color) =>
+			`<span style="color:${live ? color : '#444'}; margin:0 1px;">${letter}</span>`;
+		const channelHtml =
+			ch('R', !!(contact && contact.radar),  '#40ff40') +
+			ch('I', !!(contact && contact.ir),     '#ff4040') +
+			ch('V', !!(contact && contact.visual), '#80c0ff');
+		const labelHtml = `${npc.name}<br>${distKm} KM &nbsp; ${channelHtml}`;
+		if (marker.label.dataset.html !== labelHtml) {
+			marker.label.innerHTML = labelHtml;
+			marker.label.dataset.html = labelHtml;
 		}
 	}
 

@@ -3,13 +3,74 @@ import * as Cesium from 'cesium';
 import { movePosition } from '../utils/math';
 import { particles } from '../utils/particles';
 import { soundManager } from '../utils/soundManager';
+import { SIGNATURES } from '../systems/signatures';
+
+// Shared signature reference (not per-missile copy) — all live AIM-9s have
+// the same sensor profile. Subclasses (AIM-120) overwrite this in their ctor.
+const MISSILE_IR_SIGNATURE = SIGNATURES.missile_ir;
+
+// ============================================================================
+// AIM-9X Block II–ish short-range IR missile.
+//
+// Replaces the earlier arcade model (constant speed, pure pursuit, fixed
+// 90 °/s turn rate, 100 m kill radius) with a physically-motivated one:
+//
+//   - Boost/coast speed profile (real motor burns ~3-5s, then coasts)
+//   - Proportional navigation with lead pursuit — efficient curved trajectories
+//     against crossing or maneuvering targets
+//   - G-limited turn rate ω_max = (G_max · g) / V. Slower missile can turn
+//     tighter than a fast one, so head-on shots are punishing and tail chases
+//     fall off — which matches reality.
+//   - Proximity fuze ~5 m with segment-swept collision (avoids tunneling at
+//     peak speed where single-frame travel is >fuze radius).
+//   - Seeker gimbal cone ±90° (HOBS). Target leaves cone → ballistic.
+//
+// AIM120 extends this class; the constants below are overridden there for a
+// BVR flight profile. All helper methods (_guide, _shouldEmitTrail,
+// _estimateTargetVelocityENU, _segmentMissDistSq) are usable from both.
+// ============================================================================
+
+// AIM-9X performance envelope.
+const BOOST_DURATION       = 3.5;    // s
+const BOOST_ACCEL          = 210;    // m/s² during motor burn
+const BOOST_PEAK_SPEED     = 860;    // m/s, Mach 2.5 ceiling
+const COAST_DRAG           = 22;     // m/s² nominal coast deceleration
+const MIN_SPEED            = 150;    // m/s floor before missile becomes a dart
+const MAX_LIFE             = 40;     // s
+const MAX_G                = 40;     // airframe G limit
+const PN_GAIN              = 4.0;    // proportional navigation N
+// Kill envelope.
+// KILL_RADIUS is the lethal radius of the continuous-rod warhead — anything
+// inside this on the swept path is a guaranteed kill (all NPCs, not just the
+// locked target).
+// FUZE_SENSE_RADIUS is the proximity fuze's effective sensing range for the
+// tracked target specifically. At high crossing speeds the missile can pass
+// within this envelope for only a fraction of a frame, so we detect the
+// "closest approach" — the moment the range rate turns from closing to
+// opening — and detonate then. Without this, any shot that isn't close to a
+// pure tail chase ends up flying past the target by 5-15m (the turn-rate
+// limit can't match last-second maneuvering) and the strict swept check
+// misses. With it, crossing and beam shots behave like real all-aspect
+// AIM-9Xs should.
+const KILL_RADIUS          = 10;     // m, warhead lethal radius
+const KILL_RADIUS_SQ       = KILL_RADIUS * KILL_RADIUS;
+const FUZE_SENSE_RADIUS    = 20;     // m, fuze-triggered detonation envelope
+const FUZE_SENSE_RADIUS_SQ = FUZE_SENSE_RADIUS * FUZE_SENSE_RADIUS;
+const SEEKER_HALF_CONE_DEG = 90;     // ±90° HOBS gimbal
+const SEEKER_COS_MIN       = Math.cos(SEEKER_HALF_CONE_DEG * Math.PI / 180);
 
 export class Missile {
-	constructor(scene, viewer, startPos, heading, pitch, speed, target = null, onKill = null) {
+	constructor(scene, viewer, startPos, heading, pitch, speed, target = null, onKill = null, launcher = null) {
 		this.scene = scene;
 		this.viewer = viewer;
 		this.target = target;
 		this.onKill = onKill;
+		this.launcher = launcher;
+		// Team inherited from the launcher so friendly-fire filtering works
+		// both ways (player missiles can't kill the player; NPC missiles
+		// can't kill other NPCs on the same team). Falls back to 'friendly'
+		// only so legacy call sites don't explode.
+		this.team = (launcher && launcher.team) || 'friendly';
 
 		this.lon = startPos.lon;
 		this.lat = startPos.lat;
@@ -17,11 +78,20 @@ export class Missile {
 		this.heading = heading;
 		this.pitch = pitch;
 		this.roll = 0;
-		this.speed = speed + 800;
+		// Launch-rail ejection bump; motor does the real work during boost.
+		this.speed = speed + 40;
 
-		this.maxLife = 10;
+		this.maxLife = MAX_LIFE;
 		this.life = this.maxLife;
+		this.boostRemaining = BOOST_DURATION;
+		this.lostLock = false;
 		this.active = true;
+		// Type tag so HUD labels can distinguish AIM-9 from AIM-120 etc.
+		// Subclasses override in their constructor.
+		this.type = 'AIM-9';
+		// Signature for sensor system (reference, not copy — all AIM-9s
+		// share the same signature definition). Subclasses can overwrite.
+		this.signature = MISSILE_IR_SIGNATURE;
 
 		this._scratchMatrix = new Cesium.Matrix4();
 		this._scratchHPR = new Cesium.HeadingPitchRoll();
@@ -184,33 +254,48 @@ export class Missile {
 
 	update(dt, npcs) {
 		if (!this.active) {
-			if (this.trail.length > 0) {
-				this.updateTrail(dt);
-			}
+			if (this.trail.length > 0) this.updateTrail(dt);
 			return;
 		}
 
+		// Flame flicker during motor burn, decays after burnout.
 		if (this.flameMesh) {
-			const flicker = 0.8 + Math.random() * 0.4;
-			const flickerLen = 0.9 + Math.random() * 0.2;
-
-			this.flameMesh.scale.set(flicker, flickerLen, flicker);
-			this.flameMesh.material.opacity = 0.7 + Math.random() * 0.3;
-
-			if (this.flameCore) {
-				this.flameCore.scale.set(flicker, flickerLen, flicker);
+			if (this.boostRemaining > 0) {
+				const f  = 0.8 + Math.random() * 0.4;
+				const fl = 0.9 + Math.random() * 0.2;
+				this.flameMesh.scale.set(f, fl, f);
+				this.flameMesh.material.opacity = 0.7 + Math.random() * 0.3;
+				if (this.flameCore) this.flameCore.scale.set(f, fl, f);
+			} else {
+				// Post-burnout: fade the glow away over a couple seconds.
+				this.flameMesh.material.opacity *= Math.pow(0.5, dt / 0.8);
+				if (this.flameCore) this.flameCore.material.opacity *= Math.pow(0.5, dt / 0.8);
 			}
 		}
 
 		this.life -= dt;
-		if (this.life <= 0) {
-			this.destroy();
-			return;
+		if (this.life <= 0) { this.destroy(); return; }
+
+		// ---- Speed profile: boost → coast ---------------------------------
+		if (this.boostRemaining > 0) {
+			this.speed = Math.min(BOOST_PEAK_SPEED, this.speed + BOOST_ACCEL * dt);
+			this.boostRemaining -= dt;
+		} else {
+			this.speed = Math.max(MIN_SPEED, this.speed - COAST_DRAG * dt);
 		}
 
-		if (this.target && !this.target.destroyed) {
-			this.trackTarget(dt);
+		// ---- Guidance -----------------------------------------------------
+		if (this.target && !this.target.destroyed && !this.lostLock) {
+			this._guide(dt);
 		}
+
+		// ---- Movement + segment-swept proximity check --------------------
+		// Cache pre-move position so we can test the swept line segment
+		// against the target — crucial when the missile moves further per
+		// frame (≈14 m at peak speed) than the fuze radius (5 m).
+		const prevLon = this.lon;
+		const prevLat = this.lat;
+		const prevAlt = this.alt;
 
 		const newPos = movePosition(this.lon, this.lat, this.alt, this.heading, this.pitch, this.speed * dt);
 		this.lon = newPos.lon;
@@ -220,44 +305,166 @@ export class Missile {
 		this.updateTrail(dt);
 		this.updateThreeMatrix();
 
+		// Swept-segment hit check against every possible target (player +
+		// NPCs). Self-skip and friendly-fire are explicit so this works
+		// for both player-fired and NPC-fired missiles.
 		if (npcs) {
 			for (const npc of npcs) {
-				const distSq = this.calculateDistSqToNPC(npc);
-				if (distSq < 10000) {
+				if (!npc || npc === this.launcher) continue;
+				if (npc.destroyed) continue;
+				if (npc.team && this.team && npc.team === this.team) continue;
+				const missSq = this._segmentMissDistSq(prevLon, prevLat, prevAlt, this.lon, this.lat, this.alt, npc);
+				if (missSq < KILL_RADIUS_SQ) {
 					this.hitNPC(npc);
 					return;
 				}
 			}
 		}
 
+		// Proximity-fuze closest-approach detection against the tracked
+		// target. Fires when range has stopped decreasing and we're inside
+		// the fuze envelope — catches the high-speed fly-by misses that the
+		// strict swept-segment check above rejects by a few metres. Without
+		// this an all-aspect AIM-9X effectively degrades to a tail chaser,
+		// which isn't right.
+		if (this.target && !this.target.destroyed) {
+			const dSq = this.calculateDistSqToNPC(this.target);
+			if (dSq < FUZE_SENSE_RADIUS_SQ &&
+				this._prevTargetDistSq !== undefined &&
+				dSq > this._prevTargetDistSq) {
+				this.hitNPC(this.target);
+				return;
+			}
+			this._prevTargetDistSq = dSq < FUZE_SENSE_RADIUS_SQ ? dSq : undefined;
+		} else {
+			this._prevTargetDistSq = undefined;
+		}
+
 		this.checkTerrainCollision();
 	}
 
-	trackTarget(dt) {
+	// Closest-approach distance² between the line segment from frame start
+	// to frame end and the (stationary-in-this-frame) target position.
+	// All math in a local flat-Earth metric frame — sufficient at these
+	// scales; the segment is <100 m long.
+	_segmentMissDistSq(lon0, lat0, alt0, lon1, lat1, alt1, target) {
+		const metersPerDegLon = 111320 * Math.cos(Cesium.Math.toRadians(lat0));
+		const ax = (target.lon - lon0) * metersPerDegLon;
+		const ay = (target.lat - lat0) * 111320;
+		const az = (target.alt - alt0);
+		const bx = (lon1 - lon0) * metersPerDegLon;
+		const by = (lat1 - lat0) * 111320;
+		const bz = (alt1 - alt0);
+		const segLenSq = bx * bx + by * by + bz * bz;
+		if (segLenSq < 1e-6) return ax * ax + ay * ay + az * az;
+		let t = (ax * bx + ay * by + az * bz) / segLenSq;
+		t = Math.max(0, Math.min(1, t));
+		const cx = ax - bx * t;
+		const cy = ay - by * t;
+		const cz = az - bz * t;
+		return cx * cx + cy * cy + cz * cz;
+	}
+
+	// Proportional navigation with lead pursuit and G-limited turn cap.
+	// Mirrors the AIM-120's guidance with tighter terminal behavior.
+	_guide(dt) {
+		const myPos     = Cesium.Cartesian3.fromDegrees(this.lon, this.lat, this.alt);
 		const targetPos = Cesium.Cartesian3.fromDegrees(this.target.lon, this.target.lat, this.target.alt);
-		const myPos = Cesium.Cartesian3.fromDegrees(this.lon, this.lat, this.alt);
 
-		const direction = Cesium.Cartesian3.subtract(targetPos, myPos, new Cesium.Cartesian3());
-		Cesium.Cartesian3.normalize(direction, direction);
+		// LOS in ECEF → local ENU (in meters, so we can add target velocity
+		// × time-to-go in the same units).
+		const losECEF  = Cesium.Cartesian3.subtract(targetPos, myPos, new Cesium.Cartesian3());
+		const range    = Cesium.Cartesian3.magnitude(losECEF);
+		const enu      = Cesium.Transforms.eastNorthUpToFixedFrame(myPos);
+		const invEnu   = Cesium.Matrix4.inverse(enu, new Cesium.Matrix4());
+		const losLocal = Cesium.Matrix4.multiplyByPointAsVector(invEnu, losECEF, new Cesium.Cartesian3());
 
-		const enuMatrix = Cesium.Transforms.eastNorthUpToFixedFrame(myPos);
-		const invEnu = Cesium.Matrix4.inverse(enuMatrix, new Cesium.Matrix4());
-		const localDir = Cesium.Matrix4.multiplyByPointAsVector(invEnu, direction, new Cesium.Cartesian3());
+		// Seeker gimbal cone check: angle between nose and LOS. Target outside
+		// the cone ⇒ lost lock, missile coasts ballistic.
+		const hRad = Cesium.Math.toRadians(this.heading);
+		const pRad = Cesium.Math.toRadians(this.pitch);
+		const noseX = Math.sin(hRad) * Math.cos(pRad);
+		const noseY = Math.cos(hRad) * Math.cos(pRad);
+		const noseZ = Math.sin(pRad);
+		const losLen = Math.max(1e-6, Cesium.Cartesian3.magnitude(losLocal));
+		const cosAng = (noseX * losLocal.x + noseY * losLocal.y + noseZ * losLocal.z) / losLen;
+		if (cosAng < SEEKER_COS_MIN) {
+			this.lostLock = true;
+			return;
+		}
 
-		const targetHeading = Cesium.Math.toDegrees(Math.atan2(localDir.x, localDir.y));
-		const targetPitch = Cesium.Math.toDegrees(Math.asin(localDir.z));
+		// Lead pursuit: aim at predicted target position in t_go seconds.
+		// t_go uses real closing rate (missile velocity minus target velocity,
+		// projected onto the LOS), not just missile speed. The simpler
+		// approximation underestimates head-on t_go and overestimates tail
+		// chases, which shows up as a reliable small-distance miss on
+		// longer shots.
+		const tgtVel = this._estimateTargetVelocityENU();
+		const mVelX  = this.speed * Math.sin(hRad) * Math.cos(pRad);
+		const mVelY  = this.speed * Math.cos(hRad) * Math.cos(pRad);
+		const mVelZ  = this.speed * Math.sin(pRad);
+		const closingRate =
+			((mVelX - tgtVel.x) * losLocal.x +
+			 (mVelY - tgtVel.y) * losLocal.y +
+			 (mVelZ - tgtVel.z) * losLocal.z) / Math.max(1, range);
+		const tgo   = range / Math.max(100, closingRate);
+		const leadX = losLocal.x + tgtVel.x * tgo;
+		const leadY = losLocal.y + tgtVel.y * tgo;
+		const leadZ = losLocal.z + tgtVel.z * tgo;
 
-		let headingDiff = targetHeading - this.heading;
-		while (headingDiff < -180) headingDiff += 360;
-		while (headingDiff > 180) headingDiff -= 360;
+		const desiredHeading = Cesium.Math.toDegrees(Math.atan2(leadX, leadY));
+		const desiredPitch   = Cesium.Math.toDegrees(Math.atan2(
+			leadZ, Math.sqrt(leadX * leadX + leadY * leadY),
+		));
 
-		const turnRate = 90;
-		this.heading += Math.max(-turnRate * dt, Math.min(turnRate * dt, headingDiff));
-		this.pitch += Math.max(-turnRate * dt, Math.min(turnRate * dt, targetPitch - this.pitch));
+		let dH = desiredHeading - this.heading;
+		while (dH < -180) dH += 360;
+		while (dH >  180) dH -= 360;
+		const dP = desiredPitch - this.pitch;
+
+		// G-limited turn cap: ω_max = (G · g) / V. At 860 m/s this is ~27°/s
+		// (40 G head-on is hard!), dropping to ~75°/s at 300 m/s coast. This
+		// is what makes high-speed crossing shots difficult and tail-chase
+		// shots cheap — same asymmetry real BVR/WVR gunners feel.
+		const maxTurnRadPerS = (MAX_G * 9.81) / Math.max(50, this.speed);
+		const capDeg         = Cesium.Math.toDegrees(maxTurnRadPerS) * dt;
+
+		this.heading += Math.max(-capDeg, Math.min(capDeg, dH * PN_GAIN * dt));
+		this.pitch   += Math.max(-capDeg, Math.min(capDeg, dP * PN_GAIN * dt));
+		this.pitch   = Math.max(-85, Math.min(85, this.pitch));
+
+		this.debug = {
+			rangeToTarget: range,
+			desiredHeading, desiredPitch,
+			headingError: dH, pitchError: dP,
+			tgo, cosAngleToNose: cosAng,
+			turnCapDegPerS: Cesium.Math.toDegrees(maxTurnRadPerS),
+			targetName: this.target.name || 'TGT',
+		};
+	}
+
+	// Target velocity in the local ENU frame. Uses heading/pitch/speed fields
+	// populated by npcSystem; missing data reduces gracefully to lag pursuit.
+	_estimateTargetVelocityENU() {
+		const t = this.target;
+		if (!t || typeof t.speed !== 'number') return { x: 0, y: 0, z: 0 };
+		const h = Cesium.Math.toRadians(t.heading || 0);
+		const p = Cesium.Math.toRadians(t.pitch   || 0);
+		return {
+			x: t.speed * Math.sin(h) * Math.cos(p),
+			y: t.speed * Math.cos(h) * Math.cos(p),
+			z: t.speed * Math.sin(p),
+		};
+	}
+
+	// Both AIM-9 and AIM-120 should stop emitting smoke when the motor is
+	// out — real missiles coast silently. Subclasses can override if needed.
+	_shouldEmitTrail() {
+		return this.active && this.boostRemaining > 0;
 	}
 
 	updateTrail(dt) {
-		if (this.active) {
+		if (this._shouldEmitTrail()) {
 			this.distanceSinceLastTrail += this.speed * dt;
 			const spawnInterval = 20.0;
 			while (this.distanceSinceLastTrail >= spawnInterval) {

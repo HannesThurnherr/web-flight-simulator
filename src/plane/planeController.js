@@ -11,8 +11,35 @@ export class PlaneController {
 		this.lastMouseX = 0;
 		this.lastMouseY = 0;
 
+		// Absolute cursor position — tracked always (even without drag) so
+		// mouse-steering can read it, and so the HUD can draw the cursor
+		// line from screen center.
+		this.cursorX = window.innerWidth  / 2;
+		this.cursorY = window.innerHeight / 2;
+
+		// Mouse steering: when enabled, cursor position relative to screen
+		// center drives roll & pitch commands directly. Toggled with M.
+		this.mouseSteering = false;
+
 		window.addEventListener('mousedown', (e) => {
-			if (e.button === 0) {
+			const commanderActive = !!(this.commanderView && this.commanderView.active);
+
+			// Middle mouse button: toggle mouse steering on/off. Clicking
+			// once engages, clicking again disengages — no need to hold.
+			// Only works in cockpit view (commander disables pilot control
+			// anyway). preventDefault swallows browser autoscroll on MMB.
+			if (e.button === 1) {
+				e.preventDefault();
+				if (!commanderActive) {
+					this.mouseSteering = !this.mouseSteering;
+					if (this.mouseSteering) this.mouseDragging = false;
+				}
+				return;
+			}
+
+			// Left mouse: orbit-camera drag, only when NOT steering and NOT
+			// in commander view (which has its own left-drag pan).
+			if (e.button === 0 && !this.mouseSteering && !commanderActive) {
 				this.mouseDragging = true;
 				this.lastMouseX = e.clientX;
 				this.lastMouseY = e.clientY;
@@ -20,6 +47,8 @@ export class PlaneController {
 		});
 
 		window.addEventListener('mousemove', (e) => {
+			this.cursorX = e.clientX;
+			this.cursorY = e.clientY;
 			if (this.mouseDragging) {
 				this.mouseDeltaX += e.clientX - this.lastMouseX;
 				this.mouseDeltaY += e.clientY - this.lastMouseY;
@@ -32,6 +61,7 @@ export class PlaneController {
 			if (e.button === 0) {
 				this.mouseDragging = false;
 			}
+			// MMB release does nothing now — steering is a click-to-toggle.
 		});
 
 		this.input = {
@@ -46,7 +76,11 @@ export class PlaneController {
 			fire: false,
 			fireFlare: false,
 			weaponIndex: -1,
-			toggleWeapon: false
+			toggleWeapon: false,
+			// Mouse steering UI state — read by the HUD for the cursor line.
+			mouseSteering: false,
+			cursorX: this.cursorX,
+			cursorY: this.cursorY,
 		};
 
 		this.sensitivity = 0.2;
@@ -59,15 +93,23 @@ export class PlaneController {
 	update() {
 		this.input.boost = !!this.keys[' '];
 		this.input.isDragging = this.mouseDragging;
-		
+
 		this.input.fire = !!this.keys['enter'] || !!this.keys['f'];
 		this.input.fireFlare = !!this.keys['v'];
-		
+
 		this.input.toggleWeapon = (!!this.keys['q'] && !this.prevKeys['q']);
 
 		this.input.weaponIndex = -1;
-		if (this.keys['1']) this.input.weaponIndex = 0;
-		if (this.keys['2']) this.input.weaponIndex = 1;
+		if (this.keys['1']) this.input.weaponIndex = 0; // gun
+		if (this.keys['2']) this.input.weaponIndex = 1; // AIM-9
+		if (this.keys['3']) this.input.weaponIndex = 2; // AIM-120
+
+		// Mouse steering is now middle-mouse-hold (see mousedown/mouseup
+		// handlers). M now belongs to the commander view. We still publish
+		// the live state to the HUD here.
+		this.input.mouseSteering = this.mouseSteering;
+		this.input.cursorX = this.cursorX;
+		this.input.cursorY = this.cursorY;
 
 		const accelRate = 0.5;
 		if (this.keys['w']) {
@@ -76,11 +118,26 @@ export class PlaneController {
 			this.input.throttle = Math.max(0, this.input.throttle - accelRate * 0.016);
 		}
 
-		const pitchTarget = (this.keys['arrowup'] ? -1 : (this.keys['arrowdown'] ? 1 : 0));
-		this.input.pitch = this.lerp(this.input.pitch, pitchTarget, 0.1);
+		if (this.mouseSteering) {
+			// Cursor relative to screen center → roll, pitch. Full deflection
+			// at ~half-screen from center (sensitivity = 2 × distance-to-edge).
+			// Feels like a real short-throw stick rather than the full desk
+			// swipe you'd need to get full deflection at edge = 1.
+			const cx = window.innerWidth  / 2;
+			const cy = window.innerHeight / 2;
+			const nx = Math.max(-1, Math.min(1, (this.cursorX - cx) / (cx * 0.5)));
+			const ny = Math.max(-1, Math.min(1, (this.cursorY - cy) / (cy * 0.5)));
+			// Mouse below center (ny > 0) → pitch up; mouse above → pitch down.
+			// Sign matches pitch convention already used elsewhere.
+			this.input.pitch = this.lerp(this.input.pitch, ny, 0.2);
+			this.input.roll  = this.lerp(this.input.roll,  nx, 0.2);
+		} else {
+			const pitchTarget = (this.keys['arrowup'] ? -1 : (this.keys['arrowdown'] ? 1 : 0));
+			this.input.pitch = this.lerp(this.input.pitch, pitchTarget, 0.1);
 
-		const rollTarget = (this.keys['arrowleft'] ? -1 : (this.keys['arrowright'] ? 1 : 0));
-		this.input.roll = this.lerp(this.input.roll, rollTarget, 0.1);
+			const rollTarget = (this.keys['arrowleft'] ? -1 : (this.keys['arrowright'] ? 1 : 0));
+			this.input.roll = this.lerp(this.input.roll, rollTarget, 0.1);
+		}
 
 		const yawTarget = (this.keys['a'] ? -1 : (this.keys['d'] ? 1 : 0));
 		this.input.yaw = this.lerp(this.input.yaw, yawTarget, 0.1);

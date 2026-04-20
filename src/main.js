@@ -4,8 +4,17 @@ import { initCesium, setCameraToPlane, getViewer, setControlsEnabled, setRenderO
 import { PlanePhysics } from './plane/planePhysics';
 import { PlaneController } from './plane/planeController';
 import { movePosition } from './utils/math';
+import { advanceLonLatAlt } from './plane/aeroModel';
 import { calculateDistance, reverseGeocode } from './world/regions';
 import { HUD } from './ui/hud';
+import { CommanderView } from './systems/commanderView';
+import { SIGNATURES } from './systems/signatures';
+import {
+	updateSensors, setSensorScene,
+	FIGHTER_RADAR_DEFAULT,
+	FIGHTER_IRST_DEFAULT,
+	FIGHTER_EYEBALL_DEFAULT,
+} from './systems/sensorSystem';
 import { JetFlame } from './plane/jetFlame';
 import { WeaponSystem } from './systems/weaponSystem';
 import { soundManager } from './utils/soundManager';
@@ -127,7 +136,18 @@ let state = {
 	speed: 0,
 	throttle: 0,
 	score: 0,
-	weaponSystem: null
+	weaponSystem: null,
+	// Combat metadata: the player is a fighter, hostile to NPCs spawned by
+	// npcSystem. Sensor/contact data is populated each frame by sensorSystem.
+	team: 'friendly',
+	signature: { ...SIGNATURES.fighter },
+	sensors: {
+		radar:   { ...FIGHTER_RADAR_DEFAULT },
+		ir:      { ...FIGHTER_IRST_DEFAULT },
+		eyeball: { ...FIGHTER_EYEBALL_DEFAULT },
+	},
+	contacts: new Map(),
+	rwr: new Map(),
 };
 
 async function initUserLocation() {
@@ -160,6 +180,15 @@ let mixer, clock;
 let physics = new PlanePhysics();
 let controller = new PlaneController();
 let hud = new HUD();
+// Commander view is created lazily once the Cesium viewer exists. We instantiate
+// it just-in-time in update() the first time we need it — keeping init order
+// simple avoids fighting with the existing async Cesium bring-up.
+let commanderView = null;
+
+// Monotonic sim-time used for sensor contact ageing. Advances only while
+// update(dt) actually ticks, so pauses don't retroactively expire contacts —
+// same convention as commanderView's trail timer.
+let simTime = 0;
 let npcSystem;
 let weaponSystem;
 let dialogueSystem = new DialogueSystem();
@@ -402,99 +431,170 @@ function initThree() {
 }
 
 function update(dt) {
-	if (currentState !== States.FLYING) return;
+	// Menu-like states and paused state freeze the world entirely.
+	if (currentState === States.MENU || currentState === States.PICK_SPAWN) return;
+	if (currentState === States.PAUSED) return;
 
-	const input = controller.update();
-	const physicsResult = physics.update(input, dt);
+	// CRASHED keeps the world ticking (NPCs, missiles, sensors, commander
+	// view) so the player can press M and watch the rest of the battle
+	// play out from above. Only player-specific updates are gated.
+	const isFlying = currentState === States.FLYING;
 
-	const prevSpeed = state.speed;
-	state.speed = physicsResult.speed;
-	state.pitch = physicsResult.pitch;
-	state.roll = physicsResult.roll;
-	state.heading = physicsResult.heading;
-	state.throttle = input.throttle;
-	state.yaw = input.yaw;
-	state.isBoosting = physicsResult.isBoosting;
+	const input = isFlying ? controller.update() : null;
+
+	// Commander view suspends pilot control: stick goes neutral, weapons
+	// safed, AB cut. Throttle stays at its last value so the aircraft keeps
+	// flying on trim instead of slowing or stalling. Mouse-steering overlay
+	// is suppressed for the same reason.
+	// Player-controlled physics / inputs / firing — only while FLYING.
+	// Live projectiles and NPCs still tick below (the world keeps running
+	// after you're shot down so you can watch the engagement play out).
+	let physicsResult = null;
+	if (isFlying) {
+		if (commanderView && commanderView.active) {
+			input.pitch = 0;
+			input.roll  = 0;
+			input.yaw   = 0;
+			input.boost = false;
+			input.fire  = false;
+			input.fireFlare    = false;
+			input.toggleWeapon = false;
+			input.weaponIndex  = -1;
+			input.mouseSteering = false;
+		}
+
+		// Hand the physics module the current altitude so its density model is
+		// accurate. Altitude is owned by main.js (lon/lat/alt state), not physics.
+		physics.currentAltitude = state.alt;
+		physicsResult = physics.update(input, dt);
+
+		state.speed = physicsResult.speed;
+		state.pitch = physicsResult.pitch;
+		state.roll = physicsResult.roll;
+		state.heading = physicsResult.heading;
+		state.throttle = input.throttle;
+		state.yaw = input.yaw;
+		state.isBoosting = physicsResult.isBoosting;
+
+		state.verticalSpeed = physicsResult.velocityENU ? physicsResult.velocityENU.z : 0;
+		state.alpha      = physicsResult.alpha      || 0;
+		state.sideslip   = physicsResult.beta       || 0;
+		state.loadFactor = physicsResult.loadFactor || 0;
+		state.gLimiterActive = !!physicsResult.gLimiterActive;
+
+		state.mouseSteering = !!input.mouseSteering;
+		state.cursorX = input.cursorX;
+		state.cursorY = input.cursorY;
+	}
+
+	// Fields that the HUD / sensor / commander code reads every frame
+	// regardless of state.
 	state.weaponSystem = weaponSystem;
 	state.npcs = npcSystem ? npcSystem.npcs : [];
+	state.npcProjectiles = npcSystem ? npcSystem.projectiles : [];
 
+	// Weapons: only trigger new fires while FLYING, but always call
+	// update() so existing player missiles keep flying even after death.
 	if (weaponSystem) {
-		if (input.weaponIndex !== -1) {
-			weaponSystem.selectWeapon(input.weaponIndex);
+		if (isFlying) {
+			if (input.weaponIndex !== -1) weaponSystem.selectWeapon(input.weaponIndex);
+			if (input.toggleWeapon)       weaponSystem.toggleWeapon();
+			if (input.fire)               weaponSystem.fire(state);
+			if (input.fireFlare)          weaponSystem.fireFlare(state);
 		}
-		if (input.toggleWeapon) {
-			weaponSystem.toggleWeapon();
-		}
-		if (input.fire) {
-			weaponSystem.fire(state);
-		}
-		if (input.fireFlare) {
-			weaponSystem.fireFlare(state);
-		}
-		weaponSystem.update(dt, state, input);
+		weaponSystem.update(dt, state, isFlying ? input : null);
 	}
 
-	const newPos = movePosition(state.lon, state.lat, state.alt, state.heading, state.pitch, state.speed * dt);
-	state.lon = newPos.lon;
-	state.lat = newPos.lat;
-	state.alt = newPos.alt;
+	// ---- Sensor system -----------------------------------------------------
+	// Build the list of all sensable objects (player + NPCs + live missiles)
+	// and scan bidirectionally. Each unit ends up with contacts/rwr populated
+	// in-place. NPCs already carry team='hostile' and a fighter signature
+	// from npcSystem; the player carries team='friendly' and matching data.
+	simTime += dt;
+	const npcList = npcSystem ? npcSystem.npcs : [];
+	// Every projectile carries team + signature now (set at construction
+	// from the launcher), so we just sweep both pools into the sensor
+	// pass without per-item fixup.
+	const playerProjectiles = (weaponSystem && weaponSystem.projectiles) || [];
+	const npcProjectiles    = (npcSystem && npcSystem.projectiles)    || [];
+	const allProjectiles = playerProjectiles.concat(npcProjectiles).filter(p => p && p.active);
+	updateSensors([state, ...npcList, ...allProjectiles], simTime, dt);
 
-	const nowTime = Date.now();
-	const distFromLast = calculateDistance(state.lon, state.lat, lastGeocodePos.lon, lastGeocodePos.lat);
+	// Position integration from player's velocity — FLYING only. When
+	// the player is destroyed, their position freezes on the ground where
+	// the kill happened.
+	if (isFlying && physicsResult) {
+		if (physicsResult.velocityENU) {
+			const newPos = advanceLonLatAlt(state.lon, state.lat, state.alt, physicsResult.velocityENU, dt);
+			state.lon = newPos.lon;
+			state.lat = newPos.lat;
+			state.alt = newPos.alt;
+		} else {
+			const fallback = movePosition(state.lon, state.lat, state.alt, state.heading, state.pitch, state.speed * dt);
+			state.lon = fallback.lon;
+			state.lat = fallback.lat;
+			state.alt = fallback.alt;
+		}
 
-	if (nowTime - lastGeocodeTime > GEOCODE_INTERVAL || distFromLast > GEOCODE_MIN_DIST) {
-		lastGeocodeTime = nowTime;
-		lastGeocodePos = { lon: state.lon, lat: state.lat };
+		const nowTime = Date.now();
+		const distFromLast = calculateDistance(state.lon, state.lat, lastGeocodePos.lon, lastGeocodePos.lat);
 
-		reverseGeocode(state.lon, state.lat).then(name => {
-			if (name && name !== currentRegionName) {
-				currentRegionName = name;
-				hud.showRegion(name);
+		if (nowTime - lastGeocodeTime > GEOCODE_INTERVAL || distFromLast > GEOCODE_MIN_DIST) {
+			lastGeocodeTime = nowTime;
+			lastGeocodePos = { lon: state.lon, lat: state.lat };
+
+			reverseGeocode(state.lon, state.lat).then(name => {
+				if (name && name !== currentRegionName) {
+					currentRegionName = name;
+					hud.showRegion(name);
+				}
+			});
+		}
+
+		checkCrash();
+		checkGPWS();
+	}
+
+	if (isFlying) {
+		if (soundManager.isPlaying('jet-engine')) {
+			const minSpeed = 100;
+			const maxSpeed = 1000;
+			const minVol = 0.5;
+			const maxVol = 0.6;
+			const speedFactor = Math.max(0, Math.min(1.0, (state.speed - minSpeed) / (maxSpeed - minSpeed)));
+			const engineVol = minVol + speedFactor * (maxVol - minVol);
+			soundManager.setVolume('jet-engine', engineVol);
+		}
+
+		if (state.isBoosting && !lastIsBoosting) {
+			soundManager.play('boost');
+		}
+
+		if (state.throttle > lastThrottleLevel + 0.01) {
+			if (!soundManager.isPlaying('throttle')) {
+				soundManager.play('throttle');
 			}
-		});
-	}
-
-	checkCrash();
-	checkGPWS();
-
-	if (soundManager.isPlaying('jet-engine')) {
-		const minSpeed = 100;
-		const maxSpeed = 1000;
-		const minVol = 0.5;
-		const maxVol = 0.6;
-		const speedFactor = Math.max(0, Math.min(1.0, (state.speed - minSpeed) / (maxSpeed - minSpeed)));
-		const engineVol = minVol + speedFactor * (maxVol - minVol);
-		soundManager.setVolume('jet-engine', engineVol);
-	}
-
-	if (state.isBoosting && !lastIsBoosting) {
-		soundManager.play('boost');
-	}
-
-	if (state.throttle > lastThrottleLevel + 0.01) {
-		if (!soundManager.isPlaying('throttle')) {
-			soundManager.play('throttle');
 		}
-	}
-	lastThrottleLevel = state.throttle;
+		lastThrottleLevel = state.throttle;
 
-	if (Math.abs(input.pitch) > 0.5) {
-		if (!soundManager.isPlaying('pitch')) {
-			soundManager.play('pitch', 0.1);
+		if (Math.abs(input.pitch) > 0.5) {
+			if (!soundManager.isPlaying('pitch')) {
+				soundManager.play('pitch', 0.1);
+			}
+		} else {
+			if (soundManager.isPlaying('pitch')) {
+				soundManager.stop('pitch', 0.1);
+			}
 		}
-	} else {
-		if (soundManager.isPlaying('pitch')) {
-			soundManager.stop('pitch', 0.1);
-		}
-	}
 
-	if (Math.abs(input.roll) > 0.5 || Math.abs(input.yaw) > 0.5) {
-		if (!soundManager.isPlaying('roll')) {
-			soundManager.play('roll', 0.1);
-		}
-	} else {
-		if (soundManager.isPlaying('roll')) {
-			soundManager.stop('roll', 0.1);
+		if (Math.abs(input.roll) > 0.5 || Math.abs(input.yaw) > 0.5) {
+			if (!soundManager.isPlaying('roll')) {
+				soundManager.play('roll', 0.1);
+			}
+		} else {
+			if (soundManager.isPlaying('roll')) {
+				soundManager.stop('roll', 0.1);
+			}
 		}
 	}
 
@@ -515,17 +615,49 @@ function update(dt) {
 	const finalQuat = Cesium.Quaternion.multiply(planeQuat, orbitQuat, new Cesium.Quaternion());
 	const finalHPR = Cesium.HeadingPitchRoll.fromQuaternion(finalQuat);
 
-	setCameraToPlane(
-		state.lon, state.lat, state.alt,
-		Cesium.Math.toDegrees(finalHPR.heading),
-		Cesium.Math.toDegrees(finalHPR.pitch),
-		Cesium.Math.toDegrees(finalHPR.roll)
-	);
+	// Lazy-create the commander view once Cesium is ready. Share the ref
+	// with the pilot controller so its mouse-drag logic can back off while
+	// the commander's pan-drag is active. Also register the scene with the
+	// sensor module so terrain raycasts can run.
+	if (!commanderView) {
+		const viewer = getViewer();
+		if (viewer) {
+			commanderView = new CommanderView(viewer);
+			controller.commanderView = commanderView;
+			setSensorScene(viewer.scene);
+		}
+	}
+
+	// When commander is active, it owns the Cesium camera. Otherwise the
+	// pilot chase-camera drives it.
+	if (!commanderView || !commanderView.active) {
+		setCameraToPlane(
+			state.lon, state.lat, state.alt,
+			Cesium.Math.toDegrees(finalHPR.heading),
+			Cesium.Math.toDegrees(finalHPR.pitch),
+			Cesium.Math.toDegrees(finalHPR.roll)
+		);
+	}
 
 	if (npcSystem) {
-		npcSystem.update(dt, state);
+		npcSystem.update(dt, state, simTime);
 	}
 	hud.update(state, currentState === States.FLYING ? (npcSystem ? npcSystem.npcs : []) : []);
+
+	// Commander view gets a chance to pan its camera, update markers, and
+	// sample trails. Runs whether active or not — trails keep recording so
+	// switching into the view mid-fight shows useful history.
+	if (commanderView) {
+		const projectiles = (weaponSystem && weaponSystem.projectiles) || [];
+		const units = npcSystem ? npcSystem.npcs : [];
+		commanderView.update(dt, state, units, projectiles);
+
+		// Toggle the pilot overlays based on the commander's state.
+		const cmdActive = commanderView.active;
+		if (planeModel) planeModel.visible = !cmdActive;
+		const uiContainer = document.getElementById('uiContainer');
+		if (uiContainer) uiContainer.style.opacity = cmdActive ? '0' : '';
+	}
 
 	if (planeModel) {
 		const accel = (state.speed - prevSpeed) / dt;
@@ -674,8 +806,34 @@ function checkGPWS() {
 let lastCrashCheck = 0;
 let flightStartTime = 0;
 
+function _doCrashTransition() {
+	currentState = States.CRASHED;
+	if (dialogueSystem) dialogueSystem.stop();
+	uiContainer.classList.add('hidden');
+	const weaponsHud = document.getElementById('weapons-hud');
+	if (weaponsHud) weaponsHud.classList.add('hidden');
+	threeContainer.classList.add('hidden');
+	crashMenu.classList.remove('hidden');
+	hud.update(state, []);
+
+	stopAllFlyingSounds(0.1);
+	setTimeout(() => {
+		soundManager.play('explode');
+		soundManager.play('ambient-crash');
+	}, 50);
+}
+
 function checkCrash() {
 	if (currentState !== States.FLYING) return;
+
+	// Missile kill: projectile sets state.destroyed=true via hitNPC since
+	// `state` is passed in the target list the same way NPCs are. Handle
+	// this immediately — no 100 ms rate-limit — so the transition is crisp.
+	if (state.destroyed) {
+		state.destroyed = false;
+		_doCrashTransition();
+		return;
+	}
 
 	const now = Date.now();
 	if (now - lastCrashCheck < 100) return;
@@ -690,20 +848,7 @@ function checkCrash() {
 	const terrainHeight = viewer.scene.globe.getHeight(cartographic);
 
 	if (terrainHeight !== undefined && state.alt <= terrainHeight + 5) {
-		currentState = States.CRASHED;
-		if (dialogueSystem) dialogueSystem.stop();
-		uiContainer.classList.add('hidden');
-		const weaponsHud = document.getElementById('weapons-hud');
-		if (weaponsHud) weaponsHud.classList.add('hidden');
-		threeContainer.classList.add('hidden');
-		crashMenu.classList.remove('hidden');
-		hud.update(state, []);
-
-		stopAllFlyingSounds(0.1);
-		setTimeout(() => {
-			soundManager.play('explode');
-			soundManager.play('ambient-crash');
-		}, 50);
+		_doCrashTransition();
 	}
 }
 

@@ -1,5 +1,7 @@
 import * as Cesium from 'cesium';
 
+Cesium.Ion.defaultAccessToken = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJqdGkiOiJmMWM2MmI0OS01MzJkLTQzOTUtYjlkMy01MDg4MjE3OTYzOGMiLCJpZCI6NDIwMzY2LCJpYXQiOjE3NzY2MjkwMDd9.u08r8KvG7jbRMNsyovwEZkdJHFeULV9zNkmaqLEsk5g';
+
 let viewer;
 let miniViewer;
 let pauseMiniViewer;
