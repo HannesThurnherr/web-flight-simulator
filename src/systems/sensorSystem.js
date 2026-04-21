@@ -198,57 +198,121 @@ function touchContact(contacts, target) {
 	return c;
 }
 
-// ---- Channel scans ---------------------------------------------------------
+// ---- Debug toggles ---------------------------------------------------------
+//
+// Global kill switch for the pulse-Doppler notch filter across every radar
+// in the sim (plane sets, missile seekers, future SAMs). Flip to `false`
+// to A/B test whether notch is the cause of a tracking bug without having
+// to remove it from every config independently. All three stages of the
+// missile engagement (launcher acquisition, seeker acquisition, seeker
+// tracking) read from the same detectRadar() path, so this flag catches
+// them all at once. Leave `true` for normal play — notching is a core
+// sensor mechanic, not a cosmetic one.
+export const NOTCH_ENABLED = true;
 
-// Returns true if the contact was detected on radar (so the target also
-// accrues an RWR entry for the observer).
-function scanRadar(observer, target, now) {
-	const s = observer.sensors && observer.sensors.radar;
-	if (!s || !s.enabled || !s.active) return false;
-	const sig = target.signature;
-	if (!sig) return false;
+// ---- Unified radar detection -----------------------------------------------
+//
+// Single source of truth for "does radar X on observer O detect target T?".
+// Every radar — fighter APG, AMRAAM seeker, future SAM/AWACS — calls this.
+// Only the radar *configuration* varies (range, FOV, reference RCS, notch
+// threshold); the mechanics (FOV cone, radar equation, aspect-modulated
+// RCS, terrain LOS, pulse-Doppler notch) are the same everywhere.
+//
+// radar shape:
+//   { enabled, active, mode,            // on/off + 'search'|'track'|'off'
+//     nominalRange, referenceRcs,       // radar equation params
+//     fovH, fovV,                       // half-angles in radians
+//     notchThreshold }                  // m/s, defaults to 90 if absent
+//
+// Returns a detection descriptor, or null if any stage rejects the target.
+// The descriptor carries all the intermediate geometry so callers can
+// populate contact/RWR records without redoing the LOS math.
+export function detectRadar(observer, target, radar) {
+	if (!radar || !radar.enabled || !radar.active) return null;
+	const sig = target && target.signature;
+	if (!sig) return null;
 
 	const los = losObserverToTarget(observer, target);
-	if (los.losLenMeters < 1) return false;
+	if (los.losLenMeters < 1) return null;
 
-	// FOV check (rectangular cone — separate az and el limits, like a real
-	// mechanical-scan radar). Stealth has nothing to do with FOV; it's
-	// strictly a pointing geometry question.
-	if (Math.abs(los.bearingBody)   > s.fovH) return false;
-	if (Math.abs(los.elevationBody) > s.fovV) return false;
+	// 1) FOV (rectangular cone — separate az/el like a real mech-scan set).
+	if (Math.abs(los.bearingBody)   > radar.fovH) return null;
+	if (Math.abs(los.elevationBody) > radar.fovV) return null;
 
-	// Aspect-modulated RCS. We need the target's forward direction.
+	// 2) Aspect-modulated RCS. Nose-on/tail-on different from beam.
 	const tgtFwd = unitForwardENU(target);
 	const aspect = aspectAngleFromVectors(los.losHat, tgtFwd);
 	const effRcs = sig.rcs * rcsAspectFactor(aspect);
 
-	// Fourth-root radar equation: detection range scales with RCS^0.25.
-	// detected iff range < nominalRange · (effRcs / referenceRcs)^0.25
-	const ratio = effRcs / s.referenceRcs;
-	const rangeLimit = s.nominalRange * Math.pow(Math.max(1e-6, ratio), 0.25);
-	if (los.losLenMeters > rangeLimit) return false;
+	// 3) 4th-root radar equation: detection range scales with RCS^0.25.
+	const ratio = effRcs / radar.referenceRcs;
+	const rangeLimit = radar.nominalRange * Math.pow(Math.max(1e-6, ratio), 0.25);
+	if (los.losLenMeters > rangeLimit) return null;
 
-	// Terrain line-of-sight: if a ridge sits between us, no return.
-	if (isTerrainBlocked(los.obsECEF, los.tgtECEF)) return false;
+	// 4) Terrain LOS — a ridge in the way kills the return.
+	if (isTerrainBlocked(los.obsECEF, los.tgtECEF)) return null;
 
-	// Signal strength 0..1, for RWR strength and later guidance coupling.
+	// 5) Pulse-Doppler main-lobe clutter notch.
+	//
+	// After the radar compensates for its own motion ("main-lobe clutter
+	// cancellation"), ground clutter sits at ~0 Doppler. The target's
+	// residual Doppler reduces to −v_tgt·losHat — *only the target's own
+	// velocity along the LOS matters*, the observer's velocity drops out.
+	// A target flying perpendicular to the LOS (beaming) has v_tgt·losHat
+	// ≈ 0, matches ground clutter, and gets filtered. This is why
+	// "beam the radar" is the BVR defensive move.
+	const tgtSpeed = target.speed || 0;
+	const tgtLosCos =
+		tgtFwd.x * los.losHat.x + tgtFwd.y * los.losHat.y + tgtFwd.z * los.losHat.z;
+	const tgtLosSpeed = Math.abs(tgtLosCos) * tgtSpeed;
+	const notchThreshold = (radar.notchThreshold != null) ? radar.notchThreshold : 90;
+	if (NOTCH_ENABLED && tgtLosSpeed < notchThreshold) return null;
+
+	// Signal strength 0..1, cheap proxy for return-power margin. Used for
+	// RWR strength and for the lock-integrity hysteresis in seekers.
 	const signal = Math.min(1, Math.pow(rangeLimit / los.losLenMeters, 4) * 0.01);
 
-	// Velocity estimate: radar provides closing rate via Doppler, but we
-	// fake the full 3D target velocity here because we have it anyway.
+	return {
+		bearingBody: los.bearingBody,
+		elevationBody: los.elevationBody,
+		range: los.losLenMeters,
+		losHat: los.losHat,
+		obsECEF: los.obsECEF,
+		tgtECEF: los.tgtECEF,
+		aspect,
+		effRcs,
+		rangeLimit,
+		tgtLosSpeed,
+		signal,
+	};
+}
+
+// ---- Channel scans ---------------------------------------------------------
+
+// Observer-level radar scan. Thin wrapper around detectRadar that also
+// writes the contact record and the target's RWR entry. Returns true on
+// detection (matches the previous API so the updateSensors loop is
+// unchanged).
+function scanRadar(observer, target, now) {
+	const s = observer.sensors && observer.sensors.radar;
+	const det = detectRadar(observer, target, s);
+	if (!det) return false;
+
+	// Velocity estimate: radar gives closing rate via Doppler; we expose
+	// the full 3D velocity because we have ground truth and downstream
+	// consumers (datalink, HUD) want it.
 	const vel = unitForwardENU(target);
 	const spd = target.speed || 0;
-	const vx = vel.x * spd, vy = vel.y * spd, vz = vel.z * spd;
 
 	const contact = touchContact(observer.contacts, target);
 	contact.radar = {
-		bearing: los.bearingBody,
-		elevation: los.elevationBody,
-		range: los.losLenMeters,
+		bearing: det.bearingBody,
+		elevation: det.elevationBody,
+		range: det.range,
 		rangeRate: null, // filled in by fuse step (needs previous frame)
-		velocity: { x: vx, y: vy, z: vz },
-		rcs: effRcs,
-		signal,
+		velocity: { x: vel.x * spd, y: vel.y * spd, z: vel.z * spd },
+		rcs: det.effRcs,
+		signal: det.signal,
 		lastSeen: now,
 	};
 
@@ -260,7 +324,7 @@ function scanRadar(observer, target, now) {
 		source: observer,
 		bearing: reverseLos.bearingBody,
 		elevation: reverseLos.elevationBody,
-		strength: signal,
+		strength: det.signal,
 		lockType: s.mode === 'track' ? 'track' : 'search',
 		lastSeen: now,
 	});

@@ -15,12 +15,22 @@ export class WeaponSystem {
 
 		this.weapons = [
 			{ id: 'gun',     name: 'M61A1 CANNON',    ammo: Infinity, maxAmmo: Infinity, fireRate: 0.05, lastFire: 0 },
-			// AIM-9: short-range IR, lock required, tight forward cone, <10 km.
-			{ id: 'missile', name: 'AIM-9 SIDEWINDER', ammo: 6,  maxAmmo: 6,  fireRate: 1.0,
-			  lastFire: 0, type: 'AIM-9',    lockRange: 10000, lockCone: 0.985, lockTime: 2.0 },
-			// AIM-120D: active-radar BVR, wider cone, much longer range.
+			// AIM-9X: short-range IIR, ±10° cone. Modern imaging-IR seekers
+			// acquire and lock in well under a second — 0.5 s models the
+			// brief seeker slew + cooling-gate confirmation without the
+			// old arcade-style 2 s stare.
+			{ id: 'missile', name: 'AIM-9X SIDEWINDER', ammo: 6,  maxAmmo: 6,  fireRate: 1.0,
+			  lastFire: 0, type: 'AIM-9',    lockRange: 15000, lockCone: 0.985, lockTime: 0.5 },
+			// AIM-120D: active-radar BVR. Modern AESA fighter radars
+			// (APG-63V3, APG-77, APG-81, APG-82) hold firing-grade
+			// tracks essentially continuously in TWS; transitioning to
+			// STT for launch is near-instant. 0.3 s dwell is enough for
+			// the RWR-tone transition without pretending the player is
+			// still flying a 1970s mechanical-scan set. Range bumped to
+			// 120 km so the firing envelope matches the radar's actual
+			// tracking range, not an arbitrarily tighter number.
 			{ id: 'missile', name: 'AIM-120D AMRAAM',  ammo: 4,  maxAmmo: 4,  fireRate: 1.5,
-			  lastFire: 0, type: 'AIM-120',  lockRange: 80000, lockCone: 0.92,  lockTime: 1.0 },
+			  lastFire: 0, type: 'AIM-120',  lockRange: 120000, lockCone: 0.92,  lockTime: 0.3 },
 		];
 
 		this.flareWeapon = { id: 'flare', name: 'MJU-7A', ammo: 30, maxAmmo: 30, fireRate: 0.2, lastFire: 0 };
@@ -394,6 +404,11 @@ export class WeaponSystem {
 
 		for (const npc of playerState.npcs) {
 			if (npc.destroyed) continue;
+			// Team filter — never lock onto friendlies (AWACS, wingman,
+			// tanker). Previously the lock cone would happily grab an
+			// AWACS orbiting behind the player because nothing filtered
+			// by team.
+			if (npc.team && npc.team === playerState.team) continue;
 
 			const dot = this.calculateDotProduct(playerState, npc);
 			if (dot > maxDot) {

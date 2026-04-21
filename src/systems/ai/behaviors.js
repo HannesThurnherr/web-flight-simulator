@@ -172,7 +172,12 @@ export class MissileEvasionBehavior extends Behavior {
 
 	apply(ctx, cmd, dt) {
 		const threat = this._findThreat(ctx);
-		if (!threat) return;
+		if (!threat) {
+			// No threat → reset the last-ditch jitter so the next
+			// engagement picks a fresh random offset.
+			this._jitterDeg = undefined;
+			return;
+		}
 		const unit  = ctx.unit;
 		const msl   = threat.target;
 		const range = threat.range; // may be null when only passive sensors have it
@@ -200,13 +205,18 @@ export class MissileEvasionBehavior extends Behavior {
 		const isLastDitch = range !== null && range < LAST_DITCH_RANGE;
 
 		if (isLastDitch) {
-			// ---- Last-ditch: HARD break into the beam, pull up into the
-			// missile's turn. Making the missile pull maximum G bleeds its
-			// energy fastest, which is the classic defeat at short range.
-			// Pitch UP rather than down: keeps the airframe energetic, and
-			// the high-G pull is the most dramatic visual cue.
-			cmd.targetHeading = beamHeading;
-			cmd.targetPitch   = 30; // hard nose-up
+			// ---- Last-ditch: hard break into the beam. Used to pitch 30°
+			// up, which guaranteed the target slipped out of the missile
+			// seeker's ±25° vertical FOV — NPC evasion was 100% effective
+			// and essentially broken. Now we use 15° (still a dramatic
+			// pull) and add a small per-NPC heading jitter so not every
+			// break is a textbook-perfect beam. Keeps the maneuver a
+			// credible defense without making it automatic.
+			if (this._jitterDeg === undefined) {
+				this._jitterDeg = (Math.random() - 0.5) * 30; // ±15° bias
+			}
+			cmd.targetHeading = (beamHeading + this._jitterDeg + 360) % 360;
+			cmd.targetPitch   = 15;
 			if (ctx.now - this._lastFlareAt > 0.3) {
 				cmd.fireFlare = true;
 				this._lastFlareAt = ctx.now;
@@ -296,7 +306,9 @@ export class EngageBehavior extends Behavior {
 		// some off-nose, but a roughly-aligned shot keeps things sane.
 		if (!ws) return;
 		const now = ctx.now;
-		const weapon = ws.pickWeaponFor(range, now);
+		// Pass the world-wide projectile pool so maxInFlight can be
+		// enforced. ctx.projectiles is set by npcSystem each frame.
+		const weapon = ws.pickWeaponFor(range, now, ctx.projectiles || [], unit);
 		if (!weapon) return;
 
 		const angleOff = Math.abs(angleDiffDeg(unit.heading, cmd.targetHeading));

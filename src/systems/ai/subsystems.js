@@ -92,30 +92,58 @@ export class TargetManagerSubsystem extends Subsystem {
 		this._best = null;
 	}
 
+	// Score a candidate target. Heavy positive score = prefer. Closer is
+	// better; being already engaged by a teammate is a big penalty so the
+	// pilot naturally picks unengaged bogeys. Not an absolute exclusion
+	// because if ALL targets are engaged we still want to shoot something
+	// (better a second missile than no missile).
+	_scoreCandidate(target, range, ctx) {
+		let score = -range;
+		const dl = ctx.teamDatalink;
+		if (dl && dl.isEngaged(target)) score -= 50000; // 50 km penalty
+		return score;
+	}
+
 	update(ctx, _dt) {
 		const unit = ctx.unit;
-		const contacts = unit.contacts;
 		this._best = null;
-		if (!contacts || contacts.size === 0) return;
+
+		// Build candidate set from two sources:
+		//   1. Unit's own contacts (highest fidelity, preferred).
+		//   2. Team datalink fused contacts (wingman / AWACS picture).
+		// A target appears once, with the unit's own range used when
+		// available and the fused range as a fallback.
+		const candidates = new Map(); // target → { range, contact, source }
+		if (unit.contacts) {
+			for (const [target, c] of unit.contacts) {
+				const range = (c.radar && c.radar.range) || null;
+				if (range == null) continue;
+				candidates.set(target, { range, contact: c, source: 'own' });
+			}
+		}
+		if (ctx.teamDatalink) {
+			for (const [target, fused] of ctx.teamDatalink.allContacts()) {
+				if (candidates.has(target)) continue; // own radar wins
+				if (fused.range == null) continue;
+				candidates.set(target, { range: fused.range, contact: null, source: 'datalink' });
+			}
+		}
 
 		let best = null;
 		let bestScore = -Infinity;
-		for (const [target, c] of contacts) {
+		for (const [target, cand] of candidates) {
 			if (!target || target === unit) continue;
 			if (target.destroyed || target.active === false) continue;
 			if (target.team === unit.team) continue;
 			const sig = target.signature;
 			if (!sig) continue;
 			if (sig.unitClass === 'missile' || sig.unitClass === 'cruise_missile') continue;
+			if (cand.range > this.maxEngagementRange) continue;
 
-			// Need a firing solution — radar range only.
-			const range = (c.radar && c.radar.range) || null;
-			if (range === null || range > this.maxEngagementRange) continue;
-
-			const score = -range; // closer = higher
+			const score = this._scoreCandidate(target, cand.range, ctx);
 			if (score > bestScore) {
 				bestScore = score;
-				best = { target, contact: c, range };
+				best = { target, contact: cand.contact, range: cand.range, source: cand.source };
 			}
 		}
 		this._best = best;
@@ -139,27 +167,49 @@ export class TargetManagerSubsystem extends Subsystem {
 export class WeaponSubsystem extends Subsystem {
 	constructor(opts = {}) {
 		super('WeaponSubsystem');
-		// Default NPC fighter loadout: a handful of BVR and a couple WVR.
-		// The types match the player's weapon identifiers; AIM-120 >>
-		// AIM-9 in the preference order so BVR opportunities are taken
-		// before closing to IR range.
+		// Default NPC fighter loadout. AIM-120 is preferred because of range
+		// (BVR opportunities before IR merge). Both weapons have:
+		//   fireRate      — minimum seconds between successive launches of
+		//                    the same weapon type. Set to approximately one
+		//                    "commit interval" (see discussion below).
+		//   maxInFlight   — hard cap on live projectiles of this weapon
+		//                    currently in the air from this launcher.
+		// Combined these force real "shoot-look-shoot" BVR behaviour rather
+		// than emptying the magazine in one trigger pull. With AIM-120
+		// fireRate=12 and maxInFlight=1, the NPC fires one, waits until it
+		// either hits or goes inactive, and only then re-engages — matching
+		// how an actual fighter pilot uses AMRAAMs.
 		this.weapons = opts.weapons || [
-			{ type: 'AIM-120', ammo: 4, maxAmmo: 4, fireRate: 2.5, lastFire: -Infinity,
-			  minRange: 3000,  maxRange: 70000 },
-			{ type: 'AIM-9',   ammo: 2, maxAmmo: 2, fireRate: 1.2, lastFire: -Infinity,
-			  minRange: 500,   maxRange: 9000  },
+			{ type: 'AIM-120', ammo: 4, maxAmmo: 4, fireRate: 12.0, maxInFlight: 1,
+			  lastFire: -Infinity, minRange: 3000,  maxRange: 70000 },
+			{ type: 'AIM-9',   ammo: 2, maxAmmo: 2, fireRate: 3.0,  maxInFlight: 2,
+			  lastFire: -Infinity, minRange: 500,   maxRange: 9000  },
 		];
 	}
 
 	update(_ctx, _dt) {}
 
 	// Walk the inventory in preference order (longest-range first) and
-	// return the first weapon that can fire right now at this target.
-	pickWeaponFor(range, now) {
+	// return the first weapon that is (a) loaded, (b) off cooldown,
+	// (c) within its firing envelope, and (d) under its in-flight cap.
+	// `projectiles` is the world-wide combined projectile pool; we count
+	// the ones that reference the given launcher to enforce maxInFlight.
+	pickWeaponFor(range, now, projectiles = [], launcher = null) {
 		for (const w of this.weapons) {
 			if (w.ammo <= 0) continue;
 			if (range < w.minRange || range > w.maxRange) continue;
 			if (now - w.lastFire < w.fireRate) continue;
+			if (w.maxInFlight && launcher) {
+				let live = 0;
+				for (const p of projectiles) {
+					if (!p || !p.active) continue;
+					if (p.launcher !== launcher) continue;
+					if (p.type !== w.type) continue;
+					live++;
+					if (live >= w.maxInFlight) break;
+				}
+				if (live >= w.maxInFlight) continue;
+			}
 			return w;
 		}
 		return null;

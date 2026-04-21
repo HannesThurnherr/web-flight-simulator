@@ -375,6 +375,7 @@ html {
 	flex: 1;
 	display: flex;
 	align-items: center;
+	gap: 40px;
 }
 
 .menu-nav {
@@ -382,6 +383,86 @@ html {
 	flex-direction: column;
 	gap: 20px;
 	width: 400px;
+}
+
+/* ---- Scenario card selector ------------------------------------------- */
+/* Replaces a dropdown with a stack of tactical-green cards that match the
+   main-menu-btn aesthetic. Sits to the left of the menu-nav column. */
+
+.menu-scenario {
+	display: flex;
+	flex-direction: column;
+	gap: 12px;
+	width: 340px;
+}
+
+.scenario-header {
+	font-family: inherit;
+	font-size: 11px;
+	letter-spacing: 3px;
+	color: rgba(0, 255, 0, 0.55);
+	border-bottom: 1px solid rgba(0, 255, 0, 0.2);
+	padding-bottom: 6px;
+}
+
+.scenario-cards {
+	display: flex;
+	flex-direction: column;
+	gap: 10px;
+}
+
+.scenario-card {
+	background: transparent;
+	border: 1px solid rgba(0, 255, 0, 0.25);
+	border-left: 3px solid rgba(0, 255, 0, 0.3);
+	color: #0f0;
+	padding: 10px 14px;
+	text-align: left;
+	cursor: pointer;
+	font-family: inherit;
+	transition: all 0.2s;
+	position: relative;
+	display: flex;
+	flex-direction: column;
+	gap: 4px;
+}
+
+.scenario-card .card-name {
+	font-size: 16px;
+	font-weight: bold;
+	letter-spacing: 1.5px;
+	color: #0f0;
+}
+
+.scenario-card .card-desc {
+	font-size: 10px;
+	line-height: 1.45;
+	color: rgba(0, 255, 0, 0.55);
+	letter-spacing: 0.5px;
+}
+
+.scenario-card:hover {
+	background: rgba(0, 255, 0, 0.06);
+	border-color: rgba(0, 255, 0, 0.55);
+	border-left-width: 6px;
+	padding-left: 11px;
+}
+
+.scenario-card.selected {
+	background: rgba(0, 255, 0, 0.1);
+	border-color: #0f0;
+	border-left-width: 6px;
+	padding-left: 11px;
+	box-shadow: inset 0 0 12px rgba(0, 255, 0, 0.15);
+}
+
+.scenario-card.selected::before {
+	content: "▸";
+	position: absolute;
+	top: 10px;
+	right: 12px;
+	color: #0f0;
+	font-size: 14px;
 }
 
 .main-menu-btn {

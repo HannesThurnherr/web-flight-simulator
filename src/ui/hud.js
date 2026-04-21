@@ -10,6 +10,8 @@ export class HUD {
 		this.scoreElem = document.getElementById('score');
 		this.fpsElem = document.getElementById('fps');
 		this.localDateTimeElem = document.getElementById('local-datetime');
+		this.radarStateElem   = document.getElementById('radar-state');
+		this.radarStatusElem  = document.getElementById('radar-status');
 		this.coordsElem = document.getElementById('coords');
 		this.minimapCanvas = document.getElementById('minimap');
 		this.miniCtx = this.minimapCanvas.getContext('2d');
@@ -384,9 +386,11 @@ export class HUD {
 				marker = this._createMissileMarkerElement();
 				this.missileMarkers.set(id, marker);
 			}
-			// Color per team: own missiles stay amber (existing cue), hostile
-			// in red so an incoming launch is unmistakable.
-			const color = isOwnTeam ? '#ffc040' : '#ff4040';
+			// Color per team: own missiles stay amber, hostile in magenta so
+			// they're unmistakable against red NPC plane markers (four-way
+			// separation: player=cyan, NPC=red, friendly msl=amber, hostile
+			// msl=magenta). Matches the commander view color scheme.
+			const color = isOwnTeam ? '#ffc040' : '#ff40e0';
 			marker.dot.style.background = color;
 			marker.dot.style.boxShadow  = `0 0 8px ${color}`;
 			marker.label.style.color    = color;
@@ -438,22 +442,27 @@ export class HUD {
 		if (document.getElementById('missile-debug-panel')) return;
 		const p = document.createElement('div');
 		p.id = 'missile-debug-panel';
+		// Top-right, pushed down below the RWR scope (which lives at
+		// top:16 with a height of ~100 px at left:75%) so the two don't
+		// overlap. Keeps the panel out of the minimap's bottom-right
+		// region and out of the timestamp row at the very top.
 		p.style.cssText = `
 			position: absolute;
-			top: 16px;
+			top: 130px;
 			right: 16px;
 			padding: 8px 12px;
 			border: 1px solid rgba(255, 180, 0, 0.6);
 			background: rgba(30, 20, 0, 0.55);
 			color: #ffc040;
 			font-family: 'AceCombat', monospace;
-			font-size: 12px;
-			line-height: 1.45;
+			font-size: 11px;
+			line-height: 1.4;
 			letter-spacing: 1px;
 			text-shadow: 0 0 6px rgba(255, 180, 0, 0.7);
 			pointer-events: none;
 			z-index: 10;
-			min-width: 240px;
+			min-width: 260px;
+			max-width: 380px;
 			display: none;
 		`;
 		this.uiContainer.appendChild(p);
@@ -482,9 +491,19 @@ export class HUD {
 			const errTxt  = `err ${hdgErr.toFixed(0)}°`;
 			const errCol  = Math.abs(hdgErr) > 20 ? '#ff4040'
 				: (Math.abs(hdgErr) > 5 ? '#ffcc00' : '#40ff40');
+			// Guidance mode tag: DL = datalink midcourse, DR = dead reckoning,
+			// ACT = pitbull active lock, MAD = maddog (no lock post-pitbull).
+			// Color cues: good (green) through degraded (amber/red).
+			const mode = d.mode || '—';
+			const modeCol = mode === 'ACT' ? '#40ff40'
+				: mode === 'DL'  ? '#40ff40'
+				: mode === 'DR'  ? '#ffcc00'
+				: mode === 'MAD' ? '#ff4040'
+				: '#888';
 			rows.push(
 				`<div style="white-space:pre; font-family:monospace;">` +
 				`${(i + 1).toString().padStart(2)}: ${typeTag} ${phase}  ${rng}  ` +
+				`<span style="color:${modeCol}">${mode.padEnd(4)}</span>` +
 				`<span style="color:${errCol}">${errTxt.padEnd(9)}</span>` +
 				`<span style="opacity:0.75">tgt ${tgt}</span>` +
 				`</div>`,
@@ -1079,6 +1098,16 @@ export class HUD {
 	update(state, npcs = []) {
 		const lerpFactor = 0.5;
 
+		// Radar emitter state badge. Green "ON" when the player's set is
+		// radiating (normal), amber "OFF" when silenced via the \ key.
+		// Makes "am I actually silent running right now" visible at a
+		// glance.
+		if (this.radarStateElem && this.radarStatusElem) {
+			const on = !!(state.sensors && state.sensors.radar && state.sensors.radar.active);
+			this.radarStateElem.textContent = on ? 'ON' : 'OFF';
+			this.radarStatusElem.style.color = on ? '#0f0' : '#fa0';
+		}
+
 		const lerpAngle = (current, target, factor) => {
 			let diff = target - current;
 			while (diff < -180) diff += 360;
@@ -1313,6 +1342,49 @@ export class HUD {
 			ctx.restore();
 		});
 
+		// Missiles: the player's own always show (you fired them, you know
+		// where they are). Hostile ones only show if one of the player's
+		// sensor channels has a contact on them — same rule as the cockpit
+		// HUD's incoming-missile markers, so the two views stay consistent.
+		// Drawn as small arrows oriented along the missile's heading, in the
+		// same amber/magenta palette as the commander view.
+		const playerPool = (state.weaponSystem && state.weaponSystem.projectiles) || [];
+		const npcPool    = state.npcProjectiles || [];
+		const allMissiles = playerPool.concat(npcPool);
+		const playerTeam = state.team || 'friendly';
+
+		for (const m of allMissiles) {
+			if (!m || !m.active) continue;
+			const isOwnTeam = (m.team || 'friendly') === playerTeam;
+			const detected = isOwnTeam ||
+				(state.contacts && state.contacts.has(m));
+			if (!detected) continue;
+
+			const mdist = calculateDistance(state.lon, state.lat, m.lon, m.lat);
+			if (mdist > this.minimapRange * 5000) continue;
+
+			const dx_m = (m.lon - state.lon) * 111320 * Math.cos(state.lat * Math.PI / 180);
+			const dy_m = (m.lat - state.lat) * 111320;
+			const px = dx_m * pixelsPerMeter;
+			const py = -dy_m * pixelsPerMeter;
+			if (Math.sqrt(px * px + py * py) > radius - 4) continue;
+
+			const color = isOwnTeam ? '#ffc040' : '#ff40e0';
+			ctx.save();
+			ctx.translate(px, py);
+			ctx.rotate(m.heading * Math.PI / 180);
+			ctx.fillStyle = color;
+			// Missile shape: narrow arrowhead — visibly different from the
+			// NPC kite shape at a glance.
+			ctx.beginPath();
+			ctx.moveTo(0, -5);
+			ctx.lineTo(3, 3);
+			ctx.lineTo(-3, 3);
+			ctx.closePath();
+			ctx.fill();
+			ctx.restore();
+		}
+
 		ctx.restore();
 
 		const pad = 12;
@@ -1406,14 +1478,20 @@ export class HUD {
 		const viewer = getViewer();
 		if (!viewer) return;
 
-		// Filter through the player's own sensor contacts: the HUD shows only
-		// NPCs that at least one channel (radar / IR / visual) has picked up.
-		// Stealth jets, low-signature cruise missiles, and NPCs outside the
-		// radar cone will simply not appear until something sees them.
-		const contactsMap = playerState && playerState.contacts;
-		const visible = (contactsMap && contactsMap.size > 0)
-			? npcs.filter(n => contactsMap.has(n))
-			: [];
+		// Filter through the player's fused picture: own sensor contacts
+		// PLUS team datalink contacts (AWACS, wingmen, future ground
+		// radars). Stealth jets / low-signature cruise missiles still
+		// require someone to have seen them — but "someone" now includes
+		// the AWACS 80 km behind you. When the player silences their own
+		// radar, datalink is the only source.
+		const ownContacts = playerState && playerState.contacts;
+		const dlContacts  = playerState && playerState.datalinkContacts;
+		const canSee = (n) => {
+			if (ownContacts && ownContacts.has(n)) return true;
+			if (dlContacts  && dlContacts.has(n))  return true;
+			return false;
+		};
+		const visible = npcs.filter(canSee);
 
 		const activeIds = new Set();
 		if (visible.length > 0) {

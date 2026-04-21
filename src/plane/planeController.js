@@ -37,14 +37,32 @@ export class PlaneController {
 				return;
 			}
 
-			// Left mouse: orbit-camera drag, only when NOT steering and NOT
-			// in commander view (which has its own left-drag pan).
-			if (e.button === 0 && !this.mouseSteering && !commanderActive) {
+			// Left mouse: orbit-camera drag. Works even while mouse-steering
+			// is engaged — we just freeze the steering inputs for the
+			// duration of the drag (see the LMB check in update()) so the
+			// plane doesn't try to follow the cursor around. Commander
+			// view keeps its own left-drag handling.
+			if (e.button === 0 && !commanderActive) {
 				this.mouseDragging = true;
 				this.lastMouseX = e.clientX;
 				this.lastMouseY = e.clientY;
 			}
 		});
+
+		// Scroll wheel: adjust chase-camera distance. Integrates a scalar
+		// zoom factor that main.js reads every frame to scale the plane's
+		// visual offset in camera space. Preserves the feel of a real
+		// chase camera — pull back to see more context, push in to fill
+		// the screen with the airframe.
+		window.addEventListener('wheel', (e) => {
+			if (this.commanderView && this.commanderView.active) return;
+			// Normalise across trackpad / mouse wheel deltas.
+			const step = Math.sign(e.deltaY) * 0.08;
+			this.cameraZoom = Math.max(0.4, Math.min(2.5, (this.cameraZoom || 1) + step));
+			// Don't preventDefault — let Cesium's zoom still work in
+			// menu/spawn-picker modes. Flight-time Cesium is slaved to
+			// the plane anyway, so the wheel event has no other effect.
+		}, { passive: true });
 
 		window.addEventListener('mousemove', (e) => {
 			this.cursorX = e.clientX;
@@ -118,11 +136,13 @@ export class PlaneController {
 			this.input.throttle = Math.max(0, this.input.throttle - accelRate * 0.016);
 		}
 
-		if (this.mouseSteering) {
+		if (this.mouseSteering && !this.mouseDragging) {
 			// Cursor relative to screen center → roll, pitch. Full deflection
 			// at ~half-screen from center (sensitivity = 2 × distance-to-edge).
 			// Feels like a real short-throw stick rather than the full desk
 			// swipe you'd need to get full deflection at edge = 1.
+			// Frozen while LMB is held — the user is panning the camera,
+			// not flying the plane.
 			const cx = window.innerWidth  / 2;
 			const cy = window.innerHeight / 2;
 			const nx = Math.max(-1, Math.min(1, (this.cursorX - cx) / (cx * 0.5)));
@@ -131,6 +151,11 @@ export class PlaneController {
 			// Sign matches pitch convention already used elsewhere.
 			this.input.pitch = this.lerp(this.input.pitch, ny, 0.2);
 			this.input.roll  = this.lerp(this.input.roll,  nx, 0.2);
+		} else if (this.mouseSteering && this.mouseDragging) {
+			// Hold steering inputs at zero while camera-dragging, so the
+			// plane flies straight on trim while you look around.
+			this.input.pitch = this.lerp(this.input.pitch, 0, 0.3);
+			this.input.roll  = this.lerp(this.input.roll,  0, 0.3);
 		} else {
 			const pitchTarget = (this.keys['arrowup'] ? -1 : (this.keys['arrowdown'] ? 1 : 0));
 			this.input.pitch = this.lerp(this.input.pitch, pitchTarget, 0.1);
@@ -157,6 +182,11 @@ export class PlaneController {
 
 		this.prevKeys = { ...this.keys };
 
+		// Publish the live chase-zoom so main.js can scale the plane
+		// model's visual offset. Default 1.0 (neutral) until the user
+		// scrolls.
+		this.input.cameraZoom = this.cameraZoom || 1.0;
+
 		return this.input;
 	}
 
@@ -166,7 +196,11 @@ export class PlaneController {
 		this.mouseDragging = false;
 		this.mouseDeltaX = 0;
 		this.mouseDeltaY = 0;
-		this.input.throttle = 0;
+		// Spawn throttle at 75% instead of zero. The player starts in the
+		// air at cruise altitude — throttle at 0 would mean decelerating
+		// from the first frame, which doesn't match the "already flying"
+		// premise and led to stalls during the spawn animation.
+		this.input.throttle = 0.75;
 		this.input.pitch = 0;
 		this.input.roll = 0;
 		this.input.yaw = 0;

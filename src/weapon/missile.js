@@ -4,6 +4,7 @@ import { movePosition } from '../utils/math';
 import { particles } from '../utils/particles';
 import { soundManager } from '../utils/soundManager';
 import { SIGNATURES } from '../systems/signatures';
+import { airDensity, GRAVITY } from '../plane/aeroModel.js';
 
 // Shared signature reference (not per-missile copy) — all live AIM-9s have
 // the same sensor profile. Subclasses (AIM-120) overwrite this in their ctor.
@@ -34,8 +35,16 @@ const MISSILE_IR_SIGNATURE = SIGNATURES.missile_ir;
 const BOOST_DURATION       = 3.5;    // s
 const BOOST_ACCEL          = 210;    // m/s² during motor burn
 const BOOST_PEAK_SPEED     = 860;    // m/s, Mach 2.5 ceiling
-const COAST_DRAG           = 22;     // m/s² nominal coast deceleration
-const MIN_SPEED            = 150;    // m/s floor before missile becomes a dart
+// Drag is now scaled by ρ·v² (real missile physics). The old 22 m/s² was
+// roughly a 5 km / 700 m/s AIM-9 operating point. Sea level now bleeds
+// much faster, high altitude much slower — the small IR AIM-9 almost
+// never fires at cruise altitude anyway, so this mostly affects low-
+// altitude chases (drains fast) and rear-quarter tail-chases at medium
+// alt (more forgiving).
+const COAST_DRAG_REF       = 22;     // m/s² at reference altitude + speed
+const COAST_DRAG_REF_V     = 700;    // m/s reference speed for v² scaling
+const COAST_DRAG_REF_ALT   = 5000;   // m reference altitude for ρ scaling
+const MIN_SPEED            = 60;     // m/s absolute floor (ballistic below)
 const MAX_LIFE             = 40;     // s
 const MAX_G                = 40;     // airframe G limit
 const PN_GAIN              = 4.0;    // proportional navigation N
@@ -86,6 +95,13 @@ export class Missile {
 		this.boostRemaining = BOOST_DURATION;
 		this.lostLock = false;
 		this.active = true;
+		// Unique id per projectile. Commander view trails key on
+		// `m-${m.id}` and we'd previously left id undefined, so every
+		// missile in the world shared a single `m-undefined` bucket —
+		// samples from different missiles interleaved, producing the
+		// "missile zoomed to its target and back in a frame" artifact
+		// seen at game start. Stable per-instance id fixes it.
+		this.id = (Missile._nextId = (Missile._nextId || 0) + 1);
 		// Type tag so HUD labels can distinguish AIM-9 from AIM-120 etc.
 		// Subclasses override in their constructor.
 		this.type = 'AIM-9';
@@ -277,11 +293,32 @@ export class Missile {
 		if (this.life <= 0) { this.destroy(); return; }
 
 		// ---- Speed profile: boost → coast ---------------------------------
+		// Drag scales with ρ·v² using the constants above as a reference
+		// operating point. The AIM-9 has a short burn and mostly lives in
+		// coast, so these numbers matter more here than on the AIM-120.
 		if (this.boostRemaining > 0) {
 			this.speed = Math.min(BOOST_PEAK_SPEED, this.speed + BOOST_ACCEL * dt);
 			this.boostRemaining -= dt;
 		} else {
-			this.speed = Math.max(MIN_SPEED, this.speed - COAST_DRAG * dt);
+			const rhoRef  = airDensity(COAST_DRAG_REF_ALT);
+			const rho     = airDensity(this.alt);
+			const v2Ratio = (this.speed * this.speed) / (COAST_DRAG_REF_V * COAST_DRAG_REF_V);
+			const dragAcc = COAST_DRAG_REF * (rho / Math.max(1e-6, rhoRef)) * v2Ratio;
+			this.speed = Math.max(MIN_SPEED, this.speed - dragAcc * dt);
+		}
+
+		// ---- Gravity --------------------------------------------------------
+		// Pull vertical velocity downward and recompose speed / pitch.
+		// Scalar-along-nose representation preserved. Effect: a coasting
+		// AIM-9 that misses its pass actually arcs into the ground
+		// instead of flying level forever.
+		{
+			const pRad = this.pitch * Math.PI / 180;
+			let vHoriz = this.speed * Math.cos(pRad);
+			let vVert  = this.speed * Math.sin(pRad) - GRAVITY * dt;
+			this.speed = Math.max(MIN_SPEED, Math.hypot(vHoriz, vVert));
+			this.pitch = Math.atan2(vVert, vHoriz) * 180 / Math.PI;
+			this.pitch = Math.max(-85, Math.min(85, this.pitch));
 		}
 
 		// ---- Guidance -----------------------------------------------------

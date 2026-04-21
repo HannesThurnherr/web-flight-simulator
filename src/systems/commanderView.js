@@ -16,16 +16,52 @@ import * as Cesium from 'cesium';
 //   rotation (deg) = compass heading of the viewer — 0 = north up
 // ============================================================================
 
-const TRAIL_INTERVAL   = 0.25;  // seconds between samples per unit
-const TRAIL_DURATION   = 120;   // seconds of history kept
-const TRAIL_MAX_POINTS = Math.ceil(TRAIL_DURATION / TRAIL_INTERVAL) + 2;
+const TRAIL_INTERVAL    = 0.25;  // seconds between samples per unit
+const TRAIL_DURATION    = 120;   // seconds of history kept
+const TRAIL_MAX_POINTS  = Math.ceil(TRAIL_DURATION / TRAIL_INTERVAL) + 2;
+// Age-based alpha fade: split each trail into this many contiguous chunks
+// along the sample timeline and give each chunk its own alpha. Cesium's
+// entity polyline only supports a single material color per line, so we
+// fake a continuous fade with a handful of stepped segments. 6 chunks is
+// enough that the "steps" don't read as banding at normal zoom levels and
+// the entity count stays modest (≈ 6× units + missiles).
+const TRAIL_FADE_CHUNKS = 6;
 
-const COLOR_PLAYER  = Cesium.Color.fromCssColorString('#00eaff');
-const COLOR_NPC     = Cesium.Color.fromCssColorString('#ff4040');
-const COLOR_MISSILE = Cesium.Color.fromCssColorString('#ffc040');
-const COLOR_TRAIL_PLAYER  = COLOR_PLAYER.withAlpha(0.6);
-const COLOR_TRAIL_NPC     = COLOR_NPC.withAlpha(0.55);
-const COLOR_TRAIL_MISSILE = COLOR_MISSILE.withAlpha(0.7);
+// Color table. NPCs belong to one of a few hostile factions that fight each
+// other as well as the player, and each faction gets its own color on the
+// map so the engagement is visually readable when there are multiple
+// aircraft and missiles in the air.
+//   Player           → cyan                  (friendly airframe)
+//   Hostile-red      → red                   (faction 1 airframe)
+//   Hostile-blue     → orange                (faction 2 airframe — "orange"
+//                                              rather than literal blue so
+//                                              it doesn't clash with player
+//                                              cyan)
+//   Friendly msl     → amber                 (our outgoing AMRAAMs/AIM-9s)
+//   Hostile msl      → magenta               (bright, distinct from both
+//                                              faction colors; draws the eye
+//                                              to an inbound threat)
+const COLOR_PLAYER           = Cesium.Color.fromCssColorString('#00eaff');
+const COLOR_FACTIONS = {
+	'hostile-red':  Cesium.Color.fromCssColorString('#ff4040'),
+	'hostile-blue': Cesium.Color.fromCssColorString('#ffa040'),
+	// Friendly non-player units (wingman, AWACS, tanker, future
+	// ground forces). Cyan family but distinct from the player's
+	// marker so the eye can still pick the player out at a glance.
+	'friendly':     Cesium.Color.fromCssColorString('#40d8ff'),
+};
+const COLOR_NPC_FALLBACK     = Cesium.Color.fromCssColorString('#ff4040');
+const COLOR_MISSILE_FRIENDLY = Cesium.Color.fromCssColorString('#ffc040');
+const COLOR_MISSILE_HOSTILE  = Cesium.Color.fromCssColorString('#ff40e0');
+const COLOR_TRAIL_PLAYER             = COLOR_PLAYER.withAlpha(0.6);
+const COLOR_TRAIL_MISSILE_FRIENDLY   = COLOR_MISSILE_FRIENDLY.withAlpha(0.75);
+const COLOR_TRAIL_MISSILE_HOSTILE    = COLOR_MISSILE_HOSTILE.withAlpha(0.85);
+
+// Helper: colour + trail colour for an NPC unit, from its team tag.
+function colorsForNpc(unit) {
+	const base = COLOR_FACTIONS[unit.team] || COLOR_NPC_FALLBACK;
+	return { marker: base, trail: base.withAlpha(0.55) };
+}
 // Colors used when a unit (or a trail segment) is behind terrain. Polylines
 // use depthFailMaterial for this natively; points/labels need a manual
 // per-frame occlusion test because Cesium's point graphic has no
@@ -74,6 +110,12 @@ export class CommanderView {
 		// id so NPCs and missiles don't reuse slots across spawns.
 		this._markers   = new Map(); // id → Cesium.Entity (point + label)
 		this._trails    = new Map(); // id → { samples: [{lon,lat,alt,t}], entity }
+		// Radar debug overlay — FOV wedges, track lines, lock lines. Off by
+		// default, toggled with R while the map is open. Entities here are
+		// rebuilt from scratch each frame (cheap at the unit counts we have)
+		// rather than diffed, which keeps the logic readable.
+		this.debugRadarEnabled = false;
+		this._debugEntities    = [];
 		this._trailTick = 0;
 		// Accumulated simulation time (sum of dt from update()). Used for
 		// trail ageing instead of wall-clock time so pausing the game
@@ -96,6 +138,191 @@ export class CommanderView {
 		this._tooltips = new Map();
 
 		this._bindInputs();
+		this._createLegend();
+		this._createControlsPanel();
+		this._createPausedBadge();
+	}
+
+	// Floating "PAUSED" badge shown when sim-time is frozen while the map
+	// is open (Space keybind). Kept minimal — the map itself signals state
+	// via frozen trails / markers; the badge is just a confirm cue.
+	_createPausedBadge() {
+		if (document.getElementById('commander-paused-badge')) return;
+		const el = document.createElement('div');
+		el.id = 'commander-paused-badge';
+		el.textContent = 'PAUSED';
+		el.style.cssText = `
+			position: fixed;
+			top: 16px; left: 50%; transform: translateX(-50%);
+			padding: 6px 18px;
+			border: 1px solid rgba(255, 200, 0, 0.75);
+			background: rgba(40, 25, 0, 0.75);
+			color: #ffd040;
+			font-family: 'AceCombat', monospace;
+			font-size: 14px; letter-spacing: 3px;
+			text-shadow: 0 0 6px rgba(255, 200, 0, 0.8);
+			z-index: 27;
+			display: none;
+			pointer-events: none;
+		`;
+		document.body.appendChild(el);
+		this._pausedBadge = el;
+	}
+
+	setPausedBadge(on) {
+		if (this._pausedBadge) this._pausedBadge.style.display = on ? 'block' : 'none';
+	}
+
+	// Small color-key panel so the player can tell what the map colours
+	// mean at a glance. Shown only while commander view is active.
+	_createLegend() {
+		if (document.getElementById('commander-legend')) return;
+		const p = document.createElement('div');
+		p.id = 'commander-legend';
+		p.style.cssText = `
+			position: fixed;
+			left: 16px; bottom: 16px;
+			padding: 8px 12px;
+			border: 1px solid rgba(0, 255, 0, 0.4);
+			background: rgba(0, 15, 0, 0.7);
+			color: #0f0;
+			font-family: 'AceCombat', monospace;
+			font-size: 11px;
+			line-height: 1.5;
+			letter-spacing: 1px;
+			text-shadow: 0 0 5px rgba(0, 255, 0, 0.6);
+			z-index: 25;
+			pointer-events: none;
+			display: none;
+		`;
+		const row = (color, label) =>
+			`<div style="display:flex; align-items:center; gap:8px;">
+				<span style="
+					display:inline-block; width:10px; height:10px; border-radius:50%;
+					background:${color}; box-shadow:0 0 6px ${color};
+				"></span>${label}
+			</div>`;
+		p.innerHTML =
+			`<div style="font-weight:bold; margin-bottom:4px;">MAP LEGEND</div>` +
+			row('#00eaff', 'Player')          +
+			row('#ff4040', 'Hostile — Red')   +
+			row('#ffa040', 'Hostile — Blue')  +
+			row('#ffc040', 'Friendly missile') +
+			row('#ff40e0', 'Hostile missile') +
+			`<div style="margin-top:6px; opacity:0.65; font-size:10px;">
+				drag pan • right-drag tilt • wheel zoom
+			</div>`;
+		document.body.appendChild(p);
+		this._legendPanel = p;
+	}
+
+	// Clickable overlay toggles + hotkey reference. Shown only while
+	// commander view is active; hidden otherwise. Separate from the legend
+	// so colour-key and controls don't fight for the same corner.
+	_createControlsPanel() {
+		if (document.getElementById('commander-controls')) return;
+		const p = document.createElement('div');
+		p.id = 'commander-controls';
+		p.style.cssText = `
+			position: fixed;
+			left: 16px; top: 16px;
+			padding: 10px 12px;
+			border: 1px solid rgba(0, 255, 0, 0.4);
+			background: rgba(0, 15, 0, 0.75);
+			color: #0f0;
+			font-family: 'AceCombat', monospace;
+			font-size: 11px;
+			line-height: 1.4;
+			letter-spacing: 1px;
+			text-shadow: 0 0 5px rgba(0, 255, 0, 0.6);
+			z-index: 26;
+			display: none;
+			min-width: 180px;
+		`;
+		p.innerHTML = `
+			<div style="font-weight:bold; margin-bottom:6px;">MAP CONTROLS</div>
+			<div id="cmdr-ctrl-toggles" style="display:flex; flex-direction:column; gap:4px;"></div>
+			<div style="margin-top:8px; padding-top:6px; border-top:1px solid rgba(0,255,0,0.2); opacity:0.6; font-size:10px;">
+				HOTKEYS<br>
+				<span style="opacity:0.85">M</span> toggle map<br>
+				<span style="opacity:0.85">SPACE</span> pause / resume<br>
+				<span style="opacity:0.85">T</span> trails<br>
+				<span style="opacity:0.85">R</span> radar debug
+			</div>
+		`;
+		document.body.appendChild(p);
+		this._controlsPanel = p;
+
+		// Build one toggle row per overlay. Each row is a clickable pill
+		// that reflects the current state; clicking mirrors the keybind.
+		// New toggles: add a definition below, no other plumbing needed.
+		this._controlDefs = [
+			{
+				id: 'trails', label: 'Trails', hotkey: 'T',
+				get: () => this.trailsEnabled,
+				set: (v) => {
+					this.trailsEnabled = v;
+					this._setAllTrailsVisible(v && this.active);
+					this.viewer.scene.requestRender();
+				},
+			},
+			{
+				id: 'radar', label: 'Radar Debug', hotkey: 'R',
+				get: () => this.debugRadarEnabled,
+				set: (v) => {
+					this.debugRadarEnabled = v;
+					if (!v) this._clearDebugEntities();
+					this.viewer.scene.requestRender();
+				},
+			},
+		];
+
+		const host = p.querySelector('#cmdr-ctrl-toggles');
+		this._controlRows = new Map();
+		for (const def of this._controlDefs) {
+			const row = document.createElement('button');
+			row.type = 'button';
+			row.className = 'clickable-ui';
+			row.style.cssText = `
+				display: flex; align-items: center; justify-content: space-between;
+				padding: 4px 8px;
+				background: transparent;
+				border: 1px solid rgba(0, 255, 0, 0.25);
+				color: #0f0;
+				font-family: inherit; font-size: 11px; letter-spacing: 1px;
+				cursor: pointer;
+				transition: background 0.15s, border-color 0.15s;
+			`;
+			row.onmouseenter = () => { row.style.background = 'rgba(0,255,0,0.08)'; };
+			row.onmouseleave = () => { row.style.background = 'transparent'; };
+			row.onclick = () => def.set(!def.get());
+			host.appendChild(row);
+			this._controlRows.set(def.id, row);
+		}
+		this._refreshControlRows();
+	}
+
+	// Update the visual state of each toggle pill to match the underlying
+	// flag. Called on every frame (cheap — just DOM text + classList) so
+	// keybind-driven changes stay in sync with the UI without extra
+	// event plumbing.
+	_refreshControlRows() {
+		if (!this._controlRows || !this._controlDefs) return;
+		for (const def of this._controlDefs) {
+			const row = this._controlRows.get(def.id);
+			if (!row) continue;
+			const on = !!def.get();
+			row.innerHTML =
+				`<span>${def.label}</span>` +
+				`<span style="
+					padding:1px 6px;
+					border:1px solid ${on ? '#0f0' : 'rgba(0,255,0,0.3)'};
+					color:${on ? '#0f0' : 'rgba(0,255,0,0.5)'};
+					background:${on ? 'rgba(0,255,0,0.15)' : 'transparent'};
+					min-width: 26px; text-align:center;
+				">${on ? 'ON' : 'OFF'}</span>`;
+			row.style.borderColor = on ? 'rgba(0,255,0,0.6)' : 'rgba(0,255,0,0.25)';
+		}
 	}
 
 	// ---- Public API ---------------------------------------------------------
@@ -118,6 +345,11 @@ export class CommanderView {
 		this._setAllMarkersVisible(active);
 		this._setAllTrailsVisible(active && this.trailsEnabled);
 		if (!active) this._clearAllTooltips();
+		if (!active) this._clearDebugEntities();
+		if (!active) this.setPausedBadge(false);
+		if (this._legendPanel) this._legendPanel.style.display = active ? 'block' : 'none';
+		if (this._controlsPanel) this._controlsPanel.style.display = active ? 'block' : 'none';
+		if (active) this._refreshControlRows();
 		this.viewer.scene.requestRender();
 	}
 
@@ -142,6 +374,8 @@ export class CommanderView {
 		this._applyCamera();
 		this._syncMarkers(playerState, units, missiles);
 		this._syncTrails();
+		this._syncRadarDebug(playerState, units, missiles);
+		this._refreshControlRows();
 		this._updateTooltips();
 		this.viewer.scene.requestRender();
 	}
@@ -160,10 +394,23 @@ export class CommanderView {
 				this.trailsEnabled = !this.trailsEnabled;
 				this._setAllTrailsVisible(this.trailsEnabled);
 				this.viewer.scene.requestRender();
+			} else if (k === 'r' && this.active) {
+				// R toggles the radar debug overlay: FOV wedges, track
+				// lines, and lock lines. Map-only for now; a future pass
+				// could add a HUD version for the cockpit.
+				this.debugRadarEnabled = !this.debugRadarEnabled;
+				if (!this.debugRadarEnabled) this._clearDebugEntities();
+				this.viewer.scene.requestRender();
 			}
 		});
 
-		window.addEventListener('mousedown', (e) => {
+		// Pointer events (not mouse events). Cesium's own input handler also
+		// listens on pointer events and `preventDefault`s them, which — via
+		// the browser's "pointer events cancel mouse compat" rule — kills
+		// the equivalent mousedown before our listener would ever see it.
+		// Using pointerdown/pointermove/pointerup at window-capture puts us
+		// at the same tier Cesium is at, ahead of its canvas handlers.
+		window.addEventListener('pointerdown', (e) => {
 			if (!this.active) return;
 			if (e.button === 0)      this._dragMode = 'pan';
 			else if (e.button === 2) this._dragMode = 'tilt';
@@ -174,15 +421,17 @@ export class CommanderView {
 			this._downY = e.clientY;
 			this._dragDist = 0;
 			e.preventDefault();
+			e.stopPropagation();
 		}, true);
 
-		window.addEventListener('mousemove', (e) => {
+		window.addEventListener('pointermove', (e) => {
 			if (!this.active || !this._dragMode) return;
 			const dx = e.clientX - this._lastX;
 			const dy = e.clientY - this._lastY;
 			this._lastX = e.clientX;
 			this._lastY = e.clientY;
 			this._dragDist += Math.abs(dx) + Math.abs(dy);
+			e.stopPropagation();
 
 			if (this._dragMode === 'pan') {
 				// Grab-and-drag: the look-at point moves opposite to the cursor
@@ -210,15 +459,14 @@ export class CommanderView {
 			this.viewer.scene.requestRender();
 		}, true);
 
-		window.addEventListener('mouseup', (e) => {
+		window.addEventListener('pointerup', (e) => {
 			if (!this._dragMode) return;
 			// Short travel ⇒ treat the press as a click, not a drag.
-			// Left-click on an entity selects it; left-click elsewhere
-			// clears the selection. Right-click is ignored for selection.
 			if (this._dragDist < 6 && e.button === 0 && this.active) {
 				this._handleClickAt(e.clientX, e.clientY);
 			}
 			this._dragMode = null;
+			if (this.active) e.stopPropagation();
 		}, true);
 
 		window.addEventListener('wheel', (e) => {
@@ -345,19 +593,28 @@ export class CommanderView {
 			for (const u of units) {
 				if (!u || u.destroyed) continue;
 				const id = `npc-${u.id || u.name}`;
-				this._ensureMarker(id, COLOR_NPC, u.name || 'BOGEY');
-				updateOne(id, u, COLOR_NPC, { kind: 'npc', ref: u });
+				const { marker: color } = colorsForNpc(u);
+				this._ensureMarker(id, color, u.name || 'BOGEY');
+				updateOne(id, u, color, { kind: 'npc', ref: u });
 			}
 		}
 		if (missiles) {
+			// Color-coded by team: the player's own outgoing missiles stay
+			// amber, hostile inbound-threat missiles show in red. Easy to
+			// tell at a glance who fired what when the map has a dozen
+			// tracks on it.
+			const playerTeam = (playerState && playerState.team) || 'friendly';
 			for (const m of missiles) {
 				if (!m || !m.active) continue;
 				const id = `m-${m.id || (m.id = `m${seen.size}-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`)}`;
 				const typeTag = m.type || 'MSL';
 				const phaseTag = (typeof m.boostRemaining === 'number' && m.boostRemaining > 0) ? ' BOOST' : '';
-				const entity = this._ensureMarker(id, COLOR_MISSILE, typeTag + phaseTag);
+				const isHostile = (m.team || 'friendly') !== playerTeam;
+				const color = isHostile ? COLOR_MISSILE_HOSTILE : COLOR_MISSILE_FRIENDLY;
+				const entity = this._ensureMarker(id, color, typeTag + phaseTag);
 				if (entity && entity.label) entity.label.text = typeTag + phaseTag;
-				updateOne(id, m, COLOR_MISSILE, { kind: 'missile', ref: m });
+				if (entity && entity.point)  entity.point.color = color;
+				updateOne(id, m, color, { kind: 'missile', ref: m });
 			}
 		}
 
@@ -469,18 +726,27 @@ export class CommanderView {
 		if (kind === 'missile') {
 			const typeTag = ref.type || 'MSL';
 			const phase   = ref.boostRemaining > 0 ? `BOOST ${ref.boostRemaining.toFixed(1)}s` : 'COAST';
-			const seeker  = ref.lostLock ? 'LOST' : (ref.pitbullFired || ref.seekerActive ? 'ACTIVE' : 'DL');
+			// Guidance mode set by the AIM-120 each frame:
+			//   DL  = midcourse on fresh datalink from the launcher
+			//   DR  = dead reckoning (datalink stale / launcher lost track)
+			//   ACT = pitbull, missile's own radar has the target
+			//   MAD = maddog, pitbull failed to find a target
+			// Fall back to the older 'LOST' / 'ACTIVE' labels for any legacy
+			// missile (Missile base class, IR AIM-9) that doesn't emit mode.
 			const dbg     = ref.debug || {};
+			const mode    = dbg.mode ||
+				(ref.lostLock ? 'LOST' :
+					(ref.pitbullFired || ref.seekerActive ? 'ACT' : 'DL'));
 			const rng     = typeof dbg.rangeToTarget === 'number'
 				? `${(dbg.rangeToTarget / 1000).toFixed(2)} km` : '—';
 			const tgt     = dbg.targetName || (ref.target && ref.target.name) || '—';
 			return (
 				`<div style="font-weight:bold; margin-bottom:3px;">${typeTag} ${phase}</div>` +
-				row('TGT', tgt) + row('RNG', rng) +
-				row('SPD', `${Math.round(ref.speed)} m/s`) +
-				row('ALT', `${altFt} ft`) +
-				row('SEEK', seeker) +
-				row('TTL', `${ref.life.toFixed(1)} s`)
+				row('TGT',  tgt) + row('RNG', rng) +
+				row('SPD',  `${Math.round(ref.speed)} m/s`) +
+				row('ALT',  `${altFt} ft`) +
+				row('MODE', mode) +
+				row('TTL',  `${ref.life.toFixed(1)} s`)
 			);
 		}
 		const name = kind === 'player' ? 'PLAYER' : (ref.name || 'BOGEY');
@@ -559,51 +825,455 @@ export class CommanderView {
 
 		if (playerState) sample('__player', playerState, COLOR_TRAIL_PLAYER);
 		if (units) for (const u of units) {
-			if (u && !u.destroyed) sample(`npc-${u.id || u.name}`, u, COLOR_TRAIL_NPC);
+			if (!u || u.destroyed) continue;
+			const { trail } = colorsForNpc(u);
+			sample(`npc-${u.id || u.name}`, u, trail);
 		}
-		if (missiles) for (const m of missiles) {
-			if (m && m.active) sample(`m-${m.id}`, m, COLOR_TRAIL_MISSILE);
+		if (missiles) {
+			const playerTeam = (playerState && playerState.team) || 'friendly';
+			for (const m of missiles) {
+				if (!m || !m.active) continue;
+				const isHostile = (m.team || 'friendly') !== playerTeam;
+				const trailColor = isHostile ? COLOR_TRAIL_MISSILE_HOSTILE : COLOR_TRAIL_MISSILE_FRIENDLY;
+				sample(`m-${m.id}`, m, trailColor);
+			}
 		}
 	}
 
 	_syncTrails() {
 		for (const [id, rec] of this._trails) {
+			if (!rec.entities) rec.entities = [];
+
 			if (rec.samples.length < 2) {
-				if (rec.entity) rec.entity.show = false;
+				for (const e of rec.entities) e.show = false;
 				continue;
 			}
-			// Cache the computed Cartesian3 positions; Cesium's CallbackProperty
-			// re-reads this array every frame. Direct assignment to
-			// polyline.positions would wrap into a ConstantProperty, which
-			// in practice doesn't always force the batch-rendered polyline
-			// primitive to rebuild — trails would only appear after something
-			// else forced a full refresh (opening the pause menu, for ex).
-			rec.positionsCache = rec.samples.map(p =>
-				Cesium.Cartesian3.fromDegrees(p.lon, p.lat, p.alt),
-			);
-			if (!rec.entity) {
-				rec.entity = this.viewer.entities.add({
-					polyline: {
-						positions: new Cesium.CallbackProperty(() => rec.positionsCache, false),
-						width: 1.8,
-						material: rec.color,
-						// When a segment is behind terrain Cesium swaps to
-						// this material — produces the "ghosted" look for
-						// trail portions hidden by mountains.
-						depthFailMaterial: new Cesium.ColorMaterialProperty(COLOR_TRAIL_OCCLUDED),
-						arcType: Cesium.ArcType.NONE,
-					},
-					show: this.active && this.trailsEnabled,
-				});
+
+			// Partition the (oldest → newest) sample list into
+			// TRAIL_FADE_CHUNKS contiguous slices. Each slice is rendered
+			// as its own polyline entity with a different alpha; chunk 0 is
+			// oldest (most faded), chunk N-1 is newest (fully opaque).
+			// Adjacent slices share a boundary vertex so the visible line
+			// stays continuous even at step boundaries.
+			const n = rec.samples.length;
+			const bucketCaches = new Array(TRAIL_FADE_CHUNKS);
+			for (let b = 0; b < TRAIL_FADE_CHUNKS; b++) {
+				const startIdx = Math.floor((b * n) / TRAIL_FADE_CHUNKS);
+				const endIdx   = Math.floor(((b + 1) * n) / TRAIL_FADE_CHUNKS);
+				// Include one extra point at the end to bridge to the next
+				// chunk — without this we'd see thin gaps at every step.
+				const stop = Math.min(n, endIdx + 1);
+				const slice = rec.samples.slice(startIdx, stop);
+				bucketCaches[b] = slice.map(p =>
+					Cesium.Cartesian3.fromDegrees(p.lon, p.lat, p.alt),
+				);
+			}
+			rec.positionsCache = bucketCaches;
+
+			// Build the per-chunk entities once, then just show them.
+			// Cesium's CallbackProperty re-reads positions every frame so
+			// incremental sample appends appear without touching the entity.
+			if (rec.entities.length === 0) {
+				const baseAlpha = (rec.color && typeof rec.color.alpha === 'number') ? rec.color.alpha : 1;
+				const occAlpha  = (COLOR_TRAIL_OCCLUDED.alpha || 0.22);
+				for (let b = 0; b < TRAIL_FADE_CHUNKS; b++) {
+					// Newest chunk gets the full color alpha; oldest fades
+					// toward ~15% of that. Linear ramp in chunk-index space
+					// is close enough to linear-in-age for this many chunks.
+					const ageFrac = (b + 0.5) / TRAIL_FADE_CHUNKS; // 0 → oldest, 1 → newest
+					const alphaScale = 0.15 + 0.85 * ageFrac;
+					const chunkIdx = b; // capture for closures
+					const chunkColor = rec.color.withAlpha(baseAlpha * alphaScale);
+					const chunkOccl  = COLOR_TRAIL_OCCLUDED.withAlpha(occAlpha * alphaScale);
+					const ent = this.viewer.entities.add({
+						polyline: {
+							positions: new Cesium.CallbackProperty(
+								() => rec.positionsCache && rec.positionsCache[chunkIdx] || [],
+								false,
+							),
+							width: 1.8,
+							material: chunkColor,
+							depthFailMaterial: new Cesium.ColorMaterialProperty(chunkOccl),
+							arcType: Cesium.ArcType.NONE,
+						},
+						show: this.active && this.trailsEnabled,
+					});
+					rec.entities.push(ent);
+				}
 			} else {
-				rec.entity.show = this.active && this.trailsEnabled;
+				for (const e of rec.entities) e.show = this.active && this.trailsEnabled;
 			}
 		}
 	}
 
 	_setAllTrailsVisible(show) {
 		for (const [, rec] of this._trails) {
-			if (rec.entity) rec.entity.show = show;
+			if (rec.entities) for (const e of rec.entities) e.show = show;
+		}
+	}
+
+	// ---- Radar debug overlay -----------------------------------------------
+	//
+	// Rebuild every frame: (1) a FOV wedge per radar-equipped unit drawn at
+	// the unit's altitude, (2) a thin amber line for every active radar
+	// contact, (3) a thick red line for every active AIM-120 seeker lock.
+	// Diffing would be possible but would add bookkeeping for ~few dozen
+	// short-lived entities; the rebuild is cheap enough.
+
+	_clearDebugEntities() {
+		if (!this._debugEntities) return;
+		for (const e of this._debugEntities) this.viewer.entities.remove(e);
+		this._debugEntities.length = 0;
+		// Debug filled surfaces use the scene.primitives layer (Primitive
+		// API with CoplanarPolygonGeometry for arbitrary 3D triangles),
+		// because the entity API only offers ellipsoid-clamped polygons.
+		// Rebuilt alongside the wireframe each frame.
+		if (this._debugPrimitives) {
+			for (const p of this._debugPrimitives) this.viewer.scene.primitives.remove(p);
+			this._debugPrimitives.length = 0;
+		} else {
+			this._debugPrimitives = [];
+		}
+		// Reset the one-shot log gate so toggling off and on again re-logs.
+		if (!this.debugRadarEnabled) this._debugLoggedOnce = false;
+	}
+
+	// Add a filled triangle in free 3D space, colored translucent. Used
+	// to give the radar wireframes a visible volume (four triangles per
+	// pyramid face, sharing the apex). CoplanarPolygonGeometry is the
+	// right primitive here — regular PolygonGeometry would extrude or
+	// clamp to the globe.
+	_addDebugTriangle(a, b, c, color) {
+		const positions = [
+			Cesium.Cartesian3.fromDegrees(a.lon, a.lat, a.alt),
+			Cesium.Cartesian3.fromDegrees(b.lon, b.lat, b.alt),
+			Cesium.Cartesian3.fromDegrees(c.lon, c.lat, c.alt),
+		];
+		const geom = Cesium.CoplanarPolygonGeometry.fromPositions({ positions });
+		const prim = this.viewer.scene.primitives.add(new Cesium.Primitive({
+			geometryInstances: new Cesium.GeometryInstance({
+				geometry: geom,
+				attributes: {
+					color: Cesium.ColorGeometryInstanceAttribute.fromColor(color),
+				},
+			}),
+			appearance: new Cesium.PerInstanceColorAppearance({
+				flat: true,
+				translucent: true,
+				closed: false,
+			}),
+			asynchronous: false,
+		}));
+		this._debugPrimitives.push(prim);
+		return prim;
+	}
+
+	// Offset a position by (headingDeg, rangeM) in a local ENU frame anchored
+	// at obs. Good enough over the scales we care about (<150 km).
+	_offsetByBearing(obs, headingDeg, rangeM) {
+		const latRad = obs.lat * Math.PI / 180;
+		const h = headingDeg * Math.PI / 180;
+		const dE = rangeM * Math.sin(h);
+		const dN = rangeM * Math.cos(h);
+		return {
+			lon: obs.lon + dE / (111320 * Math.cos(latRad)),
+			lat: obs.lat + dN / 111320,
+			alt: obs.alt,
+		};
+	}
+
+	// Project a unit ray in the observer's body frame (forward/right/up in
+	// radians off nose) out to `range` metres, and return the endpoint as
+	// a geodetic lon/lat/alt triple. Uses the observer's heading+pitch to
+	// orient the body frame; roll is ignored (radar gimbals don't care
+	// about aircraft roll for FOV geometry).
+	//
+	// Body convention here:
+	//   +y = nose forward
+	//   +x = right wing
+	//   +z = up out of canopy
+	_offsetBodyFrame(obs, azOff, elOff, rangeM) {
+		const h = (obs.heading || 0) * Math.PI / 180;
+		const p = (obs.pitch   || 0) * Math.PI / 180;
+
+		// Body frame expressed in ENU axes.
+		const fwd   = { x: Math.sin(h) * Math.cos(p), y: Math.cos(h) * Math.cos(p), z: Math.sin(p) };
+		const right = { x: Math.cos(h),               y: -Math.sin(h),              z: 0 };
+		const up    = {
+			x: right.y * fwd.z - right.z * fwd.y,
+			y: right.z * fwd.x - right.x * fwd.z,
+			z: right.x * fwd.y - right.y * fwd.x,
+		};
+
+		// Ray direction in body frame as tan offsets off the forward axis.
+		const tx = Math.tan(azOff);
+		const tz = Math.tan(elOff);
+		// Combine: fwd + tx*right + tz*up, then normalise and scale.
+		const dx = fwd.x + tx * right.x + tz * up.x;
+		const dy = fwd.y + tx * right.y + tz * up.y;
+		const dz = fwd.z + tx * right.z + tz * up.z;
+		const len = Math.hypot(dx, dy, dz) || 1;
+		const k = rangeM / len;
+		const dE = dx * k, dN = dy * k, dU = dz * k;
+
+		const latRad = obs.lat * Math.PI / 180;
+		return {
+			lon: obs.lon + dE / (111320 * Math.cos(latRad)),
+			lat: obs.lat + dN / 111320,
+			alt: obs.alt + dU,
+		};
+	}
+
+	_addDebugPolyline(positions, color, width) {
+		// Match the trail polyline recipe byte-for-byte, since that one
+		// is known to render: CallbackProperty positions + arcType NONE
+		// + depthFailMaterial matching the front material. Going via
+		// CallbackProperty forces Cesium to re-sample the position
+		// source each frame, which also sidesteps a batch-builder
+		// quirk where short-lived entities with ConstantProperty
+		// positions sometimes fail to land on the GPU.
+		const cartPositions = positions.map(p =>
+			Cesium.Cartesian3.fromDegrees(p.lon, p.lat, p.alt),
+		);
+		const ent = this.viewer.entities.add({
+			polyline: {
+				positions: new Cesium.CallbackProperty(() => cartPositions, false),
+				width,
+				material: new Cesium.ColorMaterialProperty(color),
+				depthFailMaterial: new Cesium.ColorMaterialProperty(color),
+				arcType: Cesium.ArcType.NONE,
+				show: true,
+			},
+		});
+		this._debugEntities.push(ent);
+		return ent;
+	}
+
+	// Debug fallback: if polyline rendering turns out to be broken in
+	// some scene states, sprinkle pixel-space points along a line
+	// instead. They're billboarded by Cesium and bypass depth testing
+	// via `disableDepthTestDistance`, so they're guaranteed to render
+	// the way the red sanity-check dots do.
+	_addDebugDottedLine(positions, color, size = 6) {
+		for (let i = 0; i < positions.length; i++) {
+			const p = positions[i];
+			this._debugEntities.push(this.viewer.entities.add({
+				position: Cesium.Cartesian3.fromDegrees(p.lon, p.lat, p.alt),
+				point: {
+					pixelSize: size,
+					color,
+					disableDepthTestDistance: Number.POSITIVE_INFINITY,
+				},
+			}));
+		}
+	}
+
+	_drawRadarCone(obs, radar, color) {
+		const rawH = radar.fovH || 0;
+		const rawV = radar.fovV || rawH;
+		const range = radar.nominalRange || 0;
+		if (rawH <= 0 || range <= 0) return;
+
+		// If the FOV is effectively omnidirectional (rotodome / 360° radar
+		// like AWACS), the wireframe pyramid math degenerates — tan(π/2)
+		// blows up and the "far face" collapses. Render as a horizontal
+		// ring at `range` distance instead, which matches the mental
+		// model of "detected anything inside this radius."
+		const OMNI_THRESHOLD = Math.PI * 0.6; // ~108°
+		if (rawH >= OMNI_THRESHOLD) {
+			const apex = { lon: obs.lon, lat: obs.lat, alt: obs.alt };
+			const RING_SAMPLES = 36;
+			const ring = [];
+			for (let i = 0; i <= RING_SAMPLES; i++) {
+				const h = (i / RING_SAMPLES) * 360;
+				ring.push(this._offsetByBearing(obs, h, range));
+			}
+			this._addDebugPolyline(ring, color, 2.5);
+			this._addDebugDottedLine(ring, color, 4);
+			// Draw four spokes to anchor the ring to the aircraft.
+			for (const hdg of [0, 90, 180, 270]) {
+				this._addDebugPolyline(
+					[apex, this._offsetByBearing(obs, hdg, range)],
+					color, 1.5,
+				);
+			}
+			return;
+		}
+
+		// Clamp to 80° for render sanity when a radar has a very wide
+		// but not-quite-omni cone (HPA missile seekers, future SAMs).
+		const fovH = Math.min(rawH, Math.PI * 80 / 180);
+		const fovV = Math.min(rawV, Math.PI * 80 / 180);
+
+		// Draw a true 3D wireframe pyramid out to `range`, with the apex
+		// at the observer and a rectangular far-face bounded by ±fovH in
+		// azimuth and ±fovV in elevation. We sample the four edges of the
+		// far face (top / bottom / left / right) with an arc of points
+		// each — visually that reads as a curved cone slice in the sky
+		// rather than a flat line on the ground, which is what the old
+		// azimuth-only sampler produced.
+		const apex = { lon: obs.lon, lat: obs.lat, alt: obs.alt };
+		const EDGE_SAMPLES = 12;
+
+		// Far-face edges: each is a sequence of rays at constant sign of
+		// one offset and varying the other. Named by which side of the
+		// rectangular aperture they trace.
+		const edges = {
+			top:    [],   // sweep az from −fovH..+fovH at el = +fovV
+			bottom: [],   // same az sweep at el = −fovV
+			left:   [],   // sweep el from −fovV..+fovV at az = −fovH
+			right:  [],   // same el sweep at az = +fovH
+		};
+		for (let i = 0; i <= EDGE_SAMPLES; i++) {
+			const t = i / EDGE_SAMPLES;
+			const az = -fovH + 2 * fovH * t;
+			const el = -fovV + 2 * fovV * t;
+			edges.top   .push(this._offsetBodyFrame(obs, az,  fovV, range));
+			edges.bottom.push(this._offsetBodyFrame(obs, az, -fovV, range));
+			edges.left  .push(this._offsetBodyFrame(obs, -fovH, el, range));
+			edges.right .push(this._offsetBodyFrame(obs,  fovH, el, range));
+		}
+
+		// Four apex-to-corner spokes so the pyramid reads as a solid
+		// volume even when only one face is edge-on to the camera.
+		const corners = {
+			tl: this._offsetBodyFrame(obs, -fovH,  fovV, range),
+			tr: this._offsetBodyFrame(obs,  fovH,  fovV, range),
+			bl: this._offsetBodyFrame(obs, -fovH, -fovV, range),
+			br: this._offsetBodyFrame(obs,  fovH, -fovV, range),
+		};
+		this._addDebugPolyline([apex, corners.tl], color, 2);
+		this._addDebugPolyline([apex, corners.tr], color, 2);
+		this._addDebugPolyline([apex, corners.bl], color, 2);
+		this._addDebugPolyline([apex, corners.br], color, 2);
+
+		// Four translucent triangular faces meeting at the apex, plus
+		// two for the far-face rectangle (split along the diagonal
+		// because CoplanarPolygonGeometry needs exactly coplanar input
+		// and our "rectangle" isn't guaranteed planar on a curved
+		// Earth at scale). Alpha is kept low so overlapping cones from
+		// multiple NPCs don't drown the map.
+		const fillAlpha = color.alpha != null ? color.alpha * 0.25 : 0.2;
+		const fill = color.withAlpha(fillAlpha);
+		this._addDebugTriangle(apex, corners.tl, corners.tr, fill); // top face
+		this._addDebugTriangle(apex, corners.tr, corners.br, fill); // right face
+		this._addDebugTriangle(apex, corners.br, corners.bl, fill); // bottom face
+		this._addDebugTriangle(apex, corners.bl, corners.tl, fill); // left face
+
+		// Far-face rim + dotted-point backup. Draw each edge as a short
+		// polyline and also as pixel-space dots — when one path or the
+		// other fails (as we've seen with world-space primitives in some
+		// Cesium scenes), we still get a readable shape.
+		for (const key of ['top', 'bottom', 'left', 'right']) {
+			this._addDebugPolyline(edges[key], color, 2);
+			this._addDebugDottedLine(edges[key], color, 4);
+		}
+	}
+
+	_drawLine(a, b, color, width) {
+		// Sample 10 intermediate points between the endpoints so the
+		// dotted-line fallback is dense enough to read as a line, not
+		// just two isolated dots.
+		const SAMPLES = 10;
+		const pts = [];
+		for (let i = 0; i <= SAMPLES; i++) {
+			const t = i / SAMPLES;
+			pts.push({
+				lon: a.lon + (b.lon - a.lon) * t,
+				lat: a.lat + (b.lat - a.lat) * t,
+				alt: a.alt + (b.alt - a.alt) * t,
+			});
+		}
+		this._addDebugPolyline(pts, color, width);
+		this._addDebugDottedLine(pts, color, 4);
+	}
+
+	_syncRadarDebug(playerState, units, missiles) {
+		this._clearDebugEntities();
+		if (!this.debugRadarEnabled) return;
+
+		// Scope filter from pinned tooltips. If any unit is selected
+		// (tooltip open), we only draw its radar artifacts — so the
+		// overlay isn't a wall of overlapping cones every time it's on.
+		// With nothing selected, show everything (back to the global
+		// view). Selection key is the game-object reference stored on
+		// the marker meta; missiles and planes both flow through it.
+		const selected = new Set();
+		for (const [, tt] of (this._tooltips || new Map())) {
+			const ref = tt.meta && tt.meta.ref;
+			if (ref) selected.add(ref);
+		}
+		const hasFilter = selected.size > 0;
+
+		const diag = { cones: 0, tracks: 0, locks: 0 };
+		const _shouldLog = !this._debugLoggedOnce;
+		if (_shouldLog) this._debugLoggedOnce = true;
+
+		// Unit-scoped color so you can tell whose cone is whose when
+		// multiple overlap. Use the same team-driven palette as markers.
+		const coneColorFor = (u) => {
+			if (u === playerState) return COLOR_PLAYER.withAlpha(0.7);
+			const base = (u && COLOR_FACTIONS[u.team]) || COLOR_NPC_FALLBACK;
+			return base.withAlpha(0.6);
+		};
+		const trackColor = Cesium.Color.fromCssColorString('#ffd040').withAlpha(0.95);
+		const lockColor  = Cesium.Color.fromCssColorString('#ff3060').withAlpha(1.0);
+
+		// Plane radars: cones + per-contact track lines. Only drawn for
+		// selected units when a filter is active.
+		const observers = [playerState, ...(units || [])];
+		for (const obs of observers) {
+			if (!obs || obs.destroyed || obs.active === false) continue;
+			if (hasFilter && !selected.has(obs)) continue;
+			const r = obs.sensors && obs.sensors.radar;
+			if (!r || !r.enabled || !r.active) continue;
+
+			this._drawRadarCone(obs, r, coneColorFor(obs));
+			diag.cones++;
+
+			if (obs.contacts) {
+				for (const [, c] of obs.contacts) {
+					if (!c || !c.radar || !c.target) continue;
+					const t = c.target;
+					if (t.destroyed || t.active === false) continue;
+					this._drawLine(obs, t, trackColor, 2.0);
+					diag.tracks++;
+				}
+			}
+		}
+
+		// Missile seeker locks. A missile's visuals are shown if the
+		// missile itself, its launcher, or its target is selected — that
+		// way clicking either endpoint of an engagement pulls in the
+		// relevant lock line and seeker cone.
+		if (missiles) {
+			for (const m of missiles) {
+				if (!m || !m.active) continue;
+				if (m.type !== 'AIM-120') continue;
+				if (!m.pitbullFired || m.maddog) continue;
+				const t = m.target;
+				if (!t || t.destroyed || t.active === false) continue;
+				if (hasFilter &&
+					!selected.has(m) &&
+					!selected.has(m.launcher) &&
+					!selected.has(t)) continue;
+
+				this._drawLine(m, t, lockColor, 3.5);
+				diag.locks++;
+				if (m.constructor && m.constructor.SEEKER_RADAR_DEBUG) {
+					this._drawRadarCone(m, m.constructor.SEEKER_RADAR_DEBUG, lockColor.withAlpha(0.55));
+					diag.cones++;
+				}
+			}
+		}
+
+		if (_shouldLog) {
+			console.log('[CMDR debug] drew',
+				'cones=' + diag.cones,
+				'tracks=' + diag.tracks,
+				'locks=' + diag.locks,
+				'filter=' + (hasFilter ? `${selected.size} selected` : 'all'),
+				'entities=' + this._debugEntities.length);
 		}
 	}
 }

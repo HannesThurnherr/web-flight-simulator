@@ -20,6 +20,8 @@ import { WeaponSystem } from './systems/weaponSystem';
 import { soundManager } from './utils/soundManager';
 import { NPCSystem } from './systems/npcSystem';
 import { DialogueSystem } from './systems/dialogueSystem';
+import { SCENARIOS, setActiveScenario, getActiveScenario } from './systems/scenarios';
+import { getTeamDatalink } from './systems/teamDatalink';
 import * as Cesium from 'cesium';
 import { particles } from './utils/particles';
 
@@ -189,6 +191,10 @@ let commanderView = null;
 // update(dt) actually ticks, so pauses don't retroactively expire contacts —
 // same convention as commanderView's trail timer.
 let simTime = 0;
+
+// Diagnostic: remember the last-logged commander-active state while CRASHED
+// so we log only on transitions, not every frame.
+let _lastLoggedCmdActive = null;
 let npcSystem;
 let weaponSystem;
 let dialogueSystem = new DialogueSystem();
@@ -450,7 +456,9 @@ function update(dt) {
 	// Live projectiles and NPCs still tick below (the world keeps running
 	// after you're shot down so you can watch the engagement play out).
 	let physicsResult = null;
+	let prevSpeed = 0;
 	if (isFlying) {
+		prevSpeed = state.speed;
 		if (commanderView && commanderView.active) {
 			input.pitch = 0;
 			input.roll  = 0;
@@ -519,6 +527,23 @@ function update(dt) {
 	const npcProjectiles    = (npcSystem && npcSystem.projectiles)    || [];
 	const allProjectiles = playerProjectiles.concat(npcProjectiles).filter(p => p && p.active);
 	updateSensors([state, ...npcList, ...allProjectiles], simTime, dt);
+
+	// Mirror the friendly team datalink into state.datalinkContacts so
+	// the HUD / cockpit targeting can show team-fused tracks alongside
+	// the player's own radar contacts. When the player toggles their
+	// radar off (silent running), this is the ONLY source of air-picture
+	// data — makes the AWACS datalink observable in-game rather than
+	// just being a behind-the-scenes missile-guidance helper.
+	{
+		const dl = state.team ? getTeamDatalink(state.team) : null;
+		if (dl) {
+			// Map of target→{lon,lat,alt,range,...}; HUD checks membership
+			// and reads fields the same way it reads radar channel data.
+			state.datalinkContacts = dl.allContacts();
+		} else {
+			state.datalinkContacts = null;
+		}
+	}
 
 	// Position integration from player's velocity — FLYING only. When
 	// the player is destroyed, their position freezes on the ground where
@@ -598,23 +623,6 @@ function update(dt) {
 		}
 	}
 
-	const planeHPR = new Cesium.HeadingPitchRoll(
-		Cesium.Math.toRadians(state.heading),
-		Cesium.Math.toRadians(state.pitch),
-		Cesium.Math.toRadians(state.roll)
-	);
-	const planeQuat = Cesium.Quaternion.fromHeadingPitchRoll(planeHPR);
-
-	const orbitHPR = new Cesium.HeadingPitchRoll(
-		Cesium.Math.toRadians(input.cameraYaw),
-		Cesium.Math.toRadians(-input.cameraPitch),
-		0
-	);
-	const orbitQuat = Cesium.Quaternion.fromHeadingPitchRoll(orbitHPR);
-
-	const finalQuat = Cesium.Quaternion.multiply(planeQuat, orbitQuat, new Cesium.Quaternion());
-	const finalHPR = Cesium.HeadingPitchRoll.fromQuaternion(finalQuat);
-
 	// Lazy-create the commander view once Cesium is ready. Share the ref
 	// with the pilot controller so its mouse-drag logic can back off while
 	// the commander's pan-drag is active. Also register the scene with the
@@ -628,38 +636,98 @@ function update(dt) {
 		}
 	}
 
-	// When commander is active, it owns the Cesium camera. Otherwise the
-	// pilot chase-camera drives it.
-	if (!commanderView || !commanderView.active) {
-		setCameraToPlane(
-			state.lon, state.lat, state.alt,
-			Cesium.Math.toDegrees(finalHPR.heading),
-			Cesium.Math.toDegrees(finalHPR.pitch),
-			Cesium.Math.toDegrees(finalHPR.roll)
+	// Cockpit camera math + Cesium camera-set: FLYING only. When CRASHED
+	// the camera freezes on the last-known position (or the commander
+	// view takes over if the player toggles it on).
+	if (isFlying) {
+		const planeHPR = new Cesium.HeadingPitchRoll(
+			Cesium.Math.toRadians(state.heading),
+			Cesium.Math.toRadians(state.pitch),
+			Cesium.Math.toRadians(state.roll)
 		);
+		const planeQuat = Cesium.Quaternion.fromHeadingPitchRoll(planeHPR);
+
+		const orbitHPR = new Cesium.HeadingPitchRoll(
+			Cesium.Math.toRadians(input.cameraYaw),
+			Cesium.Math.toRadians(-input.cameraPitch),
+			0
+		);
+		const orbitQuat = Cesium.Quaternion.fromHeadingPitchRoll(orbitHPR);
+
+		const finalQuat = Cesium.Quaternion.multiply(planeQuat, orbitQuat, new Cesium.Quaternion());
+		const finalHPR = Cesium.HeadingPitchRoll.fromQuaternion(finalQuat);
+
+		// When commander is active, it owns the Cesium camera. Otherwise
+		// the pilot chase-camera drives it.
+		if (!commanderView || !commanderView.active) {
+			setCameraToPlane(
+				state.lon, state.lat, state.alt,
+				Cesium.Math.toDegrees(finalHPR.heading),
+				Cesium.Math.toDegrees(finalHPR.pitch),
+				Cesium.Math.toDegrees(finalHPR.roll)
+			);
+		}
 	}
 
+	// NPCs, HUD, commander: always tick so the world keeps running even
+	// while the player is crashed. Key to the "press M after you die and
+	// watch the rest of the battle" UX.
 	if (npcSystem) {
 		npcSystem.update(dt, state, simTime);
 	}
-	hud.update(state, currentState === States.FLYING ? (npcSystem ? npcSystem.npcs : []) : []);
 
-	// Commander view gets a chance to pan its camera, update markers, and
-	// sample trails. Runs whether active or not — trails keep recording so
-	// switching into the view mid-fight shows useful history.
-	if (commanderView) {
-		const projectiles = (weaponSystem && weaponSystem.projectiles) || [];
-		const units = npcSystem ? npcSystem.npcs : [];
-		commanderView.update(dt, state, units, projectiles);
-
-		// Toggle the pilot overlays based on the commander's state.
-		const cmdActive = commanderView.active;
-		if (planeModel) planeModel.visible = !cmdActive;
-		const uiContainer = document.getElementById('uiContainer');
-		if (uiContainer) uiContainer.style.opacity = cmdActive ? '0' : '';
+	// Scenario tick: scripted movement / telemetry readouts. Runs for both
+	// FLYING and CRASHED so lab-style scenarios (e.g. notching test) keep
+	// updating their readout panels even after the player dies.
+	{
+		const scn = getActiveScenario();
+		if (scn && scn.update) {
+			scn.update({ npcSystem, playerState: state, viewer: getViewer() }, dt);
+		}
 	}
 
-	if (planeModel) {
+	hud.update(state, isFlying ? (npcSystem ? npcSystem.npcs : []) : []);
+
+	if (commanderView) {
+		const projectiles = (weaponSystem && weaponSystem.projectiles) || [];
+		const npcProjs    = (npcSystem && npcSystem.projectiles)    || [];
+		const allProjs    = projectiles.concat(npcProjs);
+		const units = npcSystem ? npcSystem.npcs : [];
+		commanderView.update(dt, state, units, allProjs);
+
+		// Pilot overlays follow commander state. The cockpit plane model
+		// is drawn in camera space — hide it when the god-eye view owns
+		// the camera. UI likewise fades out.
+		const cmdActive = commanderView.active;
+		if (planeModel) planeModel.visible = !cmdActive && isFlying;
+		const uiContainer = document.getElementById('uiContainer');
+		if (uiContainer) uiContainer.style.opacity = cmdActive ? '0' : '';
+
+		// While the player is dead, toggling into the map hides the crash
+		// screen so the whole view is the battlefield. Three.js stays
+		// hidden — the commander view uses Cesium entity markers and
+		// polyline trails for everything. Force display:none inline as
+		// well as the class, belt-and-braces: if any other CSS ended up
+		// leaving the overlay with display:flex + pointer-events:auto, it
+		// would intercept mousedown and break the map drag/tilt even
+		// while the user can't see it.
+		if (currentState === States.CRASHED && crashMenu) {
+			crashMenu.classList.toggle('hidden', cmdActive);
+			if (cmdActive) {
+				crashMenu.style.display = 'none';
+				crashMenu.style.pointerEvents = 'none';
+			} else {
+				crashMenu.style.display = '';
+				crashMenu.style.pointerEvents = '';
+			}
+			_lastLoggedCmdActive = cmdActive;
+		}
+	}
+
+	// Cockpit-space plane model tilt/shake visual block — FLYING-only
+	// because it reads physicsResult + input + prevSpeed (all captured
+	// under the isFlying gate above).
+	if (isFlying && planeModel) {
 		const accel = (state.speed - prevSpeed) / dt;
 		const accelInertia = input.isDragging ? 0 : Math.max(-0.5, Math.min(1.5, accel * 0.001));
 		let targetZ = BASE_PLANE_POS.z - accelInertia;
@@ -737,7 +805,12 @@ function update(dt) {
 			)
 		);
 
-		planeModel.position.copy(visualOffset);
+		// Apply chase-camera zoom. The plane sits in front of the camera
+		// in camera space; scaling the offset scales apparent size (and
+		// the corresponding chase distance). Clamped in the controller
+		// so it can't pass through the airframe or fly off to infinity.
+		const zoom = (input && input.cameraZoom) || 1;
+		planeModel.position.copy(visualOffset).multiplyScalar(zoom);
 
 		const flightLagQ = new THREE.Quaternion().setFromEuler(
 			new THREE.Euler(visualRotation.x, visualRotation.y, visualRotation.z + boostRoll)
@@ -829,8 +902,11 @@ function checkCrash() {
 	// Missile kill: projectile sets state.destroyed=true via hitNPC since
 	// `state` is passed in the target list the same way NPCs are. Handle
 	// this immediately — no 100 ms rate-limit — so the transition is crisp.
-	if (state.destroyed) {
-		state.destroyed = false;
+	// We DON'T clear state.destroyed here: it must stay true while the
+	// player is dead, otherwise the NPC TargetManager will see the player
+	// as an available target at the frozen crash coordinates and keep
+	// firing at thin air. It's reset to false on respawn.
+	if (state.destroyed && currentState === States.FLYING) {
 		_doCrashTransition();
 		return;
 	}
@@ -871,7 +947,7 @@ function animate() {
 		}
 	}
 
-	if (currentState === States.FLYING || currentState === States.PAUSED || currentState === States.TRANSITIONING) {
+	if (currentState === States.FLYING || currentState === States.PAUSED || currentState === States.TRANSITIONING || currentState === States.CRASHED) {
 		const viewer = getViewer();
 
 		renderer.autoClear = false;
@@ -886,10 +962,24 @@ function animate() {
 
 		camera.layers.set(0);
 
-		if (currentState === States.FLYING) {
+		// CRASHED keeps ticking so NPCs continue fighting and the player
+		// can press M to watch from above. update() gates player-specific
+		// work on isFlying internally.
+		if (currentState === States.FLYING || currentState === States.CRASHED) {
 			update(dt);
 		} else if (currentState === States.PAUSED) {
 			hud.updatePauseMenu(state, currentRegionName, npcSystem ? npcSystem.npcs : []);
+			// Keep the commander-view map interactive during Space-pause
+			// (pan / zoom / tilt, marker positions, tooltip content) even
+			// though the simulation is frozen. Passing dt=0 freezes the
+			// trail-sampling timer, contact ageing, etc. — the map's
+			// camera controls still work because they're driven by pointer
+			// events and _applyCamera() inside commanderView.update().
+			if (commanderView && commanderView.active) {
+				const projectiles = ((weaponSystem && weaponSystem.projectiles) || [])
+					.concat((npcSystem && npcSystem.projectiles) || []);
+				commanderView.update(0, state, npcSystem ? npcSystem.npcs : [], projectiles);
+			}
 		}
 
 		if (mixer) mixer.update(dt);
@@ -1026,6 +1116,15 @@ document.getElementById('respawnBtn').onclick = () => {
 
 function enterSpawnPicking(useVignette = true) {
 	state.score = 0;
+	// Let the scenario tear down its overlays / reset state before we
+	// wipe NPCs and rebuild. Safe to call even on first spawn (onStop is
+	// idempotent for all scenarios).
+	{
+		const scn = getActiveScenario();
+		if (scn && scn.onStop) {
+			scn.onStop({ npcSystem, playerState: state, viewer: getViewer(), scene, weaponSystem, hud });
+		}
+	}
 	if (npcSystem) npcSystem.clear();
 	stopAllFlyingSounds(0.3);
 	soundManager.play('zoom-in');
@@ -1350,8 +1449,18 @@ document.getElementById('confirmSpawnBtn').onclick = () => {
 			weaponSystem.resetAmmo();
 		}
 
+		// Respawn clears the dead flag so TargetManager can re-acquire us.
+		state.destroyed = false;
+
+		// Hand off initial world population to the active scenario. For the
+		// default 3-way BVR fight this just seeds one NPC and flips
+		// autoSpawn back on; for lab scenarios like the notching test the
+		// scenario is in charge of placement and disables auto-spawn.
 		if (npcSystem) {
-			npcSystem.spawnNPC(state.lon, state.lat, state.alt);
+			const scn = getActiveScenario();
+			const ctx = { npcSystem, playerState: state, viewer: getViewer(), scene, weaponSystem, hud };
+			if (scn && scn.onStart) scn.onStart(ctx);
+			else npcSystem.spawnNPC(state.lon, state.lat, state.alt);
 		}
 
 		spawnInstruction.classList.add('hidden');
@@ -1397,6 +1506,47 @@ window.addEventListener('keydown', (e) => {
 			openModals.forEach(m => m.classList.add('hidden'));
 			return;
 		}
+	}
+
+	// Space toggles pause while the commander view is open. Lighter-weight
+	// than Escape/P: no pause menu overlay, just freezes the world so you
+	// can survey the battlefield without it evolving under you. The map's
+	// own pan/zoom/tilt still works because we keep ticking commanderView
+	// while paused (see update()). Outside the map, Space falls through so
+	// other systems can use it.
+	// Radar emitter toggle (silent-running test). Bound to 'r' in
+	// cockpit flight only. Commander view also binds 'r' (debug overlay)
+	// but gates on commanderView.active, so the two don't collide. Flips
+	// state.sensors.radar.active, which the unified detectRadar() reads
+	// as the emitter-on check.
+	if (key === 'r' && currentState === States.FLYING &&
+		!(commanderView && commanderView.active)) {
+		if (state.sensors && state.sensors.radar) {
+			state.sensors.radar.active = !state.sensors.radar.active;
+		}
+		e.preventDefault();
+		return;
+	}
+
+	if (key === ' ' && commanderView && commanderView.active) {
+		if (currentState === States.FLYING) {
+			currentState = States.PAUSED;
+			if (dialogueSystem) dialogueSystem.pause();
+			pauseGameplaySounds();
+		} else if (currentState === States.PAUSED) {
+			currentState = States.FLYING;
+			if (dialogueSystem) dialogueSystem.resume();
+			// Defensive: if the user paused with ESC/P first (which shows
+			// the full pause menu), hide it on Space-unpause so the map
+			// isn't left with a lingering overlay.
+			pauseMenu.classList.add('hidden');
+			resumeGameplaySounds();
+		}
+		if (commanderView.setPausedBadge) {
+			commanderView.setPausedBadge(currentState === States.PAUSED);
+		}
+		e.preventDefault();
+		return;
 	}
 
 	if (key === 'escape' || key === 'p') {
@@ -1517,6 +1667,44 @@ initialCameraView = {
 initThree();
 npcSystem = new NPCSystem(viewer, scene, new GLTFLoader());
 setupSpawnPicker();
+
+// Build the main-menu scenario picker from the registry. Dropping a new
+// file in src/systems/scenarios/ and registering it in scenarios/index.js
+// is enough — one card per entry appears automatically, styled to match
+// the tactical-green menu aesthetic.
+(function setupScenarioPicker() {
+	const container = document.getElementById('scenarioCards');
+	if (!container) return;
+
+	const cards = new Map(); // id → DOM element
+
+	const select = (id) => {
+		setActiveScenario(id);
+		for (const [cid, el] of cards) {
+			el.classList.toggle('selected', cid === id);
+			el.setAttribute('aria-pressed', cid === id ? 'true' : 'false');
+		}
+	};
+
+	const firstId = Object.keys(SCENARIOS)[0];
+	for (const [id, scn] of Object.entries(SCENARIOS)) {
+		const card = document.createElement('button');
+		card.type = 'button';
+		card.className = 'scenario-card clickable-ui';
+		card.setAttribute('role', 'radio');
+		card.setAttribute('aria-pressed', 'false');
+		card.innerHTML = `
+			<span class="card-name">${scn.name || id}</span>
+			<span class="card-desc">${scn.description || ''}</span>
+		`;
+		card.addEventListener('click', () => select(id));
+		container.appendChild(card);
+		cards.set(id, card);
+	}
+
+	if (firstId) select(firstId);
+})();
+
 setupLocationSearch();
 loadSettings();
 
