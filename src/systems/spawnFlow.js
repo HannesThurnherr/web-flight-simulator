@@ -242,7 +242,7 @@ export function setupSpawnPicker(ctx) {
 	const { state } = ctx;
 
 	handler.setInputAction((click) => {
-		if (ctx.getCurrentState() !== 'PICK_SPAWN') return;
+		if (ctx.currentState !== 'PICK_SPAWN') return;
 
 		const ray = viewer.camera.getPickRay(click.position);
 		const cartesian = viewer.scene.globe.pick(ray, viewer.scene);
@@ -259,7 +259,7 @@ export function setupSpawnPicker(ctx) {
 			instructionText.textContent = 'FETCHING LOCATION INFO...';
 
 			reverseGeocode(lon, lat).then(regionName => {
-				if (regionName && ctx.getCurrentState() === 'PICK_SPAWN') {
+				if (regionName && ctx.currentState === 'PICK_SPAWN') {
 					instructionText.textContent = regionName;
 					if (spawnMarker) {
 						spawnMarker.label.text = regionName;
