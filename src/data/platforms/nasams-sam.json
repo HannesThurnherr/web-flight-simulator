@@ -1,0 +1,40 @@
+{
+	"id": "nasams-sam",
+	"name": "NASAMS SAM Site",
+	"kind": "ground",
+	"model": "/assets/models/mim-104-patriot.glb",
+	"modelRotation": { "x": 0, "y": 0, "z": 0 },
+	"modelScale": 1.0,
+	"signature": "sam_site",
+	"groundOffsetM": 0,
+	"sensors": {
+		"radar": {
+			"enabled": true,
+			"active": true,
+			"mode": "search",
+			"nominalRange": 75000,
+			"referenceRcs": 5,
+			"fovHalfHDeg": 180,
+			"fovHalfVDeg": 85,
+			"notchThreshold": 60
+		}
+	},
+	"pilot": {
+		"type": "static-sam",
+		"defaultParams": {
+			"missileType": "NASAMS-MSL",
+			"magazine": 8,
+			"salvoSize": 2,
+			"conserveLastN": 2,
+			"intraSalvoGapS": 1.2,
+			"perTargetReengageS": 20,
+			"maxInFlight": 4,
+			"minRangeM": 1500,
+			"maxRangeM": 25000
+		}
+	},
+	"physicsOverrides": {
+		"mass": 30000,
+		"wingArea": 1
+	}
+}

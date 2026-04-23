@@ -1,0 +1,34 @@
+{
+	"id": "aim-9x",
+	"name": "AIM-9X SIDEWINDER",
+	"shortName": "AIM-9X",
+	"category": "AAM",
+	"tags": ["aam", "wvr", "ir", "fox-2", "hobs"],
+	"massKg": 85,
+	"rcsContributionM2": 0.01,
+	"description": "High off-boresight imaging IR seeker for within-visual-range dogfighting.",
+	"simType": "AIM-9",
+	"signature": "missile_ir",
+	"seekerType": "ir",
+	"flight": {
+		"launchSpeedOffset": 50,
+		"boostDurationS": 4.0,
+		"boostAccel": 290,
+		"peakSpeed": 920,
+		"minSpeed": 80,
+		"maxLifeS": 45,
+		"maxTurnDegPerSec": 80,
+		"pnGain": 4.0,
+		"dragRef": 20,
+		"dragRefSpeed": 700,
+		"dragRefAltitude": 5000
+	},
+	"warhead": {
+		"killRadiusM": 10,
+		"fuzeSenseRadiusM": 20
+	},
+	"seeker": {
+		"coneHalfAngleDeg": 90,
+		"maxG": 40
+	}
+}

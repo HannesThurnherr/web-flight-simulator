@@ -1,0 +1,33 @@
+{
+	"id": "e-767-awacs",
+	"name": "Boeing E-767 AWACS",
+	"kind": "airborne",
+	"model": "/assets/models/e-767-awacs.glb",
+	"modelRotation": { "x": 0, "y": 0, "z": 0 },
+	"signature": "awacs",
+	"sensors": {
+		"radar": {
+			"enabled": true,
+			"active": true,
+			"mode": "search",
+			"nominalRange": 500000,
+			"referenceRcs": 5,
+			"fovHalfHDeg": 180,
+			"fovHalfVDeg": 90,
+			"notchThreshold": 60
+		}
+	},
+	"pilot": {
+		"type": "orbit",
+		"defaultParams": {
+			"radiusM":      40000,
+			"altitudeM":    11000,
+			"throttle":     0.6,
+			"targetSpeed":  180
+		}
+	},
+	"physicsOverrides": {
+		"mass": 180000,
+		"wingArea": 300
+	}
+}

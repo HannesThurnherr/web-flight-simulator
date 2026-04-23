@@ -426,9 +426,15 @@ function scanVisual(observer, target, now) {
 // sensable thing (player, NPCs, missiles). `now` is a monotonic sim-time
 // scalar — same convention as commanderView uses.
 export function updateSensors(units, now, dt) {
-	// Scan step.
+	// Scan step. A destroyed / inactive observer doesn't scan — its
+	// radar is off, its eyes are closed. Previously we only filtered
+	// out destroyed TARGETS, so a dead player's radar kept populating
+	// contacts, which in turn kept refreshing team-datalink fused
+	// tracks — resulting in in-flight friendly missiles staying in DL
+	// mode after the player died even with no other platform around.
 	for (const observer of units) {
 		if (!observer || !observer.sensors) continue;
+		if (observer.destroyed || observer.active === false) continue;
 		for (const target of units) {
 			if (!target || target === observer) continue;
 			if (target.destroyed || target.active === false) continue;

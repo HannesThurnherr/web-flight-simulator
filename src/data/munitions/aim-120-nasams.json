@@ -1,0 +1,47 @@
+{
+	"id": "aim-120-nasams",
+	"name": "AIM-120 NASAMS (SL-AMRAAM)",
+	"shortName": "SL-AMRAAM",
+	"category": "SAM",
+	"tags": ["sam", "sl-amraam", "active-radar", "medium-range"],
+	"massKg": 161,
+	"rcsContributionM2": 0.05,
+	"description": "Surface-launched AIM-120 AMRAAM for NASAMS (National Advanced Surface-to-Air Missile System). Longer boost burn than the air-launched variant to offset launching from 0 m/s, shorter effective range (~25 km) against fighter-class targets. Real-world reference: NASAMS-II fire unit with AN/MPQ-64 Sentinel radar. Active-radar homing with midcourse datalink from the fire-control radar, same seeker as air-launched AMRAAM.",
+	"simType": "NASAMS-MSL",
+	"signature": "missile_sam",
+	"seekerType": "active_radar",
+	"flight": {
+		"launchSpeedOffset": 30,
+		"boostDurationS": 6.0,
+		"boostAccel": 220,
+		"peakSpeed": 1100,
+		"minSpeed": 60,
+		"maxLifeS": 50,
+		"maxTurnDegPerSec": 50,
+		"pnGain": 4.0,
+		"dragRef": 14,
+		"dragRefSpeed": 900,
+		"dragRefAltitude": 3000
+	},
+	"warhead": {
+		"killRadiusM": 15,
+		"fuzeSenseRadiusM": 30,
+		"missAbortRadiusMul": 2
+	},
+	"loft": {
+		"terminalRangeM": 8000,
+		"maxLoftRangeM": 25000,
+		"maxLoftDeg": 35
+	},
+	"seeker": {
+		"activeRangeM": 14000,
+		"fovHalfAngleDeg": 30,
+		"nominalDetectRangeM": 22000,
+		"referenceRcs": 5,
+		"notchThresholdAcquire": 30,
+		"notchThresholdTrack": 15,
+		"lockDropTimeoutS": 1.5,
+		"reacquireIntervalS": 0.25,
+		"datalink": true
+	}
+}

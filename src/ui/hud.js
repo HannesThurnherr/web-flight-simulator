@@ -2,6 +2,18 @@ import { setMinimapCamera, getMiniViewer, getViewer, setPauseMinimapCamera, getP
 import { calculateDistance } from '../world/regions';
 import * as Cesium from 'cesium';
 
+// Team → HUD accent color. Shared across the on-screen diamond, minimap
+// icons, and (in future) the radar scope. Friendlies get the familiar
+// mil-standard cyan; the two hostile factions get their faction colors
+// so a 3-way merge is immediately legible. Unknown teams fall through
+// to red — the safest default for "assume hostile".
+function _hudTeamColor(team) {
+	if (team === 'friendly')     return '#40d8ff';
+	if (team === 'hostile-red')  return '#ff4040';
+	if (team === 'hostile-blue') return '#4080ff';
+	return '#ff4040';
+}
+
 export class HUD {
 	constructor() {
 		this.speedElem = document.getElementById('speed');
@@ -63,6 +75,11 @@ export class HUD {
 
 		this.smoothedPitch = 0;
 		this.smoothedRoll = 0;
+		// The pitch ladder (horizon bar + degree lines) is the primary
+		// attitude reference — default it ON. Previously this defaulted
+		// to false and the ladder was hidden unless something flipped
+		// the toggle, which meant no visible horizon at all.
+		this.showHorizonLines = true;
 		this.smoothedHeading = 0;
 		this.smoothedThrottle = 0;
 		this.smoothedYaw = 0;
@@ -71,17 +88,24 @@ export class HUD {
 		this.currentShakeY = 0;
 
 		this.minimapRange = 1;
-		this.showHorizonLines = false;
 
 		this.npcMarkers = new Map();
 		this.npcContainer = document.createElement('div');
 		this.npcContainer.id = 'npc-markers-layer';
-		this.npcContainer.style.cssText = 'position:absolute; top:0; left:0; width:100%; height:100%; pointer-events:none; z-index:15;';
-		this.uiContainer.appendChild(this.npcContainer);
+		// Appended as a sibling of uiContainer (direct child of body),
+		// not INSIDE uiContainer. That way the markers stay visible when
+		// the pilot HUD is hidden — specifically when the spectator
+		// camera is following another unit (main.js sets uiContainer
+		// opacity to 0 in that mode). Seeing where every unit is on
+		// screen while watching the action from behind one of them is
+		// the whole point of spectator view.
+		this.npcContainer.style.cssText = 'position:fixed; top:0; left:0; width:100%; height:100%; pointer-events:none; z-index:15;';
+		document.body.appendChild(this.npcContainer);
 
 		this.createHorizon();
 		this.createMissileCrosshair();
 		this.createCompass();
+		this.createMinimapZoomButtons();
 		this.createFlightDataPanel();
 		this.createStallWarning();
 		this.createAfterburnerIndicator();
@@ -89,6 +113,7 @@ export class HUD {
 		this.createMissileMarkerLayer();
 		this.createMouseSteeringOverlay();
 		this.createRwrScope();
+		this.createGunReticle();
 		this.resizeMinimap();
 		window.addEventListener('resize', () => this.resizeMinimap());
 	}
@@ -259,12 +284,12 @@ export class HUD {
 		cursorDot.setAttribute('stroke-width', '1.5');
 		svg.appendChild(cursorDot);
 
+		// "MOUSE STEER" badge removed — the cursor-to-centre line itself
+		// plus the two dots make the mode visually obvious, and the text
+		// competed with the pitch ladder for attention at the centre of
+		// the HUD. Leave a stub element in place so the refs in
+		// `updateMouseSteeringOverlay` don't have to be rewritten.
 		const badge = document.createElementNS(NS, 'text');
-		badge.setAttribute('fill', '#0f0');
-		badge.setAttribute('font-family', 'AceCombat, monospace');
-		badge.setAttribute('font-size', '11');
-		badge.setAttribute('letter-spacing', '2');
-		badge.textContent = 'MOUSE STEER';
 		svg.appendChild(badge);
 
 		this.uiContainer.appendChild(svg);
@@ -809,6 +834,100 @@ export class HUD {
 		this.minimapRange = range;
 	}
 
+	// Discrete zoom levels cycled by the on-screen +/- buttons. `1` is
+	// the "default" range used by the old settings dropdown, the rest
+	// are a log-ish progression above and below so each click noticeably
+	// changes what's visible. `minimapRange` is a multiplier the draw
+	// code already consumes — many places use `range * 1000` or similar,
+	// so these values need to stay reasonable.
+	_minimapZoomLevels = [0.5, 1, 2, 5, 10, 20, 50];
+
+	// Step the minimap zoom. +1 = zoom in (smaller range = see less area,
+	// each unit appears bigger), -1 = zoom out (larger range). Called by
+	// the on-screen +/− buttons and potentially future keybindings.
+	adjustMinimapZoom(delta) {
+		const levels = this._minimapZoomLevels;
+		// Find the level closest to the current range, since the setting
+		// could have been changed via the dropdown or a scenario to a
+		// value that isn't exactly on our list.
+		let idx = 0, bestDiff = Infinity;
+		for (let i = 0; i < levels.length; i++) {
+			const d = Math.abs(levels[i] - this.minimapRange);
+			if (d < bestDiff) { bestDiff = d; idx = i; }
+		}
+		// +1 (zoom in) ⇒ go to a SMALLER range ⇒ earlier index.
+		idx = Math.max(0, Math.min(levels.length - 1, idx - delta));
+		this.minimapRange = levels[idx];
+	}
+
+	// On-screen +/- buttons inside the minimap frame. Added once at
+	// setup; click handlers call adjustMinimapZoom.
+	createMinimapZoomButtons() {
+		const container = document.getElementById('minimap-container');
+		if (!container) return;
+		if (container.querySelector('.minimap-zoom-btn')) return; // idempotent
+
+		const btnBase = `
+			position: absolute;
+			right: 4px;
+			width: 22px;
+			height: 22px;
+			background: rgba(0, 40, 0, 0.6);
+			border: 1px solid #0f0;
+			color: #0f0;
+			font-family: 'AceCombat', monospace;
+			font-size: 16px;
+			font-weight: bold;
+			line-height: 18px;
+			text-align: center;
+			cursor: pointer;
+			pointer-events: auto;
+			z-index: 10;
+			user-select: none;
+			box-shadow: 0 0 6px rgba(0, 255, 0, 0.4);
+			padding: 0;
+		`;
+
+		// Swallow mousedown as well as click. planeController wires the
+		// LMB fire-trigger to the `mousedown` event at window level, and
+		// `mousedown` fires BEFORE `click`. If we only stopPropagation
+		// on the click, pressing the zoom buttons would still fire a
+		// round of missile/gun before the zoom happens. `preventDefault`
+		// on mousedown also blocks the browser from starting any drag /
+		// text-select behaviour that could follow.
+		const swallow = (e) => {
+			e.stopPropagation();
+			e.preventDefault();
+		};
+
+		const zoomInBtn = document.createElement('button');
+		zoomInBtn.className = 'minimap-zoom-btn';
+		zoomInBtn.textContent = '+';
+		zoomInBtn.title = 'Zoom in (tighter range)';
+		zoomInBtn.style.cssText = btnBase + 'top: 4px;';
+		zoomInBtn.addEventListener('mousedown', swallow);
+		zoomInBtn.addEventListener('mouseup',   swallow);
+		zoomInBtn.addEventListener('click', (e) => {
+			swallow(e);
+			this.adjustMinimapZoom(+1);
+		});
+
+		const zoomOutBtn = document.createElement('button');
+		zoomOutBtn.className = 'minimap-zoom-btn';
+		zoomOutBtn.textContent = '\u2212'; // real minus sign (U+2212), looks balanced
+		zoomOutBtn.title = 'Zoom out (wider range)';
+		zoomOutBtn.style.cssText = btnBase + 'top: 30px;';
+		zoomOutBtn.addEventListener('mousedown', swallow);
+		zoomOutBtn.addEventListener('mouseup',   swallow);
+		zoomOutBtn.addEventListener('click', (e) => {
+			swallow(e);
+			this.adjustMinimapZoom(-1);
+		});
+
+		container.appendChild(zoomInBtn);
+		container.appendChild(zoomOutBtn);
+	}
+
 	setShowHorizonLines(show) {
 		this.showHorizonLines = show;
 		const lines = document.getElementById('pitch-lines');
@@ -960,6 +1079,18 @@ export class HUD {
 			crosshair.appendChild(topTick);
 			horizon.appendChild(crosshair);
 
+			// Pitch ladder. NATO convention:
+			//   - solid horizontal line at 0° (the "horizon bar")
+			//   - solid lines every 5° above with small down-ticks at the
+			//     ends (indicating "pitch up from horizon")
+			//   - dashed lines every 5° below with up-ticks at the ends
+			//     (indicating "pitch down below horizon")
+			//   - number label at both ends of every line, oriented so the
+			//     readout is upright from the pilot's POV
+			// The whole ladder is inside horizon-container, which rotates
+			// with roll — so the ladder tilts with the aircraft and the
+			// horizon bar visually separates sky from ground the way a
+			// real horizon would.
 			const pitchLines = document.createElement('div');
 			pitchLines.id = 'pitch-lines';
 			pitchLines.style.cssText = `
@@ -968,28 +1099,253 @@ export class HUD {
 				height: 100%;
 			`;
 
-			for (let i = -90; i <= 90; i += 10) {
-				if (i === 0) continue;
+			// Track the line elements so the update loop can reposition
+			// them whenever the 3D camera's FOV changes (zoom in / zoom
+			// out / window resize). The vertical spacing between lines
+			// must equal the 3D view's pixels-per-degree or the ladder
+			// will lag the real horizon.
+			this.ladderLines = [];
+
+			for (let i = -90; i <= 90; i += 5) {
+				const isHorizon = (i === 0);
+				// NATO-style: finer granularity, only show labels at
+				// 5° increments that are multiples of 5. Skip the 0°
+				// since it's the horizon bar (labeled via a separate
+				// "+0" or just unlabeled).
 				const line = document.createElement('div');
+				line.dataset.pitchDeg = String(i);
+
+				// Thicker, full-width for 0° (horizon), thinner & shorter for
+				// above/below; below gets a dashed stroke for "pitch down".
+				const isBelow = i < 0;
+				const lineWidth = isHorizon ? 70 : (i % 10 === 0 ? 22 : 12);
+				const leftPct = 50 - lineWidth / 2;
 				line.style.cssText = `
 					position: absolute;
-					left: 30%;
-					width: 40%;
-					height: 1px;
-					background: rgba(0, 255, 0, 0.5);
-					top: ${50 - i}% ;
-					text-align: center;
-					font-size: 10px;
+					left: ${leftPct}%;
+					width: ${lineWidth}%;
+					height: ${isHorizon ? 2 : 1}px;
+					top: 50%;
+					${isHorizon
+						? 'background: rgba(0, 255, 0, 0.9); box-shadow: 0 0 6px rgba(0, 255, 0, 0.5);'
+						: isBelow
+							? 'background: transparent; border-top: 1px dashed rgba(0, 255, 0, 0.55);'
+							: 'background: rgba(0, 255, 0, 0.55);'}
 				`;
-				line.innerText = i;
+				this.ladderLines.push(line);
+
+				// End ticks on above-horizon lines (pitch-up) point DOWN;
+				// on below-horizon lines (pitch-down) they point UP. Classic
+				// HUD convention that lets a pilot instantly read "which
+				// side of horizon" during violent manoeuvres.
+				if (!isHorizon && i % 10 === 0) {
+					const tickL = document.createElement('div');
+					const tickR = document.createElement('div');
+					const tickStyle = `
+						position: absolute;
+						width: 1px;
+						height: 6px;
+						background: rgba(0, 255, 0, 0.55);
+					`;
+					tickL.style.cssText = tickStyle + `left: 0; top: ${isBelow ? -6 : 0}px;`;
+					tickR.style.cssText = tickStyle + `right: 0; top: ${isBelow ? -6 : 0}px;`;
+					line.appendChild(tickL);
+					line.appendChild(tickR);
+
+					// Degree labels at both ends (left and right side of
+					// the ladder). Minus sign is only shown below.
+					const makeLabel = (side) => {
+						const el = document.createElement('div');
+						el.style.cssText = `
+							position: absolute;
+							${side}: -26px;
+							top: -7px;
+							color: rgba(0, 255, 0, 0.75);
+							font-size: 10px;
+							font-family: 'AceCombat', monospace;
+							text-shadow: 0 0 4px rgba(0, 255, 0, 0.6);
+						`;
+						el.innerText = `${i}`;
+						return el;
+					};
+					line.appendChild(makeLabel('left'));
+					line.appendChild(makeLabel('right'));
+				}
+
 				pitchLines.appendChild(line);
 			}
 
+			// Flight-path marker ("velocity vector" / "waterline" / FPM).
+			// Small circle with three short spokes — top, left, right —
+			// that marks where the aircraft is actually going relative
+			// to where its nose is pointed.
+			//
+			// NOTE: deliberately NOT a child of horizon-container. The
+			// marker is world-referenced (screen-up always means the
+			// velocity is above the nose in world pitch, screen-right
+			// always means the velocity is to the right of the nose in
+			// world heading), so it must stay un-rotated regardless of
+			// bank. If it lived inside horizon-container it would pick
+			// up the −roll rotation and, in a banked turn, pitch input
+			// would move it sideways across the screen — which reads as
+			// broken to the pilot even though real HUDs do it that way.
+			const fpm = document.createElement('div');
+			fpm.id = 'flight-path-marker';
+			fpm.style.cssText = `
+				position: absolute;
+				top: 50%;
+				left: 50%;
+				width: 18px;
+				height: 18px;
+				transform: translate(-50%, -50%);
+				pointer-events: none;
+				z-index: 11;
+			`;
+			const fpmSvgNS = 'http://www.w3.org/2000/svg';
+			const fpmSvg = document.createElementNS(fpmSvgNS, 'svg');
+			fpmSvg.setAttribute('width', '18');
+			fpmSvg.setAttribute('height', '18');
+			fpmSvg.setAttribute('viewBox', '0 0 18 18');
+			const fpmCircle = document.createElementNS(fpmSvgNS, 'circle');
+			fpmCircle.setAttribute('cx', '9'); fpmCircle.setAttribute('cy', '9');
+			fpmCircle.setAttribute('r', '4');
+			fpmCircle.setAttribute('fill', 'none');
+			fpmCircle.setAttribute('stroke', '#0f0');
+			fpmCircle.setAttribute('stroke-width', '1.5');
+			fpmSvg.appendChild(fpmCircle);
+			// Three spokes: top + two horizontals.
+			for (const [x1, y1, x2, y2] of [[9, 0, 9, 5], [0, 9, 5, 9], [13, 9, 18, 9]]) {
+				const l = document.createElementNS(fpmSvgNS, 'line');
+				l.setAttribute('x1', x1); l.setAttribute('y1', y1);
+				l.setAttribute('x2', x2); l.setAttribute('y2', y2);
+				l.setAttribute('stroke', '#0f0');
+				l.setAttribute('stroke-width', '1.5');
+				fpmSvg.appendChild(l);
+			}
+			fpm.appendChild(fpmSvg);
+
 			horizon.appendChild(pitchLines);
 			ui.appendChild(horizon);
+			// FPM is appended to uiContainer AFTER horizon-container so
+			// it stacks on top of the ladder visually.
+			ui.appendChild(fpm);
 
 			this.setShowHorizonLines(this.showHorizonLines);
 		}
+	}
+
+	// NOTE: createBankIndicator() removed. The tilting pitch-ladder +
+	// horizon bar already convey bank angle directly (line on the
+	// ground horizon tilts) — adding a separate arc/pointer was
+	// redundant and cluttered the centre of the HUD.
+	_removed_createBankIndicator() {
+		if (document.getElementById('bank-indicator')) return;
+		const ui = document.getElementById('uiContainer');
+
+		const container = document.createElement('div');
+		container.id = 'bank-indicator';
+		container.style.cssText = `
+			position: absolute;
+			top: 50%;
+			left: 50%;
+			width: 360px;
+			height: 360px;
+			transform: translate(-50%, -50%);
+			pointer-events: none;
+		`;
+
+		const svgNS = 'http://www.w3.org/2000/svg';
+		const svg = document.createElementNS(svgNS, 'svg');
+		svg.setAttribute('width', '360');
+		svg.setAttribute('height', '360');
+		svg.style.cssText = 'position:absolute; inset:0;';
+
+		const cx = 180, cy = 180, r = 150;
+
+		// Tick angles. Longer ticks at the "major" references (0, ±30,
+		// ±60), shorter at ±10, ±20, ±45. Angles given in aviation
+		// convention: 0° = nose up (12 o'clock), +ve = right bank.
+		const ticks = [
+			{ a:   0, len: 12 },
+			{ a: -10, len:  6 }, { a:  10, len:  6 },
+			{ a: -20, len:  6 }, { a:  20, len:  6 },
+			{ a: -30, len: 10 }, { a:  30, len: 10 },
+			{ a: -45, len:  8 }, { a:  45, len:  8 },
+			{ a: -60, len: 10 }, { a:  60, len: 10 },
+		];
+		for (const { a, len } of ticks) {
+			// Screen-space position: 0° at the top (12 o'clock) is at
+			// angle -π/2; a positive bank angle rotates clockwise from
+			// there.
+			const rad = (a - 90) * Math.PI / 180;
+			const x1 = cx + r * Math.cos(rad);
+			const y1 = cy + r * Math.sin(rad);
+			const x2 = cx + (r - len) * Math.cos(rad);
+			const y2 = cy + (r - len) * Math.sin(rad);
+			const line = document.createElementNS(svgNS, 'line');
+			line.setAttribute('x1', x1); line.setAttribute('y1', y1);
+			line.setAttribute('x2', x2); line.setAttribute('y2', y2);
+			line.setAttribute('stroke', '#0f0');
+			line.setAttribute('stroke-width', '2');
+			line.setAttribute('opacity', '0.7');
+			svg.appendChild(line);
+		}
+
+		// Fine guide arc in the upper half so the eye can trace between
+		// ticks. Drawn with a reduced opacity so it's a subtle "rail"
+		// rather than a dominant element.
+		const arc = document.createElementNS(svgNS, 'path');
+		// Path: arc from -60° to +60° over the top of the circle.
+		const aRad = (60 - 90) * Math.PI / 180;
+		const bRad = (-60 - 90) * Math.PI / 180;
+		const ax = cx + r * Math.cos(bRad), ay = cy + r * Math.sin(bRad);
+		const bx = cx + r * Math.cos(aRad), by = cy + r * Math.sin(aRad);
+		arc.setAttribute('d', `M ${ax} ${ay} A ${r} ${r} 0 0 1 ${bx} ${by}`);
+		arc.setAttribute('fill', 'none');
+		arc.setAttribute('stroke', '#0f0');
+		arc.setAttribute('stroke-width', '1');
+		arc.setAttribute('opacity', '0.25');
+		svg.appendChild(arc);
+
+		container.appendChild(svg);
+
+		// Pointer — a small triangle that sits just inside the arc at
+		// 12 o'clock. Lives in its own wrapper so we can rotate it per
+		// frame without touching the static SVG.
+		const pointerWrap = document.createElement('div');
+		pointerWrap.id = 'bank-pointer-wrap';
+		pointerWrap.style.cssText = `
+			position: absolute;
+			top: 50%;
+			left: 50%;
+			width: 360px;
+			height: 360px;
+			transform: translate(-50%, -50%) rotate(0deg);
+			pointer-events: none;
+			transform-origin: center center;
+		`;
+		const pointer = document.createElement('div');
+		// Downward-pointing triangle (base up, apex down), sits just
+		// below the arc's 12 o'clock tick so it reads as "this is where
+		// my wings are tilted to". Positioned with `top` relative to
+		// the wrap's centre via transform arithmetic: r - 16 px below
+		// the centre from the top, then the triangle's apex.
+		pointer.style.cssText = `
+			position: absolute;
+			top: ${180 - r + 4}px;
+			left: 50%;
+			width: 0;
+			height: 0;
+			border-left: 7px solid transparent;
+			border-right: 7px solid transparent;
+			border-top: 12px solid #0f0;
+			transform: translateX(-50%);
+			filter: drop-shadow(0 0 3px rgba(0, 255, 0, 0.7));
+		`;
+		pointerWrap.appendChild(pointer);
+		container.appendChild(pointerWrap);
+
+		ui.appendChild(container);
 	}
 
 	updatePauseMenu(state, currentRegionName, npcs = []) {
@@ -1071,6 +1427,11 @@ export class HUD {
 		const pixelsPerMeter = h / verticalMeters;
 
 		npcs.forEach(npc => {
+			// Gate on the player's fused picture — minimap should not
+			// leak god-mode position info for bogeys the player hasn't
+			// detected on any channel.
+			if (!this._playerCanSee(state, npc)) return;
+
 			const dx_m = (npc.lon - state.lon) * 111320 * Math.cos(state.lat * Math.PI / 180);
 			const dy_m = (npc.lat - state.lat) * 111320;
 
@@ -1079,7 +1440,8 @@ export class HUD {
 
 			if (px < 0 || px > w || py < 0 || py > h) return;
 
-			ctx.strokeStyle = '#fff';
+			const teamC = _hudTeamColor(npc.team);
+			ctx.strokeStyle = teamC;
 			ctx.lineWidth = 2;
 			ctx.save();
 			ctx.translate(px, py);
@@ -1089,10 +1451,243 @@ export class HUD {
 			ctx.stroke();
 			ctx.restore();
 
-			ctx.fillStyle = '#fff';
+			ctx.fillStyle = teamC;
 			ctx.font = '10px AceCombat';
 			ctx.fillText(npc.name || "BOGEY", px + 10, py + 5);
 		});
+	}
+
+	// Gun reticle — a fixed boresight cross at screen centre plus a
+	// lead-computed "pipper" ring showing where bullets fired NOW will
+	// actually hit the currently-locked (or closest-in-cone) target.
+	// Classic LCOS gunsight behaviour: pull the pipper onto the bandit,
+	// squeeze the trigger. Only renders while the gun is the selected
+	// weapon; hidden otherwise so it doesn't clutter missile workflows.
+	createGunReticle() {
+		const layer = document.createElement('div');
+		layer.id = 'gun-reticle-layer';
+		layer.style.cssText = 'position:absolute; top:0; left:0; width:100%; height:100%; pointer-events:none; z-index:16; display:none;';
+
+		// Boresight cross (where the nose is pointing — where bullets
+		// leave the muzzle, before target motion).
+		const boresight = document.createElement('div');
+		boresight.style.cssText = 'position:absolute; left:50%; top:50%; transform:translate(-50%,-50%); width:40px; height:40px; pointer-events:none;';
+		boresight.innerHTML = `
+			<svg width="40" height="40" viewBox="-20 -20 40 40" style="overflow:visible;">
+				<line x1="-18" y1="0"  x2="-6" y2="0" stroke="#0f0" stroke-width="1.5"/>
+				<line x1="6"   y1="0"  x2="18" y2="0" stroke="#0f0" stroke-width="1.5"/>
+				<line x1="0"   y1="-18" x2="0" y2="-6" stroke="#0f0" stroke-width="1.5"/>
+				<line x1="0"   y1="6"   x2="0" y2="18" stroke="#0f0" stroke-width="1.5"/>
+				<circle cx="0" cy="0" r="1.5" fill="#0f0"/>
+			</svg>
+		`;
+		layer.appendChild(boresight);
+
+		// Pipper — the solved-lead aimpoint. Translates each frame to
+		// the predicted target intercept. Dashed funnel line back to
+		// the boresight makes the solution legible at a glance.
+		const pipper = document.createElement('div');
+		pipper.style.cssText = 'position:absolute; left:0; top:0; width:34px; height:34px; transform:translate(-50%,-50%); pointer-events:none; display:none;';
+		pipper.innerHTML = `
+			<svg width="34" height="34" viewBox="-17 -17 34 34" style="overflow:visible;">
+				<circle cx="0" cy="0" r="14" fill="none" stroke="#0f0" stroke-width="2"/>
+				<circle cx="0" cy="0" r="2"  fill="#0f0"/>
+				<line x1="-14" y1="0" x2="-17" y2="0" stroke="#0f0" stroke-width="2"/>
+				<line x1="14"  y1="0" x2="17"  y2="0" stroke="#0f0" stroke-width="2"/>
+				<line x1="0" y1="-14" x2="0" y2="-17" stroke="#0f0" stroke-width="2"/>
+				<line x1="0" y1="14"  x2="0" y2="17"  stroke="#0f0" stroke-width="2"/>
+			</svg>
+		`;
+		layer.appendChild(pipper);
+
+		// Funnel line: pipper ↔ boresight. SVG line updated each frame.
+		const funnel = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+		funnel.setAttribute('style', 'position:absolute; left:0; top:0; width:100%; height:100%; pointer-events:none; overflow:visible;');
+		const funnelLine = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+		funnelLine.setAttribute('stroke', '#0f0');
+		funnelLine.setAttribute('stroke-width', '1');
+		funnelLine.setAttribute('stroke-dasharray', '3,3');
+		funnelLine.setAttribute('opacity', '0.6');
+		funnel.appendChild(funnelLine);
+		layer.appendChild(funnel);
+
+		// Range readout under the pipper — "0.8 km" tells the pilot
+		// whether a gun snapshot is even worth taking (>2 km is wishful
+		// thinking with a 20 mm).
+		const rangeLabel = document.createElement('div');
+		rangeLabel.style.cssText = 'position:absolute; left:0; top:0; transform:translate(-50%, 20px); font-family:AceCombat; font-size:11px; color:#0f0; text-shadow:0 0 4px rgba(0,255,0,0.6); white-space:nowrap; pointer-events:none; display:none;';
+		layer.appendChild(rangeLabel);
+
+		this.uiContainer.appendChild(layer);
+		this.gunReticle = { layer, boresight, pipper, funnel, funnelLine, rangeLabel };
+	}
+
+	// Solve for gun lead: where will the target be when a bullet fired
+	// right now reaches it? Iterative solution — bullet speed is fast
+	// enough that one or two passes converge. Bullet speed matches
+	// Bullet.js: plane speed + 1500 m/s muzzle velocity.
+	updateGunReticle(state, npcs) {
+		const ret = this.gunReticle;
+		if (!ret) return;
+
+		const ws = state.weaponSystem;
+		const weapon = ws && ws.getCurrentWeapon && ws.getCurrentWeapon();
+		const isGun  = weapon && weapon.id === 'gun';
+		if (!isGun) {
+			ret.layer.style.display = 'none';
+			return;
+		}
+		ret.layer.style.display = 'block';
+
+		// Prefer whatever the lock logic already picked; falls back to
+		// a short-range cone search so the pipper still shows something
+		// useful during an unguided snapshot pass.
+		let target = ws.lockingTarget || null;
+		if (!target) target = this._findGunTarget(state, npcs);
+		if (!target || target.destroyed) {
+			ret.pipper.style.display = 'none';
+			ret.funnelLine.setAttribute('x1', '0'); ret.funnelLine.setAttribute('x2', '0');
+			ret.funnelLine.setAttribute('y1', '0'); ret.funnelLine.setAttribute('y2', '0');
+			ret.rangeLabel.style.display = 'none';
+			return;
+		}
+
+		const viewer = getViewer();
+		const scene  = viewer && viewer.scene;
+		const camera = scene && scene.camera;
+		if (!scene || !camera) return;
+
+		// Target state → ENU velocity vector (m/s).
+		const tHdg = Cesium.Math.toRadians(target.heading || 0);
+		const tPit = Cesium.Math.toRadians(target.pitch   || 0);
+		const tSpd = target.speed || 0;
+		const tvE = Math.sin(tHdg) * Math.cos(tPit) * tSpd;
+		const tvN = Math.cos(tHdg) * Math.cos(tPit) * tSpd;
+		const tvU = Math.sin(tPit) * tSpd;
+
+		// Player state → ENU velocity vector for relative-motion lead.
+		const pHdg = Cesium.Math.toRadians(state.heading || 0);
+		const pPit = Cesium.Math.toRadians(state.pitch   || 0);
+		const pSpd = state.speed || 0;
+		const pvE = Math.sin(pHdg) * Math.cos(pPit) * pSpd;
+		const pvN = Math.cos(pHdg) * Math.cos(pPit) * pSpd;
+		const pvU = Math.sin(pPit) * pSpd;
+
+		// Muzzle velocity in world frame: plane's forward unit × (spd+1500).
+		// Since a bullet inherits the player's velocity, its ground speed
+		// is pSpd + 1500 along the boresight — same as Bullet.speed.
+		const bulletSpd = pSpd + 1500;
+
+		// Initial range & tof estimate.
+		const cosLat = Math.cos(state.lat * Math.PI / 180);
+		let dE = (target.lon - state.lon) * 111320 * cosLat;
+		let dN = (target.lat - state.lat) * 111320;
+		let dU = (target.alt - state.alt);
+		let range = Math.sqrt(dE*dE + dN*dN + dU*dU);
+		let tof = range / bulletSpd;
+
+		// Two iterations — the bullet's forward motion cancels against
+		// its own velocity, so we lead by the TARGET's velocity over
+		// tof. (Treating the bullet as straight-line, no gravity — fine
+		// for the ~1s flight times at gun range.)
+		for (let i = 0; i < 2; i++) {
+			const lE = dE + tvE * tof;
+			const lN = dN + tvN * tof;
+			const lU = dU + tvU * tof;
+			const lr = Math.sqrt(lE*lE + lN*lN + lU*lU);
+			tof = lr / bulletSpd;
+		}
+
+		const leadE = dE + tvE * tof;
+		const leadN = dN + tvN * tof;
+		const leadU = dU + tvU * tof;
+
+		// Back to lon/lat/alt for Cesium projection.
+		const leadLon = state.lon + leadE / (111320 * cosLat);
+		const leadLat = state.lat + leadN / 111320;
+		const leadAlt = state.alt + leadU;
+
+		const scratch = Cesium.Cartesian3.fromDegrees(leadLon, leadLat, leadAlt);
+		const playerPos = Cesium.Cartesian3.fromDegrees(state.lon, state.lat, state.alt);
+
+		const transformFunc = Cesium.SceneTransforms.worldToWindowCoordinates || Cesium.SceneTransforms.wgs84ToWindowCoordinates;
+		const windowPos = transformFunc ? transformFunc(scene, scratch) : null;
+		const dir = Cesium.Cartesian3.subtract(scratch, camera.position, new Cesium.Cartesian3());
+		const depth = Cesium.Cartesian3.dot(dir, camera.direction);
+		const onScreen = windowPos && depth > 0 &&
+			windowPos.x >= 0 && windowPos.x <= window.innerWidth &&
+			windowPos.y >= 0 && windowPos.y <= window.innerHeight;
+
+		if (!onScreen) {
+			ret.pipper.style.display = 'none';
+			ret.funnelLine.setAttribute('x1', '0'); ret.funnelLine.setAttribute('x2', '0');
+			ret.funnelLine.setAttribute('y1', '0'); ret.funnelLine.setAttribute('y2', '0');
+			ret.rangeLabel.style.display = 'none';
+			return;
+		}
+
+		ret.pipper.style.display = 'block';
+		ret.pipper.style.left = windowPos.x + 'px';
+		ret.pipper.style.top  = windowPos.y + 'px';
+
+		// Gun-snapshot-range color cue. Green inside ~1500 m (lethal
+		// envelope), amber out to ~2500 m, red beyond — still draws the
+		// pipper but the pilot knows the solution is marginal.
+		let color = '#0f0';
+		const actualRange = Math.sqrt(dE*dE + dN*dN + dU*dU);
+		// Rescaled for 7 km effective range: green inside 3 km where the
+		// solution is tight, amber out to 5 km (sniper-ish), red beyond.
+		if (actualRange > 5000) color = '#f44';
+		else if (actualRange > 3000) color = '#fa0';
+		ret.pipper.querySelectorAll('circle, line').forEach(el => {
+			if (el.getAttribute('fill') && el.getAttribute('fill') !== 'none') el.setAttribute('fill', color);
+			if (el.getAttribute('stroke')) el.setAttribute('stroke', color);
+		});
+		ret.funnelLine.setAttribute('stroke', color);
+
+		// Funnel: centre screen → pipper.
+		const cx = window.innerWidth / 2, cy = window.innerHeight / 2;
+		ret.funnelLine.setAttribute('x1', String(cx));
+		ret.funnelLine.setAttribute('y1', String(cy));
+		ret.funnelLine.setAttribute('x2', String(windowPos.x));
+		ret.funnelLine.setAttribute('y2', String(windowPos.y));
+
+		ret.rangeLabel.style.display = 'block';
+		ret.rangeLabel.style.left = windowPos.x + 'px';
+		ret.rangeLabel.style.top  = windowPos.y + 'px';
+		ret.rangeLabel.style.color = color;
+		ret.rangeLabel.textContent = (actualRange / 1000).toFixed(2) + ' km';
+	}
+
+	// Fallback target for the pipper when nothing is locked — nearest
+	// hostile inside ~3 km and a 25° forward cone. Lets the pipper
+	// light up during a visual snapshot even without a radar/IR lock.
+	_findGunTarget(state, npcs) {
+		if (!npcs || !npcs.length) return null;
+		const hRad = state.heading * Math.PI / 180;
+		const pRad = state.pitch   * Math.PI / 180;
+		const fwdE = Math.sin(hRad) * Math.cos(pRad);
+		const fwdN = Math.cos(hRad) * Math.cos(pRad);
+		const fwdU = Math.sin(pRad);
+		const cosLat = Math.cos(state.lat * Math.PI / 180);
+		const coneCos = Math.cos(30 * Math.PI / 180);
+		// Extended to 7 km to match the bumped bullet range — the pipper
+		// should light up on any feasible gun target, not just knife-
+		// fight distance. Beyond 7 km bullets time out mid-flight anyway.
+		let best = null, bestDist = 7000;
+		for (const npc of npcs) {
+			if (!npc || npc.destroyed) continue;
+			if (npc.team && npc.team === state.team) continue;
+			const dE = (npc.lon - state.lon) * 111320 * cosLat;
+			const dN = (npc.lat - state.lat) * 111320;
+			const dU = (npc.alt - state.alt);
+			const d = Math.sqrt(dE*dE + dN*dN + dU*dU);
+			if (d < 1 || d > bestDist) continue;
+			const dot = (dE*fwdE + dN*fwdN + dU*fwdU) / d;
+			if (dot < coneCos) continue;
+			best = npc; bestDist = d;
+		}
+		return best;
 	}
 
 	update(state, npcs = []) {
@@ -1140,8 +1735,11 @@ export class HUD {
 
 		const baseZoom = this.minimapRange * 1500;
 		const speedFactor = this.minimapRange * 2;
-		let zoomAlt = baseZoom + (state.speed * speedFactor);
-		if (state.isBoosting) zoomAlt *= 1.2;
+		// No longer punch out the minimap camera on afterburner — that
+		// extra 1.2× zoom was visually jarring and made the map drift
+		// away from the player at exactly the moment they're trying to
+		// track where they are in the world.
+		const zoomAlt = baseZoom + (state.speed * speedFactor);
 		this.currentZoom = zoomAlt;
 		setMinimapCamera(state.lon, state.lat, zoomAlt, this.smoothedHeading);
 
@@ -1164,21 +1762,17 @@ export class HUD {
 			const shiftX = Math.max(-maxShift, Math.min(maxShift, -rollDiff * 1.5 - yawDiff * 20.0));
 			const shiftY = Math.max(-maxShift, Math.min(maxShift, pitchDiff * 3.0 + throttleDiff * 15.0));
 
-			const targetBoostScale = isBoosting ? 1.02 : 1.0;
-			this.smoothedBoostScale = this.smoothedBoostScale + (targetBoostScale - this.smoothedBoostScale) * 0.1;
+			// Afterburner effects removed from the HUD layer per user
+			// preference: no punchy 1.02× zoom-out, no sinusoidal
+			// cockpit-shake. The HUD still tilts / shifts with
+			// attitude changes (inherits pitchDiff / rollDiff /
+			// throttleDiff), but the boost-specific flourish is gone.
+			const scale = 1 + (throttleDiff * 0.25);
+			this.currentShakeX = 0;
+			this.currentShakeY = 0;
+			this.smoothedBoostScale = 1.0;
 
-			const scale = (1 + (throttleDiff * 0.25)) * this.smoothedBoostScale;
-
-			if (isBoosting) {
-				const time = Date.now() * 0.05;
-				this.currentShakeX = Math.sin(time * 1.5) * 2 + Math.cos(time * 2.1) * 1.5;
-				this.currentShakeY = Math.cos(time * 1.7) * 2 + Math.sin(time * 2.3) * 1.5;
-			} else {
-				this.currentShakeX *= 0.85;
-				this.currentShakeY *= 0.85;
-			}
-
-			this.uiContainer.style.transform = `perspective(1000px) rotateX(${tiltX}deg) rotateY(${tiltY}deg) translate(${shiftX + this.currentShakeX}px, ${shiftY + this.currentShakeY}px) scale(${scale})`;
+			this.uiContainer.style.transform = `perspective(1000px) rotateX(${tiltX}deg) rotateY(${tiltY}deg) translate(${shiftX}px, ${shiftY}px) scale(${scale})`;
 		}
 
 		this.speedElem.innerText = Math.round(state.speed).toString().padStart(3, '0');
@@ -1257,15 +1851,107 @@ export class HUD {
 			this.coordsElem.innerText = `POS: ${Math.abs(state.lat).toFixed(4)}°${latDir} ${Math.abs(state.lon).toFixed(4)}°${lonDir}`;
 		}
 
+		// Pixels-per-degree scale that actually matches the 3D camera.
+		// The pitch ladder is drawn on a 2D DOM overlay but the user
+		// reads it against the real horizon rendered by Cesium. Those
+		// two need to share the same angular scale or the ladder will
+		// visibly lag behind (or race ahead of) the horizon during a
+		// pitch manoeuvre. Compute it from the live vertical FOV:
+		//   px/deg = windowHeight / fovY_deg
+		// and fall back to a sensible guess if the viewer isn't ready
+		// yet (first frame before Cesium spins up).
+		let pxPerDeg = 12;
+		{
+			const v = getViewer();
+			const fovy = v && v.camera && v.camera.frustum && v.camera.frustum.fovy;
+			if (fovy) {
+				pxPerDeg = window.innerHeight / ((fovy * 180) / Math.PI);
+			}
+		}
+
 		const pitchLines = document.getElementById('pitch-lines');
 		const horizon = document.getElementById('horizon-container');
 		if (pitchLines && horizon) {
 			horizon.style.transform = `translate(-50%, -50%) rotate(${-this.smoothedRoll}deg)`;
-			pitchLines.style.transform = `translateY(${this.smoothedPitch * 6}px)`;
+			pitchLines.style.transform = `translateY(${this.smoothedPitch * pxPerDeg}px)`;
+
+			// Reposition each ladder line so its separation from the
+			// horizon bar matches the 3D view's px/deg. Without this,
+			// the translateY above would slide a correctly-spaced
+			// ladder across the screen at the right speed, but the
+			// lines themselves would sit at the wrong rest positions
+			// (previously baked in at an implicit 6 px/deg via the %
+			// layout). Skipping this would make the ladder's spacing
+			// feel "compressed" relative to the actual horizon. We
+			// only re-lay-out when pxPerDeg actually changes — cheap
+			// in the common case (constant FOV, stable window size).
+			if (this.ladderLines && Math.abs(pxPerDeg - (this._lastLadderPxPerDeg || 0)) > 0.25) {
+				this._lastLadderPxPerDeg = pxPerDeg;
+				for (const line of this.ladderLines) {
+					const i = parseFloat(line.dataset.pitchDeg);
+					// +i goes above horizon → negative offset in CSS
+					// (lower top value). Using calc lets the line's
+					// anchor stay at 50% (screen centre), so changes in
+					// container size don't drift the origin.
+					line.style.top = `calc(50% - ${i * pxPerDeg}px)`;
+				}
+			}
+		}
+
+		// Flight-path marker — world-referenced.
+		//
+		// The marker is positioned by the angular offset between the
+		// velocity vector and the nose vector in WORLD axes (heading and
+		// pitch), not body axes. Two consequences:
+		//   - Bank angle doesn't change the marker's screen position
+		//     (the horizon container isn't its parent any more).
+		//   - Pitching up always moves the marker down on screen; yawing
+		//     right always moves it left; regardless of how banked you
+		//     are. This reads as "the marker shows where the jet is
+		//     going relative to where it's pointing" from a chase-cam
+		//     view, which is the intuition the user asked for.
+		// Real fighter HUDs use the BODY-referenced version (so the FPM
+		// sits along the tilting pitch ladder), but that only makes
+		// sense from inside the cockpit — in 3rd-person view, the
+		// world-referenced version is what behaves "correctly".
+		const fpm = document.getElementById('flight-path-marker');
+		if (fpm) {
+			const vE = state.velocityE || 0;
+			const vN = state.velocityN || 0;
+			const vU = state.verticalSpeed || 0;
+			const spd = Math.hypot(vE, vN, vU);
+			// Hide when the jet isn't moving enough to have a meaningful
+			// velocity direction — the atan2 / asin below would flicker
+			// wildly around zero and the marker would jitter.
+			if (spd > 2) {
+				const vHeadingDeg = Math.atan2(vE, vN) * 180 / Math.PI;
+				const vPitchDeg   = Math.asin(Math.max(-1, Math.min(1, vU / spd))) * 180 / Math.PI;
+				let dHdg = vHeadingDeg - (state.heading || 0);
+				while (dHdg < -180) dHdg += 360;
+				while (dHdg >  180) dHdg -= 360;
+				const dPitch = vPitchDeg - (state.pitch || 0);
+
+				// Same px/deg the pitch ladder uses — keeps the FPM
+				// visually consistent with the ladder's spacing, so "2
+				// tick marks below the horizon" on the ladder and the
+				// FPM at 10° pitch-down both sit at the same pixel.
+				const dx =  dHdg   * pxPerDeg; // +right = screen-right
+				const dy = -dPitch * pxPerDeg; // +pitch(up) = screen-up = negative Y in CSS
+				// Clamp so extreme angles don't slide the marker off the
+				// HUD altogether — caps it near the edge of the pitch-
+				// ladder box.
+				const cx = Math.max(-140, Math.min(140, dx));
+				const cy = Math.max(-140, Math.min(140, dy));
+				fpm.style.transform = `translate(calc(-50% + ${cx}px), calc(-50% + ${cy}px))`;
+				fpm.style.display = 'block';
+			} else {
+				fpm.style.display = 'none';
+			}
 		}
 
 		this.drawMinimap(state, npcs);
 		this.updateNPCMarkers(npcs, state);
+		this.updateGunReticle(state, npcs);
 	}
 
 	drawMinimap(state, npcs = []) {
@@ -1315,6 +2001,10 @@ export class HUD {
 		}
 
 		npcs.forEach(npc => {
+			// Same visibility gate as the pause-menu minimap — fused
+			// sensor + datalink picture only, no god-mode positions.
+			if (!this._playerCanSee(state, npc)) return;
+
 			const dist = calculateDistance(state.lon, state.lat, npc.lon, npc.lat);
 			if (dist > this.minimapRange * 5000) return;
 
@@ -1330,7 +2020,7 @@ export class HUD {
 			ctx.translate(px, py);
 			ctx.rotate(npc.heading * Math.PI / 180);
 
-			ctx.fillStyle = '#fff';
+			ctx.fillStyle = _hudTeamColor(npc.team);
 			ctx.shadowBlur = 0;
 			ctx.beginPath();
 			ctx.moveTo(0, -8);
@@ -1474,24 +2164,27 @@ export class HUD {
 		ctx.stroke();
 	}
 
+	// Player-visible check: unit appears in the player's own sensor
+	// contacts (radar / IR / visual) OR in the team datalink fused
+	// picture (AWACS, wingmen). Used to gate every HUD / minimap /
+	// marker that shows NPC positions — without this, the player sees
+	// unit positions as god-mode, which makes stealth, radar-off runs,
+	// and notching meaningless.
+	_playerCanSee(playerState, npc) {
+		if (!playerState || !npc) return false;
+		// Friendlies are always visible (wingmen, AWACS, tankers) —
+		// no need to "detect" your own team.
+		if (npc.team && npc.team === playerState.team) return true;
+		if (playerState.contacts && playerState.contacts.has(npc)) return true;
+		if (playerState.datalinkContacts && playerState.datalinkContacts.has(npc)) return true;
+		return false;
+	}
+
 	updateNPCMarkers(npcs, playerState) {
 		const viewer = getViewer();
 		if (!viewer) return;
 
-		// Filter through the player's fused picture: own sensor contacts
-		// PLUS team datalink contacts (AWACS, wingmen, future ground
-		// radars). Stealth jets / low-signature cruise missiles still
-		// require someone to have seen them — but "someone" now includes
-		// the AWACS 80 km behind you. When the player silences their own
-		// radar, datalink is the only source.
-		const ownContacts = playerState && playerState.contacts;
-		const dlContacts  = playerState && playerState.datalinkContacts;
-		const canSee = (n) => {
-			if (ownContacts && ownContacts.has(n)) return true;
-			if (dlContacts  && dlContacts.has(n))  return true;
-			return false;
-		};
-		const visible = npcs.filter(canSee);
+		const visible = npcs.filter(n => this._playerCanSee(playerState, n));
 
 		const activeIds = new Set();
 		if (visible.length > 0) {
@@ -1594,21 +2287,55 @@ export class HUD {
 		marker.dot.style.display = 'none';
 		marker.offscreenName.style.display = 'none';
 
+		// Color the diamond by team affiliation. Friendlies render
+		// cyan so a merged furball is immediately readable — wingmen
+		// stand out from hostiles. Hostile-red / hostile-blue each get
+		// their faction color; anything unknown falls through to red.
+		const teamC = _hudTeamColor(npc.team);
+		marker.diamond.style.borderColor = teamC;
+		marker.diamond.style.boxShadow = `0 0 10px ${teamC}80`;
+
+		// AESA lock indicator. Three visual tiers:
+		//   - DESIGNATED (this one will fire): bright solid green box +
+		//     "TGT" label above.
+		//   - LOCKED (other simultaneous tracks): dimmer yellow/amber
+		//     box + small "LOK" tag.
+		//   - LOCKING (track in progress): blinking dashed amber box.
+		//   - otherwise: no box.
 		const ws = state.weaponSystem;
-		if (ws && ws.lockingTarget === npc) {
+		const lockEntry = ws && ws.locks && ws.locks.get(npc);
+		const isDesignated = ws && ws.designatedTarget === npc;
+		if (lockEntry) {
 			marker.lockBox.style.display = 'block';
-			if (ws.lockStatus === 'LOCKED') {
+			if (isDesignated && lockEntry.status === 'LOCKED') {
 				marker.lockBox.classList.remove('locking-blink');
-				marker.lockBox.style.borderColor = '#0f0';
-				marker.lockBox.innerHTML = '<span style="position:absolute; top:-20px; left:50%; transform:translateX(-50%); font-weight:bold; color:#0f0; font-size:12px; text-shadow: 0 0 8px rgba(0, 255, 0, 0.8);">LOCK</span>';
-			} else if (ws.lockStatus === 'LOCKING') {
+				marker.lockBox.style.borderColor     = '#0f0';
+				marker.lockBox.style.borderStyle     = 'solid';
+				marker.lockBox.style.borderWidth     = '2px';
+				marker.lockBox.style.boxShadow       = '0 0 10px rgba(0, 255, 0, 0.6)';
+				marker.lockBox.innerHTML = '<span style="position:absolute; top:-20px; left:50%; transform:translateX(-50%); font-weight:bold; color:#0f0; font-size:12px; text-shadow: 0 0 8px rgba(0, 255, 0, 0.8);">TGT</span>';
+			} else if (lockEntry.status === 'LOCKED') {
+				// Secondary track: still locked, still targetable via
+				// Tab, but not the one a missile shot will fire at.
+				marker.lockBox.classList.remove('locking-blink');
+				marker.lockBox.style.borderColor     = '#ffcc40';
+				marker.lockBox.style.borderStyle     = 'solid';
+				marker.lockBox.style.borderWidth     = '1px';
+				marker.lockBox.style.boxShadow       = '0 0 6px rgba(255, 204, 64, 0.35)';
+				marker.lockBox.innerHTML = '<span style="position:absolute; top:-18px; left:50%; transform:translateX(-50%); color:#ffcc40; font-size:10px; letter-spacing:1px; text-shadow: 0 0 4px rgba(255, 204, 64, 0.6);">LOK</span>';
+			} else {
+				// Still LOCKING — acquisition in progress.
 				marker.lockBox.classList.add('locking-blink');
-				marker.lockBox.style.borderColor = '#0f0';
+				marker.lockBox.style.borderColor     = '#ffcc40';
+				marker.lockBox.style.borderStyle     = 'dashed';
+				marker.lockBox.style.borderWidth     = '1px';
+				marker.lockBox.style.boxShadow       = 'none';
 				marker.lockBox.innerHTML = '';
 			}
 		} else {
 			marker.lockBox.style.display = 'none';
 			marker.lockBox.innerHTML = '';
+			marker.lockBox.classList.remove('locking-blink');
 		}
 
 		const distKm = (dist / 1000).toFixed(1);

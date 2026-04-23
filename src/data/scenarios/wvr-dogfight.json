@@ -1,0 +1,38 @@
+{
+	"id": "wvr-dogfight",
+	"name": "WVR Dogfight",
+	"description": "Player + 2 wingmen vs 3 red vs 3 blue. Sidewinders only. Low-level merge from 12 km — tests HUD friendly display, datalink mesh, and close-range IR engagement.",
+	"autoSpawn": false,
+	"spawns": [
+		{
+			"type": "fighter",
+			"team": "friendly",
+			"origin": { "relTo": "player", "bearingDeg": 350, "rangeM": 500, "altOffsetM": -500 },
+			"loadout": { "AIM-9": 4 },
+			"count": 1
+		},
+		{
+			"type": "fighter",
+			"team": "friendly",
+			"origin": { "relTo": "player", "bearingDeg":  10, "rangeM": 500, "altOffsetM": -500 },
+			"loadout": { "AIM-9": 4 },
+			"count": 1
+		},
+		{
+			"type": "fighter",
+			"team": "hostile-red",
+			"origin": { "relTo": "player", "bearingDeg":  45, "rangeM": 12000, "altOffsetM": -500 },
+			"loadout": { "AIM-9": 4 },
+			"count": 3,
+			"jitterM": 600
+		},
+		{
+			"type": "fighter",
+			"team": "hostile-blue",
+			"origin": { "relTo": "player", "bearingDeg": 315, "rangeM": 12000, "altOffsetM": -500 },
+			"loadout": { "AIM-9": 4 },
+			"count": 3,
+			"jitterM": 600
+		}
+	]
+}

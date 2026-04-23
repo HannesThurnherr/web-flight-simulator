@@ -1,0 +1,12 @@
+{
+	"id": "gbu-31-jdam",
+	"name": "GBU-31 JDAM",
+	"shortName": "GBU-31",
+	"category": "GBU",
+	"tags": ["gbu", "gps-guided", "2000lb"],
+	"massKg": 907,
+	"rcsContributionM2": 0.08,
+	"description": "2000 lb GPS-guided bomb. Heavy strike, all-weather, precision via coords.",
+	"simType": "GBU-31",
+	"seekerType": "gps"
+}

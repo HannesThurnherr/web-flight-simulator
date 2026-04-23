@@ -1,0 +1,456 @@
+// ============================================================================
+// Spawn-picker + flight-start + respawn flow.
+//
+// The full lifecycle around "player isn't flying yet" and "player just
+// got back into the air after crashing":
+//   - enterSpawnPicking()     Tear down NPCs, fade the HUD, show the map.
+//   - setupSpawnPicker()      Cesium LEFT_CLICK handler that drops a spawn
+//                             marker and terrain-clamps state.alt.
+//   - setupConfirmSpawn()     Wires the CONFIRM button: resets physics,
+//                             applies loadout, remembers the pose, fades
+//                             back into FLYING via a 2s camera flyTo.
+//   - exitSpawnPicking()      Cancel path — ESC out of the picker back to
+//                             the main menu.
+//   - quickRespawn()          Post-crash fast path: reuse the stored pose
+//                             without going back through the map picker.
+//
+// Extracted from main.js — every branch preserves the exact original
+// order of side effects (sound stops, vignette fade, setControlsEnabled,
+// camera flyTo timing, state-flag writes). Module-private: `spawnMarker`
+// (the Cesium entity currently pinned on the map) and `_scenarioSpawnPoint`
+// (the pose to replay on quickRespawn).
+//
+// The caller supplies a `ctx` object because main.js still owns the
+// player state, physics instance, and a bag of cockpit-visual `let`
+// bindings (BASE_PLANE_POS, visualOffset, visualRotation, boostRoll,
+// currentBoostZOffset, lastIsBoosting). Getters / setters on ctx keep
+// those reassignments observable from inside this module.
+// ============================================================================
+
+import * as Cesium from 'cesium';
+import { PlanePhysics } from '../plane/planePhysics';
+import { getActivePlane, getActivePlaneId, PLANES } from '../plane/planes';
+import { simTypeCounts, effectiveRcsM2 } from '../plane/loadout';
+import { SIGNATURES } from './signatures';
+import { getActiveScenario } from './scenarios';
+import { getViewer, setControlsEnabled, setRenderOptimization } from '../world/cesiumWorld';
+import { reverseGeocode } from '../world/regions';
+import { soundManager } from '../utils/soundManager';
+import { stopAllFlyingSounds } from '../utils/gameplaySounds';
+import { gameSettings, saveSettings } from '../ui/settings';
+
+// Module-private state — only this file reads or writes either.
+// `spawnMarker` is the Cesium point-entity dropped on the map while the
+// user is choosing a spawn. `_scenarioSpawnPoint` is the pose remembered
+// from the last confirm-spawn so quickRespawn() can snap straight back
+// into the fight without tearing the scenario down.
+let spawnMarker = null;
+let _scenarioSpawnPoint = null;
+
+// Accessors exposed for modules that also touch the spawn marker
+// (currently the Nominatim location-search dropdown). Keeps ownership
+// here while letting outsiders swap the entity in/out.
+export function getSpawnMarker() { return spawnMarker; }
+export function setSpawnMarker(entity) { spawnMarker = entity; }
+
+// True once the user has confirmed at least one spawn in the current
+// session — the crash-menu RESPAWN button uses this to decide whether
+// to quick-respawn or fall through to the full map picker.
+export function hasScenarioSpawnPoint() { return _scenarioSpawnPoint != null; }
+
+// Quick respawn at the stored spawn pose. Skips the whole map-picker
+// flow — the scenario stays running, NPCs keep engaging each other,
+// the player just pops back into the air.
+export function quickRespawn(ctx) {
+	const sp = _scenarioSpawnPoint;
+	const { state } = ctx;
+	state.lon = sp.lon;
+	state.lat = sp.lat;
+	state.alt = sp.alt;
+	state.heading = sp.heading;
+	state.pitch = 0;
+	state.roll  = 0;
+	state.speed = 100;
+	state.destroyed = false;
+
+	// Fresh physics, re-applied per-plane overrides.
+	const physics = new PlanePhysics();
+	physics.reset(state.lon, state.lat, state.alt, state.heading, 0, 0);
+	const plane = getActivePlane();
+	if (plane && plane.physicsOverrides) physics.applyOverrides(plane.physicsOverrides);
+	ctx.setPhysics(physics);
+
+	ctx.controller.reset();
+	ctx.visualOffset.copy(ctx.BASE_PLANE_POS);
+	ctx.visualRotation.set(0, 0, 0);
+	ctx.setBoostRoll(0);
+	ctx.setCurrentBoostZOffset(0);
+	ctx.setLastIsBoosting(false);
+
+	// Re-apply loadout ammo counts.
+	const weaponSystem = ctx.weaponSystem;
+	if (weaponSystem && typeof weaponSystem.applyLoadout === 'function') {
+		weaponSystem.applyLoadout(simTypeCounts(getActivePlaneId()));
+		if (typeof weaponSystem.resetAmmo === 'function') weaponSystem.resetAmmo();
+	}
+
+	// UI flip: hide crash screen, show HUD, go back to FLYING.
+	document.getElementById('crashMenu').classList.add('hidden');
+	document.getElementById('uiContainer').classList.remove('hidden');
+	const weaponsHud = document.getElementById('weapons-hud');
+	if (weaponsHud) weaponsHud.classList.remove('hidden');
+	const threeContainer = document.getElementById('threeContainer');
+	if (threeContainer) threeContainer.classList.remove('hidden');
+	ctx.setCurrentState('FLYING');
+	ctx.setFlightStartTime(Date.now());
+
+	try { soundManager.play('spawn'); } catch (e) {}
+	try {
+		soundManager.stop('ambient-crash', 0.3);
+		soundManager.play('jet-engine', 1.0);
+	} catch (e) {}
+}
+
+// Drop into the map-picker state: tear down the running scenario + NPCs,
+// fade the HUD out via the transition vignette, and fly the Cesium
+// camera to the user's last-known or persisted spawn coords. The
+// `useVignette=false` path is used when we're already in a transition
+// overlay and a second fade would double-flash.
+export function enterSpawnPicking(ctx, useVignette = true) {
+	const { state } = ctx;
+	state.score = 0;
+	// If the user has a persisted spawn from a previous session, seed
+	// the state with it so the Cesium camera flies toward it. The user
+	// can still click somewhere else to pick a new one; we just avoid
+	// starting from wherever their IP-geolocation defaulted to every
+	// time.
+	if (gameSettings.lastSpawn &&
+		typeof gameSettings.lastSpawn.lon === 'number' &&
+		typeof gameSettings.lastSpawn.lat === 'number') {
+		state.lon = gameSettings.lastSpawn.lon;
+		state.lat = gameSettings.lastSpawn.lat;
+		state.alt = gameSettings.lastSpawn.alt ?? state.alt;
+	}
+
+	// Let the scenario tear down its overlays / reset state before we
+	// wipe NPCs and rebuild. Safe to call even on first spawn (onStop
+	// is idempotent for all scenarios).
+	{
+		const scn = getActiveScenario();
+		if (scn && scn.onStop) {
+			scn.onStop({
+				npcSystem: ctx.npcSystem, playerState: state, viewer: getViewer(),
+				scene: ctx.scene, weaponSystem: ctx.weaponSystem, hud: ctx.hud,
+			});
+		}
+	}
+	if (ctx.npcSystem) ctx.npcSystem.clear();
+	stopAllFlyingSounds(0.3);
+	soundManager.play('zoom-in');
+	soundManager.play('wind', 1.0);
+	const vignette = document.getElementById('transition-vignette');
+	if (useVignette && vignette) vignette.style.opacity = '1';
+
+	const delay = useVignette ? 500 : 0;
+
+	setTimeout(() => {
+		const spawnInstruction = document.getElementById('spawnInstruction');
+		const threeContainer   = document.getElementById('threeContainer');
+		const uiContainer      = document.getElementById('uiContainer');
+		const confirmSpawnBtn  = document.getElementById('confirmSpawnBtn');
+		spawnInstruction.classList.remove('hidden');
+		threeContainer.classList.add('hidden');
+		uiContainer.classList.add('hidden');
+		const weaponsHud = document.getElementById('weapons-hud');
+		if (weaponsHud) weaponsHud.classList.add('hidden');
+		ctx.setCurrentState('PICK_SPAWN');
+		confirmSpawnBtn.classList.add('hidden');
+
+		const searchInput = document.getElementById('locationSearch');
+		const instructionText = document.getElementById('instruction-text');
+		const resultsContainer = document.getElementById('search-results');
+
+		if (searchInput) {
+			searchInput.value = '';
+			searchInput.style.display = 'none';
+		}
+		if (instructionText) {
+			instructionText.style.display = 'block';
+			instructionText.textContent = 'CLICK ANYWHERE ON THE MAP TO CHOOSE SPAWN POINT';
+		}
+		if (resultsContainer) {
+			resultsContainer.style.display = 'none';
+		}
+
+		setControlsEnabled(true);
+
+		if (spawnMarker) {
+			const viewer = getViewer();
+			viewer.entities.remove(spawnMarker);
+			spawnMarker = null;
+		}
+
+		const viewer = getViewer();
+		viewer.camera.flyTo({
+			destination: Cesium.Cartesian3.fromDegrees(state.lon, state.lat, 15000),
+			duration: 2.0,
+			complete: () => {
+				if (vignette) vignette.style.opacity = '0';
+			},
+		});
+	}, delay);
+}
+
+// Cancel the spawn picker and go back to the main menu. Used by the
+// Escape/P keybinding in the map state.
+export function exitSpawnPicking(ctx) {
+	soundManager.play('zoom-in');
+	soundManager.stop('wind', 1.0);
+	stopAllFlyingSounds(0.3);
+	document.getElementById('spawnInstruction').classList.add('hidden');
+	document.getElementById('confirmSpawnBtn').classList.add('hidden');
+	document.getElementById('mainMenu').classList.remove('hidden');
+	ctx.setCurrentState('MENU');
+	document.getElementById('loadingIndicator').classList.add('hidden');
+	setRenderOptimization(true);
+
+	setControlsEnabled(false);
+
+	if (spawnMarker) {
+		const viewer = getViewer();
+		viewer.entities.remove(spawnMarker);
+		spawnMarker = null;
+	}
+
+	const viewer = getViewer();
+	const initialCameraView = ctx.getInitialCameraView();
+	viewer.camera.flyTo({
+		...initialCameraView,
+		duration: 2.5,
+	});
+}
+
+// Install the Cesium LEFT_CLICK handler that places the spawn marker
+// on the globe during PICK_SPAWN. Only listens while currentState is
+// PICK_SPAWN so it doesn't hijack clicks in other modes. Runs reverse-
+// geocoding + terrain-clamp + marker swap on every click.
+export function setupSpawnPicker(ctx) {
+	const viewer = getViewer();
+	const handler = new Cesium.ScreenSpaceEventHandler(viewer.scene.canvas);
+	const instructionText = document.getElementById('instruction-text');
+	const confirmSpawnBtn = document.getElementById('confirmSpawnBtn');
+	const { state } = ctx;
+
+	handler.setInputAction((click) => {
+		if (ctx.getCurrentState() !== 'PICK_SPAWN') return;
+
+		const ray = viewer.camera.getPickRay(click.position);
+		const cartesian = viewer.scene.globe.pick(ray, viewer.scene);
+
+		if (cartesian) {
+			const cartographic = Cesium.Cartographic.fromCartesian(cartesian);
+			const lon = Cesium.Math.toDegrees(cartographic.longitude);
+			const lat = Cesium.Math.toDegrees(cartographic.latitude);
+
+			state.lon = lon;
+			state.lat = lat;
+			state.alt = Math.max(0, cartographic.height) + 1500;
+
+			instructionText.textContent = 'FETCHING LOCATION INFO...';
+
+			reverseGeocode(lon, lat).then(regionName => {
+				if (regionName && ctx.getCurrentState() === 'PICK_SPAWN') {
+					instructionText.textContent = regionName;
+					if (spawnMarker) {
+						spawnMarker.label.text = regionName;
+					}
+				}
+			}).catch(() => { });
+
+			Cesium.sampleTerrainMostDetailed(viewer.terrainProvider, [cartographic])
+				.then(([p]) => state.alt = Math.max(0, p.height || 0) + 1500)
+				.catch(() => { });
+
+			if (spawnMarker) {
+				viewer.entities.remove(spawnMarker);
+			}
+			spawnMarker = viewer.entities.add({
+				position: cartesian,
+				point: {
+					pixelSize: 15,
+					color: Cesium.Color.RED,
+					outlineColor: Cesium.Color.WHITE,
+					outlineWidth: 2,
+					disableDepthTestDistance: Number.POSITIVE_INFINITY,
+				},
+				label: {
+					text: 'Target Spawn Location',
+					font: `14pt ${getComputedStyle(document.body).fontFamily}`,
+					style: Cesium.LabelStyle.FILL_AND_OUTLINE,
+					outlineWidth: 2,
+					verticalOrigin: Cesium.VerticalOrigin.BOTTOM,
+					pixelOffset: new Cesium.Cartesian2(0, -20),
+					disableDepthTestDistance: Number.POSITIVE_INFINITY,
+				},
+			});
+
+			confirmSpawnBtn.classList.remove('hidden');
+		}
+	}, Cesium.ScreenSpaceEventType.LEFT_CLICK);
+}
+
+// Wire the CONFIRM button inside the map picker. The click handler is
+// the single most behaviour-sensitive bit of the spawn flow — a
+// 500 ms fade-to-white setTimeout wraps a ~100-line physics/HUD/
+// loadout/scenario reset sequence that ends with a 2 s camera flyTo,
+// whose completion callback flips currentState to FLYING. Every step
+// is byte-equivalent to the original inline onclick.
+export function setupConfirmSpawn(ctx) {
+	const { state } = ctx;
+	document.getElementById('confirmSpawnBtn').onclick = () => {
+		const vignette = document.getElementById('transition-vignette');
+		if (vignette) vignette.style.opacity = '1';
+
+		soundManager.play('spawn');
+
+		setTimeout(() => {
+			const viewer = getViewer();
+			if (spawnMarker) {
+				viewer.entities.remove(spawnMarker);
+				spawnMarker = null;
+			}
+
+			setControlsEnabled(false);
+
+			state.speed = 100;
+			state.pitch = 0;
+			state.roll = 0;
+
+			try {
+				const cam = viewer && viewer.camera;
+				if (cam && typeof cam.heading === 'number') {
+					state.heading = Cesium.Math.toDegrees(cam.heading);
+				} else {
+					state.heading = 0;
+				}
+			} catch (e) {
+				state.heading = 0;
+			}
+
+			ctx.resetGeocodeState();
+
+			ctx.visualOffset.copy(ctx.BASE_PLANE_POS);
+			ctx.visualRotation.set(0, 0, 0);
+			ctx.setBoostRoll(0);
+			ctx.setCurrentBoostZOffset(0);
+			ctx.setLastIsBoosting(false);
+
+			ctx.controller.reset();
+			const physics = new PlanePhysics();
+			physics.reset(state.lon, state.lat, state.alt, state.heading, state.pitch, state.roll);
+			ctx.setPhysics(physics);
+
+			// Remember this spawn pose so quickRespawn() (crash-menu
+			// RESPAWN) can restore it without tearing down the scenario.
+			_scenarioSpawnPoint = {
+				lon: state.lon, lat: state.lat, alt: state.alt,
+				heading: state.heading,
+			};
+			// Persist across page reloads so reopening the sim jumps
+			// back to the last spawn instead of asking the user to
+			// re-pick.
+			gameSettings.lastSpawn = { ..._scenarioSpawnPoint };
+			saveSettings();
+
+			ctx.hud.resetTime();
+			ctx.hud.resizeMinimap();
+
+			// Apply per-spawn loadout → weapon ammo counts. Pulls the
+			// user's picks from the loadout module (keyed on active
+			// plane), maps to simType counts, and configures the
+			// weaponSystem. Any simType not in the loadout ends up at
+			// 0 ammo.
+			const weaponSystem = ctx.weaponSystem;
+			if (weaponSystem && typeof weaponSystem.applyLoadout === 'function') {
+				const planeId = getActivePlaneId();
+				weaponSystem.applyLoadout(simTypeCounts(planeId));
+			}
+			if (weaponSystem && typeof weaponSystem.resetAmmo === 'function') {
+				weaponSystem.resetAmmo();
+			}
+
+			// External-store RCS. Previously this was a binary "swap
+			// to non-stealth 12 m² if any external is loaded" — way
+			// too punishing. The real model is additive: effective
+			// RCS = airframe baseline + sum of external-store
+			// contributions. A clean F-22 at 0.008 m² carrying 4
+			// external AIM-120s becomes 0.008 + 4×0.03 = 0.128 m² —
+			// 16× worse than clean stealth but still ~100× better
+			// than a 4th-gen target. IR / visual signatures stay as
+			// the airframe default; only RCS is modulated by loadout.
+			{
+				const planeId = getActivePlaneId();
+				const plane   = PLANES[planeId];
+				if (plane && SIGNATURES[plane.signature]) {
+					state.signature = {
+						...SIGNATURES[plane.signature],
+						rcs: effectiveRcsM2(planeId),
+					};
+				}
+			}
+
+			// Respawn clears the dead flag so TargetManager can re-
+			// acquire us.
+			state.destroyed = false;
+
+			// Hand off initial world population to the active scenario.
+			// For the default 3-way BVR fight this just seeds one NPC
+			// and flips autoSpawn back on; for lab scenarios like the
+			// notching test the scenario is in charge of placement and
+			// disables auto-spawn.
+			if (ctx.npcSystem) {
+				const scn = getActiveScenario();
+				const scnCtx = {
+					npcSystem: ctx.npcSystem, playerState: state,
+					viewer: getViewer(), scene: ctx.scene,
+					weaponSystem: ctx.weaponSystem, hud: ctx.hud,
+				};
+				if (scn && scn.onStart) scn.onStart(scnCtx);
+				else ctx.npcSystem.spawnNPC(state.lon, state.lat, state.alt);
+			}
+
+			document.getElementById('spawnInstruction').classList.add('hidden');
+			document.getElementById('confirmSpawnBtn').classList.add('hidden');
+			document.getElementById('loadingIndicator').classList.add('hidden');
+
+			ctx.setCurrentState('TRANSITIONING');
+			setRenderOptimization(false);
+
+			viewer.camera.flyTo({
+				destination: Cesium.Cartesian3.fromDegrees(state.lon, state.lat, state.alt),
+				orientation: {
+					heading: Cesium.Math.toRadians(state.heading),
+					pitch: Cesium.Math.toRadians(state.pitch),
+					roll: Cesium.Math.toRadians(state.roll),
+				},
+				duration: 2.0,
+				easingFunction: Cesium.EasingFunction.QUADRATIC_IN_OUT,
+				complete: () => {
+					ctx.setFlightStartTime(Date.now());
+					document.getElementById('uiContainer').classList.remove('hidden');
+					const weaponsHud = document.getElementById('weapons-hud');
+					if (weaponsHud) weaponsHud.classList.remove('hidden');
+					document.getElementById('threeContainer').classList.remove('hidden');
+					ctx.hud.resizeMinimap();
+					ctx.setCurrentState('FLYING');
+					soundManager.play('jet-engine', 1.0);
+					if (vignette) vignette.style.opacity = '0';
+
+					if (ctx.dialogueSystem) {
+						ctx.dialogueSystem.start();
+					}
+				},
+			});
+		}, 500);
+	};
+}

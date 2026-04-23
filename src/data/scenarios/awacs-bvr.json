@@ -1,0 +1,27 @@
+{
+	"id": "awacs-bvr",
+	"name": "AWACS BVR",
+	"description": "Three-way 180 km BVR fight with a friendly E-767 AWACS feeding the datalink.",
+	"triangleSideM": 180000,
+	"autoSpawn": true,
+	"spawns": [
+		{
+			"type": "platform",
+			"platformId": "e-767-awacs",
+			"team": "friendly",
+			"origin": {
+				"relTo": "player",
+				"bearingDeg": 180,
+				"rangeM": 80000,
+				"altM": 11000
+			},
+			"pilotOverrides": { "altitudeM": 11000, "radiusM": 40000 }
+		},
+		{
+			"type": "fighter",
+			"team": "hostile-red",
+			"origin": "triangle-vertex",
+			"count": 1
+		}
+	]
+}

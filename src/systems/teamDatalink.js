@@ -173,6 +173,13 @@ export function tickAllDatalinks(now) {
 	for (const [, dl] of _datalinks) dl.tick(now);
 }
 
+// Iterate every team's datalink. Used by the commander-view debug
+// overlay to draw who's sharing tracks with whom. Returns
+// [teamId, TeamDatalink] pairs.
+export function allDatalinks() {
+	return _datalinks;
+}
+
 // Called on scenario reset so stale entries don't leak between runs.
 export function resetAllDatalinks() {
 	for (const [, dl] of _datalinks) {

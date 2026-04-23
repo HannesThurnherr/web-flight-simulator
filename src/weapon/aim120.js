@@ -8,6 +8,7 @@ import { SIGNATURES } from '../systems/signatures';
 import { detectRadar } from '../systems/sensorSystem';
 import { airDensity, GRAVITY } from '../plane/aeroModel.js';
 import { getTeamDatalink } from '../systems/teamDatalink.js';
+import { cloneAim120Template } from './missileModels.js';
 
 const AIM120_SIGNATURE = SIGNATURES.missile_radar;
 
@@ -29,122 +30,107 @@ const AIM120_SIGNATURE = SIGNATURES.missile_radar;
 // transform glue; overrides update() and the guidance logic.
 // ============================================================================
 
-// Physical parameters tuned to published AIM-120D performance.
-const BOOST_DURATION      = 8.0;     // s, motor burn time
-const BOOST_ACCEL         = 170;     // m/s², net (≈ 17 G axial during boost)
-const BOOST_PEAK_SPEED    = 1300;    // m/s, roughly Mach 4 at altitude
-// Drag reference point — the prior constant 8 m/s² was roughly the
-// deceleration a burnout-speed AMRAAM sees at 10 km altitude. We now
-// scale it by atmospheric density (altitude) and v² so the drag profile
-// matches real physics: very high at sea level, much lower at apogee.
-// That's what makes high-loft coasts actually extend range.
-const COAST_DRAG_REF      = 8;       // m/s², reference drag at 10 km / 1000 m/s
-const COAST_DRAG_REF_V    = 1000;    // m/s reference speed for v² scaling
-const MIN_SPEED           = 60;      // m/s absolute floor — below this treat as ballistic
-const MAX_LIFE            = 120;     // s, time of flight before self-destruct
-const MAX_TURN_DEG_PER_S  = 40;      // sustained turn rate cap (structural+AoA)
-const PN_GAIN             = 4.0;     // proportional navigation N (typ. 3–5)
-const SEEKER_ACTIVE_RANGE = 18000;   // m, terminal "pitbull" range
-// Loft profile. Real AMRAAMs fly a high-altitude coast: climb hard during
-// boost, cruise at 15–25 km (thin air = low drag = more range), then dive
-// steeply onto the target in terminal. The loft term adds extra pitch-up
-// on top of the direct-to-target pitch, scaled by distance: full at long
-// range, zero at TERMINAL_RANGE. Because the loft is *always on* (not
-// gated on boost), the missile continues to climb / hold altitude during
-// coast as long as it's far from the target — and because it tapers to
-// zero inside TERMINAL_RANGE, the descent is dictated by the actual
-// geometry (high missile + low target = steep dive naturally, no
-// explicit dive-angle command needed).
-const TERMINAL_RANGE       = 15000;    // m, below which loft is off
-const MAX_LOFT_RANGE       = 70000;    // m, above which loft saturates
-const MAX_LOFT_DEG         = 25;       // deg of extra pitch at long range
-// Kill envelope — AMRAAM has a bigger warhead than AIM-9X and proportionally
-// wider lethal radius + fuze sensing. Miss distance < 15 m is a direct
-// warhead kill; up to ~30 m the proximity fuze still detonates when the
-// range rate flips from closing to opening (the "we just passed them" cue).
-const KILL_RADIUS         = 15;
-const KILL_RADIUS_SQ      = KILL_RADIUS * KILL_RADIUS;
-const FUZE_SENSE_RADIUS   = 30;
-const FUZE_SENSE_RADIUS_SQ = FUZE_SENSE_RADIUS * FUZE_SENSE_RADIUS;
-// Seeker parameters for the missile's own onboard radar, active after
-// pitbull. Narrower FOV + shorter range than a fighter's APG-class set,
-// since the AMRAAM seeker is small and optimized for terminal homing.
-// Expressed as a radar-config object so it plugs into the unified
-// sensorSystem.detectRadar() function — same FOV / range-equation / notch
-// mechanics as a plane's radar, just with seeker-scale numbers. Adding a
-// ground SAM, an AWACS, or a helicopter pulse-Doppler later is the same
-// pattern: pick range / FOV / referenceRcs and hand it to detectRadar.
-const SEEKER_RANGE_M      = 25000;              // m
-// Real AMRAAM seekers have ~±30° mechanical/electronic scan, and during
-// terminal homing the gimbal is already at the high end of its travel.
-// Using 30° instead of the old 25° gives a narrow but not pathological
-// terminal window — last-ditch maneuvers can still break lock, but not
-// through trivial 15° aspect changes.
-const SEEKER_HALF_ANGLE   = 30 * Math.PI / 180; // ±30° forward cone
-// Acquisition config — used during the initial pitbull scan. The seeker
-// is searching a cone for any Doppler-bright target, so the notch filter
-// applies the same way it does on a plane's search radar. The gate is
-// tighter (30 m/s) because seeker heads run higher PRF.
-const SEEKER_RADAR = {
-	enabled: true,
-	active: true,
-	mode: 'track',
-	nominalRange:  SEEKER_RANGE_M,
-	referenceRcs:  5,             // reference 5 m² fighter
-	fovH:          SEEKER_HALF_ANGLE,
-	fovV:          SEEKER_HALF_ANGLE,
-	notchThreshold: 30,
+// Fallback defaults — used when AIM120 is constructed without a data
+// object. Normal flow: munitionFactory pulls the full config from
+// src/data/munitions/*.json and passes it as the ctor's last arg.
+// These constants are kept here as the "stock AIM-120D" parameter
+// set, equivalent to what aim-120d.json ships with.
+const DEFAULT_AIM120_DATA = {
+	simType: 'AIM-120',
+	signature: 'missile_radar',
+	flight: {
+		launchSpeedOffset: 50,
+		boostDurationS: 8.0,
+		boostAccel: 170,
+		peakSpeed: 1300,
+		minSpeed: 60,
+		maxLifeS: 120,
+		maxTurnDegPerSec: 40,
+		pnGain: 4.0,
+		dragRef: 8,
+		dragRefSpeed: 1000,
+		dragRefAltitude: 10000,
+	},
+	warhead: {
+		killRadiusM: 15,
+		fuzeSenseRadiusM: 30,
+		missAbortRadiusMul: 2,
+	},
+	loft: {
+		terminalRangeM: 15000,
+		maxLoftRangeM: 70000,
+		maxLoftDeg: 25,
+	},
+	seeker: {
+		activeRangeM: 18000,
+		fovHalfAngleDeg: 30,
+		nominalDetectRangeM: 25000,
+		referenceRcs: 5,
+		notchThresholdAcquire: 30,
+		notchThresholdTrack: 15,
+		lockDropTimeoutS: 1.5,
+		reacquireIntervalS: 0.25,
+		datalink: true,
+	},
 };
-// Tracking config — used once the seeker has a lock, by the per-frame
-// lock-integrity check. Notch is much looser than acquisition (15 m/s
-// vs 30) but NOT zero: a deliberate, sustained beam still breaks lock,
-// which is what makes notching a real defensive option in terminal.
-// The combination of a tight gate plus the 1.5 s LOCK_DROP_TIMEOUT
-// means transient geometric nulls (LOS sweeping through perpendicular
-// for a frame or two during a crossing intercept) don't drop the
-// track, but a pure ±90° beam held for a full second does.
-const SEEKER_RADAR_TRACK = {
-	...SEEKER_RADAR,
-	notchThreshold: 15,
-};
-// How long the seeker can fail to see its locked target before we flip to
-// maddog. Real seekers drop lock in ~0.5–2 s of no return. 1.5 s gives a
-// deliberate beam maneuver a chance to work while tolerating the frame or
-// two where the LOS swings through a geometrically-unlucky angle.
-const LOCK_DROP_TIMEOUT   = 1.5;
-// How often (seconds) to retry _scanForLock after the seeker has gone
-// maddog. Real AMRAAMs can reacquire after a brief loss; without this,
-// every notch that lasts longer than LOCK_DROP_TIMEOUT turns into an
-// unrecoverable failure even if the target comes right back out.
-const REACQUIRE_INTERVAL  = 0.25;
 
-// Missed-pass cutoff: once we've been within 2× the fuze envelope and the
-// current range exceeds that, the pass is over. Set lostLock so guidance
-// stops — real AMRAAMs do not loop around for a second attempt.
-const MISS_ABORT_RADIUS_SQ = FUZE_SENSE_RADIUS_SQ * 4;
+// Build the two radar configs (acquisition + tracking) from a
+// munition data object. Factored out so the two per-frame guidance
+// blocks that consult detectRadar() don't embed their own config.
+function buildSeekerRadar(d) {
+	const halfRad = (d.seeker.fovHalfAngleDeg * Math.PI) / 180;
+	return {
+		enabled: true, active: true, mode: 'track',
+		nominalRange: d.seeker.nominalDetectRangeM,
+		referenceRcs: d.seeker.referenceRcs,
+		fovH: halfRad, fovV: halfRad,
+		notchThreshold: d.seeker.notchThresholdAcquire,
+	};
+}
+function buildSeekerRadarTrack(d) {
+	return {
+		...buildSeekerRadar(d),
+		notchThreshold: d.seeker.notchThresholdTrack,
+	};
+}
 
 export class AIM120 extends Missile {
 	// Exposed so debug overlays (e.g. commander view's radar-debug mode)
 	// can draw the seeker's FOV cone without reaching into module-private
-	// constants. Same config object the runtime detectRadar() calls use.
-	static SEEKER_RADAR_DEBUG = SEEKER_RADAR;
+	// constants. Default config is the stock AIM-120D; per-instance
+	// this is replaced by the live seeker radar built from `this.data`.
+	static SEEKER_RADAR_DEBUG = buildSeekerRadar(DEFAULT_AIM120_DATA);
 
-	constructor(scene, viewer, startPos, heading, pitch, speed, target = null, onKill = null, launcher = null) {
-		// Call Missile's constructor but then override the flight parameters —
-		// we want a different speed profile and lifetime.
-		super(scene, viewer, startPos, heading, pitch, speed, target, onKill, launcher);
+	constructor(scene, viewer, startPos, heading, pitch, speed, target = null, onKill = null, launcher = null, data = null) {
+		// Data-driven: fall back to DEFAULT_AIM120_DATA for any caller
+		// that doesn't pass explicit data. Pass the data through to
+		// Missile's ctor so the base class's flight / warhead / sig
+		// lookups also use it.
+		const d = data || DEFAULT_AIM120_DATA;
+		super(scene, viewer, startPos, heading, pitch, speed, target, onKill, launcher, d);
+		this.data = d;
 
-		// Replace the base-class speed (which was launch + 800) with just the
-		// launch-rail speed; the motor will accelerate us during boost.
-		this.speed = speed + 50;
+		// Override launch speed offset using THIS munition's value (the
+		// base class already applied its OWN offset; we've passed our d
+		// above so it uses the right one — but keep the speed-set here
+		// explicit in case a subclass variant needs a different
+		// behaviour).
+		this.speed = speed + (d.flight.launchSpeedOffset ?? 50);
 
-		this.maxLife = MAX_LIFE;
-		this.life    = MAX_LIFE;
+		this.maxLife = d.flight.maxLifeS;
+		this.life    = this.maxLife;
 
-		this.type = 'AIM-120';
-		// AMRAAM has a different signature profile from the IR AIM-9.
-		this.signature = AIM120_SIGNATURE;
-		this.boostRemaining = BOOST_DURATION;
+		this.type = d.simType || 'AIM-120';
+		this.signature = SIGNATURES[d.signature] || AIM120_SIGNATURE;
+		this.boostRemaining = d.flight.boostDurationS;
+
+		// Live radar configs — computed from this munition's JSON.
+		// Expose the debug variant on the instance so commander view can
+		// pick it up via `m.constructor.SEEKER_RADAR_DEBUG` (static) OR
+		// `m._seekerRadar` (per-instance).
+		this._seekerRadar      = buildSeekerRadar(d);
+		this._seekerRadarTrack = buildSeekerRadarTrack(d);
+
 		this.seekerActive   = false;
 		this.pitbullFired   = false;
 		this.maddog         = false; // post-pitbull with no target found
@@ -187,8 +173,37 @@ export class AIM120 extends Missile {
 	initAMRAAMMesh() {
 		this.mesh = new THREE.Group();
 
-		const bodyLen = 3.65; // real AMRAAM body ~3.66 m
-		const radius  = 0.09; // 178 mm diameter → 89 mm radius
+		// Prefer the real AIM-120C GLB model; fall back to the procedural
+		// AMRAAM shape (cylinder + long mid-body strakes + rear fins) if
+		// the GLB fetch hasn't landed yet. The procedural path was the
+		// original mesh build — kept verbatim so the visual identity of
+		// first-frame-after-boot shots is preserved.
+		const templated = cloneAim120Template();
+		const bodyLen = templated ? 3.66 : 3.65;
+		const radius  = 0.09; // 178 mm diameter → 89 mm radius (for fallback fins/flame scaling)
+		if (templated) {
+			this.mesh.add(templated);
+		} else {
+			this._buildProceduralAmraamBody(3.65, radius);
+		}
+
+		// Flame + glow overlays (dynamic — pulse during boost, fade on
+		// coast). Slightly larger flame cone + glow than the AIM-9 to
+		// match the AMRAAM's 8-second boost phase and higher exhaust
+		// signature. Shared with the base Missile class via the
+		// parameterized flame builder.
+		this._buildFlameEffects(bodyLen, radius, 1.3, 2.5);
+
+		this.mesh.layers.enable(0);
+		this.mesh.layers.enable(1);
+		this.mesh.matrixAutoUpdate = false;
+		this.scene.add(this.mesh);
+	}
+
+	// Fallback procedural AMRAAM body — used while the GLB is still in
+	// flight from the server. Same geometry the sim shipped with before
+	// the real model was added.
+	_buildProceduralAmraamBody(bodyLen, radius) {
 		const bodyGeom = new THREE.CylinderGeometry(radius, radius, bodyLen, 16);
 		const bodyMat  = new THREE.MeshStandardMaterial({ color: 0xd0d0d0, metalness: 0.4, roughness: 0.5 });
 		this.mesh.add(new THREE.Mesh(bodyGeom, bodyMat));
@@ -227,64 +242,6 @@ export class AIM120 extends Missile {
 			g.rotation.y = i * (Math.PI / 2);
 			this.mesh.add(g);
 		}
-
-		// Exhaust — reuse the parent flame/glow sprite setup for visual parity.
-		const flameColor = new THREE.Color(1.0, 0.7, 0.25);
-		const flameGeom  = new THREE.ConeGeometry(radius * 0.95, 1.3, 16, 1, true);
-		flameGeom.rotateX(Math.PI);
-		flameGeom.translate(0, -0.65, 0);
-		const flameMat = new THREE.MeshBasicMaterial({
-			color: flameColor, transparent: true, opacity: 0.8, side: THREE.DoubleSide,
-			depthWrite: false, blending: THREE.AdditiveBlending,
-		});
-		this.flameMesh = new THREE.Mesh(flameGeom, flameMat);
-		this.flameMesh.position.y = -bodyLen / 2;
-		this.mesh.add(this.flameMesh);
-
-		const coreGeom = new THREE.ConeGeometry(radius * 0.55, 0.8, 16, 1, true);
-		coreGeom.rotateX(Math.PI);
-		coreGeom.translate(0, -0.4, 0);
-		const coreMat = new THREE.MeshBasicMaterial({
-			color: 0xffffff, transparent: true, opacity: 0.9, side: THREE.DoubleSide,
-			depthWrite: false, blending: THREE.AdditiveBlending,
-		});
-		this.flameCore = new THREE.Mesh(coreGeom, coreMat);
-		this.flameMesh.add(this.flameCore);
-
-		// Glow sprite — same radial gradient trick the parent class uses.
-		const canvSize = 128;
-		const canv = (typeof document !== 'undefined') ? document.createElement('canvas') : null;
-		let glowTexture = null;
-		if (canv) {
-			canv.width = canv.height = canvSize;
-			const ctx = canv.getContext('2d');
-			const cx = canvSize / 2;
-			const grad = ctx.createRadialGradient(cx, cx, 0, cx, cx, cx);
-			grad.addColorStop(0.00, 'rgba(255,255,255,1)');
-			grad.addColorStop(0.18, 'rgba(255,245,200,1)');
-			grad.addColorStop(0.38, 'rgba(255,160,30,0.95)');
-			grad.addColorStop(0.62, 'rgba(220,60,10,0.6)');
-			grad.addColorStop(1.00, 'rgba(0,0,0,0)');
-			ctx.fillStyle = grad;
-			ctx.fillRect(0, 0, canvSize, canvSize);
-			glowTexture = new THREE.CanvasTexture(canv);
-			glowTexture.minFilter = THREE.LinearFilter;
-			glowTexture.magFilter = THREE.LinearFilter;
-		}
-		const spriteMat = new THREE.SpriteMaterial({
-			map: glowTexture, color: new THREE.Color(1.0, 0.95, 0.9),
-			transparent: true, opacity: 0.98, blending: THREE.AdditiveBlending,
-			depthTest: false, depthWrite: false,
-		});
-		this.flameGlow = new THREE.Sprite(spriteMat);
-		this.flameGlow.scale.set(2.5, 2.5, 1.0);
-		this.flameGlow.position.y = -bodyLen / 2 - 0.08;
-		this.mesh.add(this.flameGlow);
-
-		this.mesh.layers.enable(0);
-		this.mesh.layers.enable(1);
-		this.mesh.matrixAutoUpdate = false;
-		this.scene.add(this.mesh);
 	}
 
 	update(dt, npcs) {
@@ -301,7 +258,7 @@ export class AIM120 extends Missile {
 				this.flameMesh.material.opacity = 0.7 + Math.random() * 0.3;
 				if (this.flameCore) this.flameCore.scale.set(f, 0.9 + Math.random() * 0.2, f);
 			} else {
-				const k = Math.max(0, 1 - (BOOST_DURATION - this.boostRemaining + dt) / 2.0);
+				const k = Math.max(0, 1 - (this.data.flight.boostDurationS - this.boostRemaining + dt) / 2.0);
 				this.flameMesh.scale.set(0.4, 0.4, 0.4);
 				this.flameMesh.material.opacity = 0.2 * k;
 				if (this.flameCore) this.flameCore.material.opacity = 0.3 * k;
@@ -323,15 +280,16 @@ export class AIM120 extends Missile {
 		// Combined with the loft profile in _guide() this makes high-
 		// altitude coast a real energy win instead of just a cosmetic
 		// arc.
+		const f = this.data.flight;
 		if (this.boostRemaining > 0) {
-			this.speed = Math.min(BOOST_PEAK_SPEED, this.speed + BOOST_ACCEL * dt);
+			this.speed = Math.min(f.peakSpeed, this.speed + f.boostAccel * dt);
 			this.boostRemaining -= dt;
 		} else {
-			const rhoRef   = airDensity(10000);
+			const rhoRef   = airDensity(f.dragRefAltitude);
 			const rho      = airDensity(this.alt);
-			const v2Ratio  = (this.speed * this.speed) / (COAST_DRAG_REF_V * COAST_DRAG_REF_V);
-			const dragAcc  = COAST_DRAG_REF * (rho / Math.max(1e-6, rhoRef)) * v2Ratio;
-			this.speed = Math.max(MIN_SPEED, this.speed - dragAcc * dt);
+			const v2Ratio  = (this.speed * this.speed) / (f.dragRefSpeed * f.dragRefSpeed);
+			const dragAcc  = f.dragRef * (rho / Math.max(1e-6, rhoRef)) * v2Ratio;
+			this.speed = Math.max(f.minSpeed, this.speed - dragAcc * dt);
 		}
 
 		// ---- Gravity --------------------------------------------------------
@@ -346,7 +304,7 @@ export class AIM120 extends Missile {
 			const pRad = this.pitch * Math.PI / 180;
 			let vHoriz = this.speed * Math.cos(pRad);
 			let vVert  = this.speed * Math.sin(pRad) - GRAVITY * dt;
-			this.speed = Math.max(MIN_SPEED, Math.hypot(vHoriz, vVert));
+			this.speed = Math.max(this.data.flight.minSpeed, Math.hypot(vHoriz, vVert));
 			this.pitch = Math.atan2(vVert, vHoriz) * 180 / Math.PI;
 			this.pitch = Math.max(-85, Math.min(85, this.pitch));
 		}
@@ -370,7 +328,7 @@ export class AIM120 extends Missile {
 			const predicted = this._bestTargetState();
 			if (predicted) {
 				const rng = this._predictedRangeM(predicted);
-				if (rng < SEEKER_ACTIVE_RANGE) this._firePitbull(npcs);
+				if (rng < this.data.seeker.activeRangeM) this._firePitbull(npcs);
 			}
 		} else {
 			// Active seeker phase: make sure we can still see our target
@@ -404,13 +362,19 @@ export class AIM120 extends Missile {
 		// Self-skip and friendly-fire filter are the same as the base
 		// Missile class: don't detonate on the launcher or anyone sharing
 		// its team (fixed "AIM-120 blows up on the rail" bug).
+		const killR   = this.data.warhead.killRadiusM;
+		const killRSq = killR * killR;
+		const fuzeR   = this.data.warhead.fuzeSenseRadiusM;
+		const fuzeRSq = fuzeR * fuzeR;
+		const missAbortRSq = fuzeRSq * (this.data.warhead.missAbortRadiusMul ?? 4);
+
 		if (npcs) {
 			for (const npc of npcs) {
 				if (!npc || npc === this.launcher) continue;
 				if (npc.destroyed) continue;
 				if (npc.team && this.team && npc.team === this.team) continue;
 				const missSq = this._segmentMissDistSq(prevLon, prevLat, prevAlt, this.lon, this.lat, this.alt, npc);
-				if (missSq < KILL_RADIUS_SQ) {
+				if (missSq < killRSq) {
 					this.hitNPC(npc);
 					return;
 				}
@@ -424,20 +388,20 @@ export class AIM120 extends Missile {
 		// high speed misses entirely.
 		if (this.target && !this.target.destroyed) {
 			const dSq = this.calculateDistSqToNPC(this.target);
-			if (dSq < FUZE_SENSE_RADIUS_SQ &&
+			if (dSq < fuzeRSq &&
 				this._prevTargetDistSq !== undefined &&
 				dSq > this._prevTargetDistSq) {
 				this.hitNPC(this.target);
 				return;
 			}
-			this._prevTargetDistSq = dSq < FUZE_SENSE_RADIUS_SQ ? dSq : undefined;
+			this._prevTargetDistSq = dSq < fuzeRSq ? dSq : undefined;
 
 			// Miss-abort: track the closest we ever got to the tracked
 			// target. Once the range exceeds the miss-abort radius *and*
 			// we've been close enough to matter, the pass is over. Drop
 			// guidance — real AMRAAMs do not loop around for a retry.
 			this._minRangeSq = Math.min(this._minRangeSq ?? Infinity, dSq);
-			if (this._minRangeSq < MISS_ABORT_RADIUS_SQ && dSq > MISS_ABORT_RADIUS_SQ) {
+			if (this._minRangeSq < missAbortRSq && dSq > missAbortRSq) {
 				this.lostLock = true;
 			}
 		}
@@ -592,7 +556,7 @@ export class AIM120 extends Missile {
 			// aspect, range-equation with RCS^0.25 scaling, terrain LOS,
 			// and the pulse-Doppler notch. Stealth, beaming, and terrain
 			// masking all break seeker lock now, not just plane radar.
-			const det = detectRadar(observer, t, SEEKER_RADAR);
+			const det = detectRadar(observer, t, this._seekerRadar);
 			if (!det) continue;
 
 			let dlDist = 0;
@@ -633,7 +597,7 @@ export class AIM120 extends Missile {
 		// through brief Doppler nulls; only hard-physical losses (out of
 		// FOV, out of range, terrain-masked) should break track here.
 		if (this.target && !this.target.destroyed && this.target.active !== false) {
-			const det = detectRadar(observer, this.target, SEEKER_RADAR_TRACK);
+			const det = detectRadar(observer, this.target, this._seekerRadarTrack);
 			if (det) {
 				this._lockLostTimer = 0;
 				// Clear maddog if the target popped back into view.
@@ -652,7 +616,7 @@ export class AIM120 extends Missile {
 		// DL-track-closest candidate means we usually pick the original
 		// bogey again.
 		this._reacqTimer = (this._reacqTimer || 0) + dt;
-		if (this._reacqTimer >= REACQUIRE_INTERVAL) {
+		if (this._reacqTimer >= this.data.seeker.reacquireIntervalS) {
 			this._reacqTimer = 0;
 			const picked = this._scanForLock(allTargets);
 			if (picked) {
@@ -666,7 +630,7 @@ export class AIM120 extends Missile {
 		// Still no detection and the drop timer has elapsed → maddog.
 		// Guidance will fall through to DR on the last DL track; the
 		// reacquire loop above keeps trying to climb back out.
-		if (this._lockLostTimer >= LOCK_DROP_TIMEOUT && !this.maddog) {
+		if (this._lockLostTimer >= this.data.seeker.lockDropTimeoutS && !this.maddog) {
 			this.maddog = true;
 		}
 	}
@@ -727,10 +691,14 @@ export class AIM120 extends Missile {
 		// coast rather than porpoising toward the target at low level.
 		// Inside TERMINAL_RANGE the term drops out entirely, letting the
 		// raw lead-pursuit geometry produce the steep terminal dive.
-		if (rangeToTarget > TERMINAL_RANGE) {
-			const denom = Math.max(1, MAX_LOFT_RANGE - TERMINAL_RANGE);
-			const loftRatio = Math.min(1, (rangeToTarget - TERMINAL_RANGE) / denom);
-			desiredPitch += MAX_LOFT_DEG * loftRatio;
+		const loft = this.data.loft || {};
+		const termRange  = loft.terminalRangeM ?? 15000;
+		const maxLoftR   = loft.maxLoftRangeM  ?? 70000;
+		const maxLoftDeg = loft.maxLoftDeg     ?? 25;
+		if (rangeToTarget > termRange) {
+			const denom = Math.max(1, maxLoftR - termRange);
+			const loftRatio = Math.min(1, (rangeToTarget - termRange) / denom);
+			desiredPitch += maxLoftDeg * loftRatio;
 		}
 		desiredPitch = THREE.MathUtils.clamp(desiredPitch, -85, 85);
 
@@ -739,9 +707,10 @@ export class AIM120 extends Missile {
 		while (dH >  180) dH -= 360;
 		const dP = desiredPitch - this.pitch;
 
-		const cap = MAX_TURN_DEG_PER_S * dt;
-		this.heading += THREE.MathUtils.clamp(dH * PN_GAIN * dt, -cap, cap);
-		this.pitch   += THREE.MathUtils.clamp(dP * PN_GAIN * dt, -cap, cap);
+		const cap = (this.data.flight.maxTurnDegPerSec ?? 40) * dt;
+		const pn  =  this.data.flight.pnGain ?? 4.0;
+		this.heading += THREE.MathUtils.clamp(dH * pn * dt, -cap, cap);
+		this.pitch   += THREE.MathUtils.clamp(dP * pn * dt, -cap, cap);
 		this.pitch   = THREE.MathUtils.clamp(this.pitch, -85, 85);
 
 		// Debug data: include mode so the HUD and map tooltip can show

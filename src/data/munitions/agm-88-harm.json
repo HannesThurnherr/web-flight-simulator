@@ -1,0 +1,12 @@
+{
+	"id": "agm-88-harm",
+	"name": "AGM-88 HARM",
+	"shortName": "AGM-88",
+	"category": "AGM",
+	"tags": ["agm", "sead", "anti-radiation"],
+	"massKg": 360,
+	"rcsContributionM2": 0.05,
+	"description": "High-speed anti-radiation missile. SEAD workhorse — homes on emitting radars.",
+	"simType": "AGM-88",
+	"seekerType": "anti_radiation"
+}

@@ -1,7 +1,6 @@
 import * as THREE from 'three';
 import * as Cesium from 'cesium';
-import { Missile } from '../weapon/missile';
-import { AIM120 } from '../weapon/aim120';
+import { createMunition, munitionIdForSimType } from '../weapon/munitionFactory';
 import { Bullet } from '../weapon/bullet';
 import { Flare } from '../weapon/flare';
 import { soundManager } from '../utils/soundManager';
@@ -40,14 +39,33 @@ export class WeaponSystem {
 		this.flares = [];
 		this.onKill = null;
 
+		// ---- AESA multi-target lock state ------------------------------
+		// `locks` is a Map keyed by NPC, tracking each individual track's
+		// status independently — modern AESA radars can maintain tracks
+		// on many contacts simultaneously (typically 10+). `progress` is
+		// 0..1 toward the weapon's lockTime requirement; once it hits 1
+		// the status flips to 'LOCKED' and that contact is eligible as
+		// the designated target. Contacts that leave the current weapon's
+		// envelope drop out of the Map; contacts that come back in start
+		// their progress timer from zero again.
+		this.locks = new Map();
+		// The one contact missile shots will actually launch at. Points
+		// into `locks` (must have status === 'LOCKED' to fire). Cycled
+		// by Tab / Shift+Tab.
+		this.designatedTarget = null;
+		// Back-compat alias used by fire() and legacy callers. Kept in
+		// sync with designatedTarget every update().
 		this.target = null;
+		// Legacy single-target lock status, derived from the designated
+		// target's entry in `locks`. HUD reads this for the big centre
+		// lock box.
+		this.lockStatus = 'NONE';
+		this.lockingTarget = null;
+
 		this.isGunOverheated = false;
 		this.gunHeat = 0;
 
-		this.lockTime = 0;
 		this.lockRequiredTime = 2.0; // overridden per-weapon when locking
-		this.lockStatus = 'NONE';
-		this.lockingTarget = null;
 
 		this.flareQueue = 0;
 		this.flareInterval = 0.15;
@@ -61,6 +79,20 @@ export class WeaponSystem {
 			flare: 0
 		};
 		this.lastEmptyWarningSoundTime = 0;
+	}
+
+	// Apply per-simType ammo counts from the loadout system. Called by
+	// main.js on spawn commit with an object like { 'AIM-120': 4,
+	// 'AIM-9': 2 }. Any type not present in the loadout is zeroed
+	// (you didn't load it, you don't have it). Gun ammo (Infinity)
+	// is unaffected.
+	applyLoadout(counts = {}) {
+		for (const w of this.weapons) {
+			if (!w.type || w.ammo === Infinity) continue;
+			const n = counts[w.type] || 0;
+			w.ammo = n;
+			w.maxAmmo = n;
+		}
 	}
 
 	resetAmmo() {
@@ -191,7 +223,8 @@ export class WeaponSystem {
 				playerState.heading,
 				playerState.pitch,
 				playerState.speed,
-				this.onKill
+				this.onKill,
+				playerState,
 			);
 			this.projectiles.push(bullet);
 		} else if (weapon.id === 'missile') {
@@ -202,25 +235,26 @@ export class WeaponSystem {
 			const launchPos = this.calculateWeaponPos(missileOffset) || startPos;
 			const target = this.target;
 
-			// Dispatch on weapon type. AIM-120 gets the BVR-optimized class;
-			// anything else (AIM-9 today, other IR weapons later) uses the
-			// base Missile class.
-			// playerState carries team='friendly'; pass it as the launcher so
-			// team/signature are set at construction. Same call signature is
-			// used by NPC firing in npcSystem.
-			let projectile;
-			if (weapon.type === 'AIM-120') {
-				projectile = new AIM120(
-					this.scene, this.viewer, launchPos,
-					playerState.heading, playerState.pitch, playerState.speed,
-					target, this.onKill, playerState,
-				);
-			} else {
-				projectile = new Missile(
-					this.scene, this.viewer, launchPos,
-					playerState.heading, playerState.pitch, playerState.speed,
-					target, this.onKill, playerState,
-				);
+			// Factory dispatch on the weapon's simType. Returns the
+			// right seeker-class instance for whatever munition is
+			// loaded in that slot (AIM-120D → AIM120, AIM-9X → Missile,
+			// future HARM / LGB / JDAM → their own seeker classes).
+			// Currently uses the first munition matching the simType;
+			// when the loadout system tracks per-slot munitions, the
+			// specific id loaded on the fired rack can be threaded
+			// through here.
+			const munitionId = munitionIdForSimType(weapon.type);
+			const projectile = createMunition(
+				munitionId,
+				this.scene, this.viewer, launchPos,
+				playerState.heading, playerState.pitch, playerState.speed,
+				target, this.onKill, playerState,
+			);
+			if (!projectile) {
+				// Unknown munition / unimplemented seeker — refund the
+				// round so the user isn't punished for our missing code.
+				weapon.ammo = Math.min(weapon.maxAmmo, weapon.ammo + 1);
+				return;
 			}
 			this.projectiles.push(projectile);
 
@@ -269,6 +303,21 @@ export class WeaponSystem {
 		this.flares.push(flare);
 	}
 
+	// Re-bake every live player projectile's mesh matrix against the
+	// CURRENT Cesium view matrix. Mirrors npcSystem.syncMeshMatrices —
+	// called from main.js after a camera move so the THREE meshes stay
+	// aligned with the earth the Cesium camera is about to render.
+	// Without this, switching into spectator mode on a moving target
+	// makes player-fired missiles appear to shake in world space every
+	// time frame-time jitters, because they were baked with a slightly
+	// stale view matrix.
+	syncMeshMatrices() {
+		for (const p of this.projectiles) {
+			if (!p || !p.active) continue;
+			if (typeof p.updateThreeMatrix === 'function') p.updateThreeMatrix();
+		}
+	}
+
 	update(dt, playerState, input = null) {
 		const prevLockStatus = this.lockStatus;
 		const currentWeapon = this.getCurrentWeapon();
@@ -286,36 +335,85 @@ export class WeaponSystem {
 			}
 		} catch (e) { }
 
+		// ------------------------------------------------------------
+		// AESA-style multi-target lock maintenance.
+		//
+		// While a missile weapon is selected: for every hostile NPC in
+		// the current weapon's envelope, accumulate an individual lock
+		// timer. Once any track's timer hits the weapon's lockTime, that
+		// track becomes 'LOCKED' — the designated-target pointer can be
+		// switched to it via Tab. Tracks that leave the envelope are
+		// dropped. When the gun is selected all locks are cleared.
+		// ------------------------------------------------------------
+		let newLockAcquired = false;
 		if (currentWeapon.id === 'missile') {
-			const potentialTarget = this.findPotentialTarget(playerState);
 			const lockTimeReq = currentWeapon.lockTime || this.lockRequiredTime;
+			const inEnvelope = this.findTargetsInEnvelope(playerState);
 
-			if (potentialTarget) {
-				if (this.lockingTarget === potentialTarget) {
-					this.lockTime += dt;
-					if (this.lockTime >= lockTimeReq) {
-						this.lockStatus = 'LOCKED';
-						this.target = potentialTarget;
-					} else {
-						this.lockStatus = 'LOCKING';
-					}
+			// Age / advance / drop. First pass: drop any existing track
+			// whose NPC is no longer in envelope or has been destroyed.
+			for (const [npc, entry] of this.locks) {
+				if (!inEnvelope.has(npc) || npc.destroyed) {
+					this.locks.delete(npc);
 				} else {
-					this.lockingTarget = potentialTarget;
-					this.lockTime = 0;
-					this.lockStatus = 'LOCKING';
-					this.target = null;
+					// Still in cone + range; progress toward full lock.
+					if (entry.status !== 'LOCKED') {
+						entry.progress += dt / lockTimeReq;
+						if (entry.progress >= 1) {
+							entry.progress = 1;
+							entry.status = 'LOCKED';
+							newLockAcquired = true;
+						}
+					}
 				}
-			} else {
-				this.lockingTarget = null;
-				this.lockTime = 0;
-				this.lockStatus = 'NONE';
-				this.target = null;
+			}
+			// Second pass: new tracks — anyone in envelope we aren't
+			// already tracking.
+			for (const npc of inEnvelope) {
+				if (this.locks.has(npc)) continue;
+				this.locks.set(npc, { progress: 0, status: 'LOCKING' });
 			}
 		} else {
-			this.lockingTarget = null;
-			this.lockTime = 0;
-			this.lockStatus = 'NONE';
-			this.target = null;
+			// Gun selected: drop every radar track. Real jets keep the
+			// air picture alive across mode switches, but this sim
+			// doesn't animate a "reacquisition" transition and keeping
+			// stale tracks around would be a footgun for the HUD.
+			this.locks.clear();
+			this.designatedTarget = null;
+		}
+
+		// Validate / refresh the designated target. Three cases:
+		//   1. No designated target but at least one LOCKED contact →
+		//      auto-promote the first one (closest would be marginally
+		//      better, but locked tracks are already close-ish).
+		//   2. Designated target still LOCKED → keep it.
+		//   3. Designated target gone / not LOCKED → try to promote
+		//      another LOCKED contact, or null out.
+		const designatedEntry = this.designatedTarget && this.locks.get(this.designatedTarget);
+		if (!designatedEntry || designatedEntry.status !== 'LOCKED') {
+			let pick = null;
+			for (const [npc, entry] of this.locks) {
+				if (entry.status === 'LOCKED') { pick = npc; break; }
+			}
+			this.designatedTarget = pick;
+		}
+
+		// Legacy fields for the HUD / fire() path — mirror the designated
+		// target's state into the single-target shape the rest of the
+		// system was built around.
+		this.target         = this.designatedTarget;
+		this.lockingTarget  = this.designatedTarget;
+		if (this.designatedTarget) {
+			const e = this.locks.get(this.designatedTarget);
+			this.lockStatus = e ? e.status : 'NONE';
+		} else {
+			// No designated target, but if anything is LOCKING we still
+			// want the "searching" tone / HUD cue.
+			let anyLocking = false;
+			for (const [, e] of this.locks) {
+				if (e.status === 'LOCKING') { anyLocking = true; break; }
+			}
+			this.lockStatus = anyLocking ? 'LOCKING' : 'NONE';
 		}
 
 		try {
@@ -329,7 +427,11 @@ export class WeaponSystem {
 				}
 			}
 
-			if (prevLockStatus !== this.lockStatus && this.lockStatus === 'LOCKED') {
+			// Play the lock tone whenever ANY track transitions to LOCKED
+			// (not just when the single designated-target changes state).
+			// Gives you the audible "ping" each time a new AESA track
+			// completes the lock timer.
+			if (newLockAcquired) {
 				soundManager.play('rwr-lock');
 			}
 			if (prevLockStatus === 'LOCKED' && this.lockStatus !== 'LOCKED') {
@@ -390,36 +492,64 @@ export class WeaponSystem {
 		}
 	}
 
-	findPotentialTarget(playerState) {
-		if (!playerState.npcs || playerState.npcs.length === 0) return null;
+	// Return every hostile NPC inside the current weapon's lock envelope
+	// (radar cone + range). Returns a Set for fast membership checks in
+	// the lock-maintenance loop. Replaces the old findPotentialTarget,
+	// which only returned the single best candidate — the multi-lock
+	// path needs every candidate because each gets its own track entry.
+	findTargetsInEnvelope(playerState) {
+		const out = new Set();
+		if (!playerState.npcs || playerState.npcs.length === 0) return out;
 
-		// Use the currently-selected weapon's lock envelope. AIM-120 has a
-		// much wider cone and 8× the range of the AIM-9.
 		const weapon = this.getCurrentWeapon();
 		const lockRange = weapon && weapon.lockRange ? weapon.lockRange : 10000;
 		const lockCone  = weapon && weapon.lockCone  ? weapon.lockCone  : 0.985;
 
-		let bestTarget = null;
-		let maxDot = lockCone;
-
 		for (const npc of playerState.npcs) {
 			if (npc.destroyed) continue;
 			// Team filter — never lock onto friendlies (AWACS, wingman,
-			// tanker). Previously the lock cone would happily grab an
-			// AWACS orbiting behind the player because nothing filtered
-			// by team.
+			// tanker). Without this the AESA would happily paint every
+			// friendly in the sky.
 			if (npc.team && npc.team === playerState.team) continue;
 
 			const dot = this.calculateDotProduct(playerState, npc);
-			if (dot > maxDot) {
-				const dist = this.calculateDist(playerState, npc);
-				if (dist < lockRange) {
-					bestTarget = npc;
-					maxDot = dot;
-				}
-			}
+			if (dot <= lockCone) continue;
+			const dist = this.calculateDist(playerState, npc);
+			if (dist >= lockRange) continue;
+			out.add(npc);
 		}
-		return bestTarget;
+		return out;
+	}
+
+	// Cycle the designated target through the set of currently-LOCKED
+	// contacts. `direction = +1` advances forward (Tab), `-1` goes back
+	// (Shift+Tab). LOCKING contacts are excluded — you can only fire
+	// at a fully-established track, and cycling to a track you can't
+	// fire at would be a confusing UX. No-op if no contacts are locked.
+	cycleDesignatedTarget(direction = 1) {
+		const locked = [];
+		for (const [npc, entry] of this.locks) {
+			if (entry.status === 'LOCKED') locked.push(npc);
+		}
+		if (locked.length === 0) {
+			this.designatedTarget = null;
+			return;
+		}
+		// Stable order by name — otherwise the Map's insertion order can
+		// shuffle as contacts drop in and out of envelope, making Tab
+		// feel arbitrary. Name is a stable identifier the HUD already
+		// shows, so cycling feels like "next bandit on the list".
+		locked.sort((a, b) => {
+			const na = (a.name || '').toString();
+			const nb = (b.name || '').toString();
+			return na.localeCompare(nb);
+		});
+		const idx = locked.indexOf(this.designatedTarget);
+		const next = (idx + (direction > 0 ? 1 : -1) + locked.length) % locked.length;
+		// If designated wasn't in the list (idx === -1), `next` still
+		// resolves to a valid index in [0, locked.length).
+		this.designatedTarget = locked[idx < 0 ? 0 : next];
+		try { soundManager.play('weapon-switch'); } catch (e) {}
 	}
 
 	calculateDotProduct(player, npc) {

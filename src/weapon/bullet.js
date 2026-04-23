@@ -5,10 +5,16 @@ import { particles } from '../utils/particles';
 import { soundManager } from '../utils/soundManager';
 
 export class Bullet {
-	constructor(scene, viewer, startPos, heading, pitch, speed, onKill = null) {
+	// `launcher` (optional) is the unit that fired this round. Used for
+	// friendly-fire filtering — a bullet won't damage anything on the
+	// launcher's team. Player bullets get launcher = playerState so
+	// they can't clip a wingman flying in front of them.
+	constructor(scene, viewer, startPos, heading, pitch, speed, onKill = null, launcher = null) {
 		this.scene = scene;
 		this.viewer = viewer;
 		this.onKill = onKill;
+		this.launcher = launcher;
+		this.team = (launcher && launcher.team) || 'friendly';
 
 		this.lon = startPos.lon;
 		this.lat = startPos.lat;
@@ -17,7 +23,10 @@ export class Bullet {
 		this.pitch = pitch;
 		this.speed = speed + 1500;
 
-		this.life = 3;
+		// 5 s life × ~1500 m/s muzzle velocity ≈ 7.5 km — the requested
+		// "I wanna snipe" sniper range. Real 20 mm rounds tumble past
+		// ~1.5 km but this is a game; we let tracers reach out further.
+		this.life = 5;
 		this.active = true;
 
 		this._scratchMatrix = new Cesium.Matrix4();
@@ -121,9 +130,12 @@ export class Bullet {
 
 		if (npcs) {
 			for (const npc of npcs) {
+				if (!npc || npc.destroyed) continue;
+				if (npc === this.launcher) continue;
+				if (npc.team && this.team && npc.team === this.team) continue;
 				const distSq = this.calculateDistSqToNPC(npc);
 				if (distSq < 400) {
-					this.hitNPC(npc);
+					this.hitTarget(npc);
 					return;
 				}
 			}
@@ -180,9 +192,9 @@ export class Bullet {
 		return dLon * dLon + dLat * dLat + dAlt * dAlt;
 	}
 
-	hitNPC(npc) {
-		npc.destroyed = true;
-		if (this.onKill) this.onKill(npc);
+	hitTarget(target) {
+		target.destroyed = true;
+		if (this.onKill) this.onKill(target);
 		try {
 			particles.spawnExplosion(this.lon, this.lat, this.alt, { count: 36, smokeCount: 8, big: true });
 			particles.spawnWreckage(this.lon, this.lat, this.alt, this.heading, this.pitch, { count: 18 });

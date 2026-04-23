@@ -152,6 +152,62 @@ export function setCameraToPlane(lon, lat, alt, heading, pitch, roll) {
 	viewer.scene.requestRender();
 }
 
+// Third-person chase cam: place the Cesium camera BEHIND the given unit,
+// looking at it. Used by the spectator feature — clicking "view from this
+// unit" on a map tooltip flips the global camera into this mode with the
+// clicked unit as the target. Works uniformly for any world-space unit
+// because every one of them (player, NPC, missile, SAM) carries the same
+// { lon, lat, alt, heading, pitch } shape.
+//
+// orbitYaw / orbitPitch (degrees): mouse-drag offsets. The caller passes
+// the same controller-derived values the player chase cam uses, so
+// dragging the mouse while spectating orbits the camera around the
+// target the way the pilot cam orbits around the player.
+// zoom: 0.5 .. 3 → scales the trailing distance.
+export function setCameraBehindUnit(unit, orbitYaw = 0, orbitPitch = 0, zoom = 1) {
+	if (!viewer || !unit) return;
+
+	// Baseline trailing offset: 40 m behind, 12 m above. Scaled by zoom so
+	// the mouse-wheel zoom control keeps working while spectating.
+	const BASE_DIST = 40;
+	const BASE_UP   = 12;
+	const dist = BASE_DIST * Math.max(0.25, zoom);
+
+	// Effective look direction: unit's current heading/pitch plus the
+	// player's mouse-drag orbit offsets.
+	const h = Cesium.Math.toRadians((unit.heading || 0) + orbitYaw);
+	const p = Cesium.Math.toRadians((unit.pitch   || 0) + orbitPitch);
+
+	// Forward unit vector in ENU (east-north-up).
+	const fE = Math.sin(h) * Math.cos(p);
+	const fN = Math.cos(h) * Math.cos(p);
+	const fU = Math.sin(p);
+
+	// Offset from the unit to the camera = -forward·dist + up·BASE_UP.
+	const offE = -fE * dist;
+	const offN = -fN * dist;
+	const offU = -fU * dist + BASE_UP;
+
+	const plat = (unit.lat || 0) * Math.PI / 180;
+	const camLon = unit.lon + offE / (111320 * Math.cos(plat));
+	const camLat = unit.lat + offN / 111320;
+	const camAlt = unit.alt + offU;
+
+	// Orient the camera to look back at the unit: look vector = -offset.
+	const lookLen = Math.hypot(offE, offN, offU);
+	const lE = -offE / lookLen;
+	const lN = -offN / lookLen;
+	const lU = -offU / lookLen;
+	const lookHeading = Math.atan2(lE, lN);
+	const lookPitch   = Math.asin(Math.max(-1, Math.min(1, lU)));
+
+	viewer.camera.setView({
+		destination: Cesium.Cartesian3.fromDegrees(camLon, camLat, camAlt),
+		orientation: { heading: lookHeading, pitch: lookPitch, roll: 0 },
+	});
+	viewer.scene.requestRender();
+}
+
 export function setMinimapCamera(lon, lat, altitude, heading) {
 	if (!miniViewer) return;
 

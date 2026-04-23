@@ -409,6 +409,29 @@ html {
 	display: flex;
 	flex-direction: column;
 	gap: 10px;
+	/* Bound the strip height so an ever-growing plane/scenario list
+	   doesn't push content off the bottom of the menu. Individually
+	   scrollable keeps both selectors visible at once. Thin custom
+	   scrollbar for the tactical aesthetic. */
+	max-height: 42vh;
+	overflow-y: auto;
+	overflow-x: hidden;
+	padding-right: 4px; /* room for scrollbar */
+	scrollbar-width: thin;
+	scrollbar-color: rgba(0, 255, 0, 0.35) transparent;
+}
+.scenario-cards::-webkit-scrollbar {
+	width: 6px;
+}
+.scenario-cards::-webkit-scrollbar-track {
+	background: transparent;
+}
+.scenario-cards::-webkit-scrollbar-thumb {
+	background: rgba(0, 255, 0, 0.35);
+	border-radius: 3px;
+}
+.scenario-cards::-webkit-scrollbar-thumb:hover {
+	background: rgba(0, 255, 0, 0.6);
 }
 
 .scenario-card {
@@ -463,6 +486,589 @@ html {
 	right: 12px;
 	color: #0f0;
 	font-size: 14px;
+}
+
+/* ---- Airframe badge + preview ---------------------------------------- */
+/* The compact "current aircraft" slab in the main menu: a small spinning
+   3D preview on the left, plane name + tag chips + CHANGE button on the
+   right. Clicking CHANGE opens the full airframe-picker modal. */
+
+.current-airframe {
+	/* flex-start prevents children from stretching on the cross axis.
+	   With `stretch` the canvas would try to match the info column's
+	   height AND honor its aspect-ratio, which makes the flex item
+	   grow unbounded in Chrome/Firefox until something else caps it. */
+	display: flex;
+	gap: 12px;
+	align-items: flex-start;
+	padding: 10px;
+	border: 1px solid rgba(0, 255, 0, 0.35);
+	background: rgba(0, 20, 0, 0.35);
+	box-shadow: inset 0 0 16px rgba(0, 255, 0, 0.08);
+}
+
+.plane-preview-compact {
+	/* Pinned width AND height instead of relying on aspect-ratio so
+	   the canvas has a determinate display box regardless of flex
+	   quirks. Three.js setSize fills the internal buffer; CSS pins
+	   the visible box. */
+	display: block;
+	flex: 0 0 170px;
+	width: 170px;
+	height: 96px;
+	background: rgba(0, 25, 0, 0.45);
+	border: 1px solid rgba(0, 255, 0, 0.3);
+}
+
+.current-airframe-info {
+	flex: 1 1 auto;
+	display: flex;
+	flex-direction: column;
+	gap: 6px;
+	min-width: 0;
+}
+
+.current-airframe-name {
+	font-size: 16px;
+	font-weight: bold;
+	letter-spacing: 1.5px;
+	color: #0f0;
+}
+
+.current-airframe-tags {
+	display: flex;
+	gap: 4px;
+	flex-wrap: wrap;
+}
+
+.change-airframe-btn {
+	margin-top: auto;
+	padding: 7px 12px;
+	background: transparent;
+	border: 1px solid rgba(0, 255, 0, 0.45);
+	color: #0f0;
+	font-family: inherit;
+	font-size: 11px;
+	letter-spacing: 1.5px;
+	cursor: pointer;
+	transition: all 0.15s;
+}
+.change-airframe-btn:hover {
+	background: rgba(0, 255, 0, 0.1);
+	border-color: #0f0;
+	letter-spacing: 2px;
+}
+
+/* ---- Airframe picker modal ------------------------------------------- */
+/* Two-column layout: list of planes on the left, detail panel on the
+   right (big spinning preview, full spec sheet, description). CONFIRM
+   commits the pick; CLOSE discards. Reuses the existing .modal chrome
+   for header / close button / overlay. */
+
+/* Airframe modal spans most of the screen so the three-column layout
+   (plane list + preview/intro + tabs/content) gets real vertical room
+   for scrollable lists without the 3D preview dominating. */
+#airframeModal {
+	max-width: 1400px;
+	width: 95vw;
+	max-height: 92vh;
+}
+
+.airframe-picker-body {
+	display: grid;
+	grid-template-columns: 240px 340px 1fr;
+	gap: 16px;
+	min-height: 0;
+	flex: 1 1 auto;
+	overflow: hidden;
+}
+
+.airframe-picker-list {
+	display: flex;
+	flex-direction: column;
+	gap: 6px;
+	overflow-y: auto;
+	min-height: 0;
+	scrollbar-width: thin;
+	scrollbar-color: rgba(0, 255, 0, 0.35) transparent;
+}
+.airframe-picker-list::-webkit-scrollbar { width: 6px; }
+.airframe-picker-list::-webkit-scrollbar-thumb { background: rgba(0,255,0,0.35); border-radius: 3px; }
+
+.airframe-picker-item {
+	display: flex;
+	flex-direction: column;
+	gap: 4px;
+	padding: 10px 12px;
+	background: transparent;
+	border: 1px solid rgba(0, 255, 0, 0.22);
+	border-left: 3px solid rgba(0, 255, 0, 0.3);
+	color: #0f0;
+	font-family: inherit;
+	font-size: 12px;
+	letter-spacing: 1px;
+	cursor: pointer;
+	text-align: left;
+	transition: all 0.15s;
+}
+.airframe-picker-item .api-name { font-weight: bold; }
+.airframe-picker-item .api-tags { display: flex; gap: 3px; flex-wrap: wrap; }
+.airframe-picker-item:hover {
+	background: rgba(0, 255, 0, 0.08);
+	border-color: rgba(0, 255, 0, 0.55);
+	border-left-width: 6px;
+	padding-left: 9px;
+}
+.airframe-picker-item.selected {
+	background: rgba(0, 255, 0, 0.12);
+	border-color: #0f0;
+	border-left-width: 6px;
+	padding-left: 9px;
+	box-shadow: inset 0 0 12px rgba(0, 255, 0, 0.15);
+}
+
+/* Middle column: spinning preview + title + description. Narrower than
+   the detail column; the preview sits at a consistent size regardless
+   of how wide the modal gets. */
+.airframe-picker-middle {
+	display: flex;
+	flex-direction: column;
+	gap: 10px;
+	min-width: 0;
+	overflow-y: auto;
+	scrollbar-width: thin;
+	scrollbar-color: rgba(0, 255, 0, 0.35) transparent;
+}
+
+.airframe-picker-detail {
+	display: flex;
+	flex-direction: column;
+	gap: 10px;
+	padding: 10px;
+	border: 1px solid rgba(0, 255, 0, 0.22);
+	background: rgba(0, 15, 0, 0.35);
+	min-width: 0;
+	min-height: 0;
+	overflow: hidden;
+}
+
+.plane-preview-detail {
+	display: block;
+	width: 100%;
+	aspect-ratio: 16 / 9;
+	background: rgba(0, 25, 0, 0.5);
+	border: 1px solid rgba(0, 255, 0, 0.3);
+	flex: 0 0 auto;
+}
+
+.airframe-picker-header {
+	display: flex;
+	justify-content: space-between;
+	align-items: center;
+	gap: 10px;
+}
+
+.airframe-picker-name {
+	font-size: 20px;
+	font-weight: bold;
+	letter-spacing: 2px;
+	color: #0f0;
+}
+
+.airframe-picker-tags {
+	display: flex;
+	gap: 4px;
+	flex-wrap: wrap;
+}
+
+.airframe-picker-desc {
+	color: rgba(0, 255, 0, 0.75);
+	font-size: 12px;
+	line-height: 1.55;
+	letter-spacing: 0.5px;
+}
+
+.airframe-picker-specs {
+	display: grid;
+	grid-template-columns: 1fr 1fr;
+	gap: 4px 20px;
+	font-size: 12px;
+	padding-top: 10px;
+	border-top: 1px solid rgba(0, 255, 0, 0.18);
+	flex: 1 1 auto;
+	min-height: 0;
+	overflow-y: auto;
+	scrollbar-width: thin;
+	scrollbar-color: rgba(0, 255, 0, 0.35) transparent;
+}
+.airframe-picker-specs > div {
+	display: flex;
+	justify-content: space-between;
+	gap: 8px;
+	padding: 3px 0;
+}
+.airframe-picker-specs .spec-k { color: rgba(0, 255, 0, 0.55); letter-spacing: 0.5px; }
+.airframe-picker-specs .spec-v { color: #0f0; font-weight: bold; }
+.airframe-picker-specs .agility-row {
+	grid-column: 1 / -1;
+	border-top: 1px solid rgba(0, 255, 0, 0.12);
+	padding-top: 8px;
+	margin-top: 4px;
+}
+
+/* Section headers inside the spec sheet (Engines, Maneuver, ...).
+   Span both columns, uppercase, faded so they read as titles not
+   rows. */
+.airframe-picker-specs .spec-section {
+	grid-column: 1 / -1;
+	font-size: 10px;
+	letter-spacing: 2px;
+	color: rgba(0, 255, 0, 0.45);
+	padding: 10px 0 3px;
+	border-bottom: 1px solid rgba(0, 255, 0, 0.1);
+	margin-top: 4px;
+}
+.airframe-picker-specs .spec-section:first-child {
+	margin-top: 0;
+	padding-top: 0;
+}
+
+/* Tiny trailing note on a key label — used to mark shared / not-yet-
+   per-plane fields so the user can see at a glance which numbers are
+   differentiated. */
+.airframe-picker-specs .spec-k em {
+	font-style: normal;
+	color: rgba(255, 200, 0, 0.55);
+	font-size: 9px;
+	margin-left: 4px;
+}
+
+.airframe-picker-specs .unmodeled-list {
+	grid-column: 1 / -1;
+	color: rgba(0, 255, 0, 0.5);
+	font-size: 11px;
+	line-height: 1.6;
+}
+.airframe-picker-specs .unmodeled-list > div {
+	padding: 1px 0;
+}
+
+/* Tabs inside the airframe detail panel — switches between the static
+   spec sheet and the loadout editor. JS toggles .active on the button
+   and .hidden on the matching .airframe-tab-panel. */
+.airframe-picker-tabs {
+	display: flex;
+	gap: 4px;
+	margin-top: 8px;
+	border-bottom: 1px solid rgba(0, 255, 0, 0.25);
+}
+.airframe-tab {
+	background: transparent;
+	border: 1px solid rgba(0, 255, 0, 0.25);
+	border-bottom: none;
+	color: rgba(0, 255, 0, 0.6);
+	padding: 6px 14px;
+	font-family: inherit;
+	font-size: 11px;
+	letter-spacing: 1.5px;
+	cursor: pointer;
+	transition: all 0.15s;
+}
+.airframe-tab:hover { background: rgba(0, 255, 0, 0.08); color: #0f0; }
+.airframe-tab.active {
+	background: rgba(0, 255, 0, 0.12);
+	color: #0f0;
+	border-color: rgba(0, 255, 0, 0.55);
+}
+.airframe-tab-panel.hidden { display: none; }
+
+/* Loadout editor panel. Structure: summary header (weight + stealth +
+   quick actions), then a scrollable hardpoint list. Each row is a
+   label + a <select> dropdown of compatible munitions + per-item
+   mass. */
+.airframe-picker-loadout {
+	display: flex;
+	flex-direction: column;
+	gap: 8px;
+	padding-top: 10px;
+	flex: 1 1 auto;
+	min-height: 0;
+	overflow-y: auto;
+	scrollbar-width: thin;
+	scrollbar-color: rgba(0, 255, 0, 0.35) transparent;
+}
+
+.loadout-summary {
+	display: grid;
+	grid-template-columns: 1fr 1.5fr auto auto;
+	gap: 14px;
+	align-items: center;
+	padding: 8px 10px;
+	border: 1px solid rgba(0, 255, 0, 0.22);
+	background: rgba(0, 15, 0, 0.45);
+	font-size: 11px;
+}
+.loadout-summary .meter {
+	display: flex;
+	flex-direction: column;
+	gap: 3px;
+}
+.loadout-summary .meter-label {
+	color: rgba(0, 255, 0, 0.55);
+	letter-spacing: 1px;
+	font-size: 10px;
+}
+.loadout-summary .meter-value {
+	color: #0f0;
+	font-weight: bold;
+	font-size: 13px;
+}
+.loadout-summary .meter-value.over {
+	color: #ff4040;
+}
+.loadout-summary .meter-bar {
+	height: 4px;
+	background: rgba(0, 255, 0, 0.12);
+	border: 1px solid rgba(0, 255, 0, 0.25);
+	position: relative;
+}
+.loadout-summary .meter-bar > span {
+	display: block;
+	height: 100%;
+	background: #0f0;
+	box-shadow: 0 0 6px rgba(0, 255, 0, 0.7);
+}
+.loadout-summary .meter-bar > span.over { background: #ff4040; box-shadow: 0 0 6px rgba(255, 64, 64, 0.7); }
+
+.loadout-summary .meter-sub {
+	font-size: 9px;
+	color: rgba(0, 255, 0, 0.55);
+	letter-spacing: 0.4px;
+}
+.loadout-summary .rcs-penalty {
+	color: #fa0;
+}
+
+.hp-rcs.internal { color: #40d8ff; }
+.hp-rcs.external { color: rgba(255, 180, 80, 0.85); }
+
+.loadout-stealth {
+	display: inline-block;
+	padding: 3px 8px;
+	border: 1px solid;
+	letter-spacing: 1.5px;
+	font-size: 10px;
+}
+.loadout-stealth.ok     { border-color: rgba(0, 255, 0, 0.6);  color: #0f0; }
+.loadout-stealth.broken { border-color: rgba(255, 160, 0, 0.7); color: #fa0; background: rgba(80, 40, 0, 0.3); }
+.loadout-stealth.na     { border-color: rgba(120, 120, 120, 0.4); color: rgba(180,180,180,0.6); }
+
+.loadout-actions {
+	display: flex;
+	gap: 6px;
+	justify-content: flex-end;
+}
+.loadout-actions button {
+	background: transparent;
+	border: 1px solid rgba(0, 255, 0, 0.4);
+	color: #0f0;
+	padding: 5px 10px;
+	font-family: inherit;
+	font-size: 10px;
+	letter-spacing: 1px;
+	cursor: pointer;
+}
+.loadout-actions button:hover { background: rgba(0, 255, 0, 0.1); border-color: #0f0; }
+
+/* Aggregate "LOADED: AIM-120 × 4 · AIM-9X × 2 · GBU-31 × 1" strip
+   below the summary. Gives a quick roster without scrolling. */
+.loadout-tally {
+	display: flex;
+	gap: 10px;
+	align-items: center;
+	padding: 6px 10px;
+	border: 1px solid rgba(0, 255, 0, 0.18);
+	background: rgba(0, 10, 0, 0.35);
+	font-size: 11px;
+	flex-wrap: wrap;
+}
+.loadout-tally .tally-label {
+	color: rgba(0, 255, 0, 0.5);
+	letter-spacing: 1.5px;
+	font-size: 10px;
+}
+.loadout-tally .tally-body {
+	display: flex;
+	gap: 10px;
+	flex-wrap: wrap;
+}
+.loaded-chip {
+	color: #0f0;
+	padding: 2px 7px;
+	border: 1px solid rgba(0, 255, 0, 0.35);
+	background: rgba(0, 40, 0, 0.4);
+	white-space: nowrap;
+}
+.loaded-chip .loaded-count {
+	color: rgba(0, 255, 0, 0.7);
+	margin-left: 2px;
+}
+
+.hardpoint-list {
+	display: flex;
+	flex-direction: column;
+	gap: 3px;
+}
+
+/* Hardpoint row in the disabled state — no compatible munitions to
+   pick. Row is faded, select is replaced by an explanatory hint. */
+.hardpoint-row.disabled {
+	opacity: 0.55;
+}
+.hp-no-match {
+	color: rgba(255, 200, 100, 0.7);
+	font-style: italic;
+	font-size: 10px;
+	letter-spacing: 0.3px;
+	padding: 4px 0;
+}
+.hardpoint-row {
+	display: grid;
+	grid-template-columns: 2.2fr 3fr auto;
+	gap: 8px;
+	align-items: center;
+	padding: 5px 8px;
+	border: 1px solid rgba(0, 255, 0, 0.15);
+	font-size: 11px;
+}
+.hardpoint-row .hp-label {
+	display: flex;
+	flex-direction: column;
+	gap: 2px;
+}
+.hardpoint-row .hp-name {
+	color: #0f0;
+	letter-spacing: 0.5px;
+}
+.hardpoint-row .hp-type {
+	color: rgba(0, 255, 0, 0.5);
+	font-size: 9px;
+	letter-spacing: 1.5px;
+}
+.hardpoint-row .hp-type.internal   { color: #40d8ff; }
+.hardpoint-row .hp-type.external   { color: #ffc040; }
+.hardpoint-row .hp-type.fuselage   { color: rgba(0, 255, 0, 0.7); }
+.hardpoint-row .hp-type.centerline { color: rgba(0, 255, 0, 0.7); }
+
+.hardpoint-row select {
+	background: rgba(0, 0, 0, 0.5);
+	border: 1px solid rgba(0, 255, 0, 0.35);
+	color: #0f0;
+	padding: 3px 5px;
+	font-family: inherit;
+	font-size: 11px;
+}
+.hardpoint-row .hp-mass {
+	color: rgba(0, 255, 0, 0.55);
+	font-size: 10px;
+	text-align: right;
+	min-width: 55px;
+}
+
+.airframe-picker-footer {
+	display: flex;
+	justify-content: flex-end;
+	padding: 12px 0 0;
+	border-top: 1px solid rgba(0, 255, 0, 0.2);
+	margin-top: 12px;
+}
+
+.airframe-picker-footer .menu-btn {
+	padding: 10px 22px;
+	font-size: 13px;
+	letter-spacing: 2px;
+}
+
+/* ---- Plane card specifics --------------------------------------------- */
+/* Expanded card showing per-airframe specs: role, top speed, combat radius,
+   RCS, IR signature, radar range, agility meter, and stealth / supercruise
+   tag chips. The base .scenario-card rule handles layout, border, hover
+   and selected states — this block just paints the extra internals. */
+
+.plane-card {
+	padding: 12px 14px;
+}
+
+.plane-card-head {
+	display: flex;
+	justify-content: space-between;
+	align-items: flex-start;
+	gap: 8px;
+}
+
+.plane-tags {
+	display: flex;
+	gap: 4px;
+	flex-wrap: wrap;
+}
+
+.plane-tag {
+	font-size: 9px;
+	letter-spacing: 1px;
+	padding: 2px 6px;
+	border: 1px solid rgba(0, 255, 0, 0.55);
+	color: #0f0;
+	background: rgba(0, 255, 0, 0.08);
+	white-space: nowrap;
+}
+
+.plane-specs {
+	display: grid;
+	grid-template-columns: 1fr 1fr;
+	gap: 2px 14px;
+	margin-top: 8px;
+	padding-top: 8px;
+	border-top: 1px solid rgba(0, 255, 0, 0.18);
+	font-size: 10px;
+	letter-spacing: 0.4px;
+}
+
+.plane-specs > div {
+	display: flex;
+	justify-content: space-between;
+	gap: 6px;
+	padding: 1px 0;
+}
+
+.plane-specs .spec-k {
+	color: rgba(0, 255, 0, 0.55);
+}
+
+.plane-specs .spec-v {
+	color: #0f0;
+	font-weight: bold;
+}
+
+.plane-specs .agility-row {
+	grid-column: 1 / -1;
+	border-top: 1px solid rgba(0, 255, 0, 0.12);
+	padding-top: 4px;
+	margin-top: 2px;
+}
+
+.agility-bar {
+	display: inline-block;
+	width: 7px;
+	height: 10px;
+	margin-right: 2px;
+	background: rgba(0, 255, 0, 0.15);
+	border: 1px solid rgba(0, 255, 0, 0.25);
+}
+
+.agility-bar.on {
+	background: #0f0;
+	border-color: #0f0;
+	box-shadow: 0 0 4px rgba(0, 255, 0, 0.7);
 }
 
 .main-menu-btn {

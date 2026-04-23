@@ -1,0 +1,12 @@
+{
+	"id": "gbu-12-paveway",
+	"name": "GBU-12 PAVEWAY II",
+	"shortName": "GBU-12",
+	"category": "GBU",
+	"tags": ["gbu", "laser-guided", "500lb"],
+	"massKg": 230,
+	"rcsContributionM2": 0.03,
+	"description": "500 lb laser-guided bomb. Precision strike against soft / hardened targets.",
+	"simType": "GBU-12",
+	"seekerType": "laser"
+}

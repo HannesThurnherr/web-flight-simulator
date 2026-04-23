@@ -1,0 +1,14 @@
+{
+	"id": "sam-intro",
+	"name": "SAM Intro — NASAMS Battery",
+	"description": "One NASAMS-class SAM battery (modeled visually as a MIM-104 Patriot launcher) sits 30 km ahead. ~25 km engagement range, 8-missile magazine, 2-missile ripple-fire salvos, drops to single-shot on last 2 rounds. Radar 75 km. Player is on their own — no friendly support, no hostile fighters. Intent: feel the missile-launch RWR warning, evade, and (optionally) SEAD the site.",
+	"autoSpawn": false,
+	"spawns": [
+		{
+			"type": "platform",
+			"platformId": "nasams-sam",
+			"team": "hostile-red",
+			"origin": { "relTo": "player", "bearingDeg": 0, "rangeM": 30000, "altOffsetM": -1500 }
+		}
+	]
+}

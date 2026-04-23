@@ -138,13 +138,23 @@ export class PlanePhysics {
 		this.yawStabilityCoef   = 0.5;         // effective |C_nβ| · b     (m)
 		this.alphaTrim = 2.0 * Math.PI / 180;  // zero-moment AoA ≈ 2°
 
-		// Thrust parameters (N). Dry thrust ~130 kN, afterburner ~210 kN.
-		this.thrustDryMax = 130000;
-		this.thrustABMax  = 210000;
+		// Thrust parameters (N). Reference values match the F-15's twin
+		// F100-PW-229: dry 158 kN, afterburner 258 kN. Previously set
+		// 18 % low (130 / 210) which made every airframe feel sluggish
+		// and prevented the F-15 from actually reaching its real-world
+		// top speed at altitude. Per-plane multipliers in the registry
+		// scale these (F-22 uses thrustDryMul for supercruise).
+		this.thrustDryMax = 158000;
+		this.thrustABMax  = 258000;
 
 		// Wing reference area for all aerodynamic force calculations.
 		// Lift, drag, and sideforce scale with q̄ · S_ref · coefficient.
-		this.wingArea = 56; // m² (F-15-ish)
+		this.wingArea = 56; // m² (F-15 reference)
+
+		// Parasitic drag coefficient at zero AoA / zero sideslip. Baseline
+		// is F-15-class; stealth airframes with area-ruled fuselages
+		// override this lower via physicsOverrides.cdZero.
+		this.cdZero = 0.022;
 
 		// ----- Runtime state
 		this.position = null; // managed by main.js via lon/lat/alt; kept null here
@@ -206,6 +216,49 @@ export class PlanePhysics {
 	// AB is hold-to-engage via the input flag now; kept as a no-op so any
 	// external callers don't break.
 	boost() {}
+
+	// Per-airframe tuning. Called by main.js after construction with
+	// the plane config's physicsOverrides. Multipliers scale the
+	// existing reference values; absolute values replace them.
+	//
+	// Engine / thrust:
+	//   thrustDryMul  — scale mil-thrust ceiling. > 1 raises sustainable
+	//                   cruise Mach (supercruise territory for F-22).
+	//   thrustABMul   — scale afterburner thrust ceiling.
+	//
+	// Mass / airframe:
+	//   mass          — absolute kg (replaces default 20 000).
+	//   wingArea      — absolute m² (replaces default 56).
+	//   cdZero        — absolute parasitic-drag coefficient at zero α.
+	//
+	// Control authority:
+	//   controlCoef   — {pitch, roll, yaw} absolute K_c values. Replaces
+	//                   agilityMul for finer per-axis control. F-22's
+	//                   thrust-vectoring → bump pitch more than roll.
+	//   agilityMul    — uniform scale across all three axes. Applied
+	//                   AFTER controlCoef so you can do either or both.
+	//
+	// Flight envelope:
+	//   gSoftLimit / gHardLimit — override the G-limiter.
+	applyOverrides(o = {}) {
+		if (typeof o.thrustDryMul === 'number') this.thrustDryMax *= o.thrustDryMul;
+		if (typeof o.thrustABMul  === 'number') this.thrustABMax  *= o.thrustABMul;
+		if (typeof o.mass         === 'number') this.mass     = o.mass;
+		if (typeof o.wingArea     === 'number') this.wingArea = o.wingArea;
+		if (typeof o.cdZero       === 'number') this.cdZero   = o.cdZero;
+		if (o.controlCoef) {
+			if (typeof o.controlCoef.pitch === 'number') this.controlCoef.x = o.controlCoef.pitch;
+			if (typeof o.controlCoef.roll  === 'number') this.controlCoef.y = o.controlCoef.roll;
+			if (typeof o.controlCoef.yaw   === 'number') this.controlCoef.z = o.controlCoef.yaw;
+		}
+		if (typeof o.agilityMul   === 'number') {
+			this.controlCoef.x *= o.agilityMul;
+			this.controlCoef.y *= o.agilityMul;
+			this.controlCoef.z *= o.agilityMul;
+		}
+		if (typeof o.gSoftLimit === 'number') this.gSoftLimit = o.gSoftLimit;
+		if (typeof o.gHardLimit === 'number') this.gHardLimit = o.gHardLimit;
+	}
 
 	// Called by main.js when entering FLYING. Seeds the integrator with a
 	// sensible initial velocity (along nose) so the aircraft is already
@@ -312,7 +365,7 @@ export class PlanePhysics {
 			this.beta  = Math.asin(THREE.MathUtils.clamp(S.vBody.x / V, -1, 1));
 
 			const CL = liftCoefficient(this.alpha);
-			const CD = dragCoefficient(CL, this.alpha, this.beta);
+			const CD = dragCoefficient(CL, this.alpha, this.beta, this.cdZero);
 			const CY = sideForceCoefficient(this.beta);
 
 			const qS = q * this.wingArea;

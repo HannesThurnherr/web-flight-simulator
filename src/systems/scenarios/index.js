@@ -1,34 +1,43 @@
 // Scenario registry + active-scenario plumbing.
 //
-// A scenario is a small object with lifecycle hooks:
-//   onStart(ctx)   — called once on player spawn. Typical work: configure the
-//                    NPC system (auto-spawn on/off, spawn mode), drop the
-//                    initial entities into the world, install any scenario-
-//                    specific DOM overlay.
-//   update(ctx,dt) — called every frame while FLYING or CRASHED. For
-//                    scenarios that need per-tick behaviour (scripted
-//                    movement, telemetry readouts, win/lose conditions).
-//   onStop(ctx)    — called when the player respawns / quits / switches
-//                    scenarios. Tear down anything onStart installed.
+// Scenarios come in two flavours:
+//   1. Pure-data scenarios — one JSON in src/data/scenarios/. The
+//      registry picks them up via glob-import and wraps each through
+//      scenarioRunner.buildScenarioFromJson() to produce the
+//      {onStart, update, onStop} object the lifecycle expects. Adding
+//      a new scripted mission is a single JSON drop.
+//   2. JS scenarios — for missions that need bespoke per-frame logic
+//      (e.g. notching test with its live telemetry panel, or a
+//      rendezvous that spawns reinforcements on a trigger). They're
+//      imported directly below and merged into the registry alongside
+//      the data-driven ones.
 //
-// ctx is { npcSystem, playerState, viewer, scene, weaponSystem, hud }.
-//
-// Adding a new scenario = drop a file in this directory and register it below.
-// The HTML menu's <select id="scenarioSelect"> is populated from SCENARIOS at
-// boot, so no other plumbing is needed to make a scenario pickable.
+// The main-menu picker treats both kinds identically.
 
-import { bvr3wayScenario } from './bvr3way.js';
 import { notchingTestScenario } from './notchingTest.js';
-import { awacsBvrScenario } from './awacsBvr.js';
+import { buildScenarioFromJson } from './scenarioRunner.js';
+
+// Auto-discover every JSON scenario.
+const _scenarioModules = import.meta.glob('../../data/scenarios/*.json', { eager: true });
+
+const _jsonScenarios = {};
+for (const [path, mod] of Object.entries(_scenarioModules)) {
+	const raw = mod.default || mod;
+	const fallbackId = path.match(/\/([^/]+)\.json$/)?.[1];
+	const id = raw.id || fallbackId;
+	if (!id) continue;
+	_jsonScenarios[id] = buildScenarioFromJson(raw);
+}
 
 export const SCENARIOS = {
-	bvr3way:   bvr3wayScenario,
-	'awacs-bvr': awacsBvrScenario,
-	notching:  notchingTestScenario,
+	..._jsonScenarios,
+	// JS scenarios go last so they can override a JSON of the same id
+	// if someone's iterating on a data scenario with JS-side hooks.
+	notching: notchingTestScenario,
 };
 
-// Default on first load. User's pick from the main-menu dropdown overrides
-// this before onStart ever fires.
+// Default on first load. User's pick from the main-menu dropdown
+// overrides this before onStart ever fires.
 let _activeId = 'bvr3way';
 
 export function setActiveScenario(id) {

@@ -1,0 +1,15 @@
+{
+	"id": "bvr3way",
+	"name": "3-Way BVR Fight",
+	"description": "Three factions on a 70 km triangle. Player + two hostile teams. Auto-reinforced.",
+	"triangleSideM": 70000,
+	"autoSpawn": true,
+	"spawns": [
+		{
+			"type": "fighter",
+			"team": "hostile-red",
+			"origin": "triangle-vertex",
+			"count": 1
+		}
+	]
+}

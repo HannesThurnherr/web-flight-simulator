@@ -5,6 +5,7 @@ import { particles } from '../utils/particles';
 import { soundManager } from '../utils/soundManager';
 import { SIGNATURES } from '../systems/signatures';
 import { airDensity, GRAVITY } from '../plane/aeroModel.js';
+import { cloneAim9Template } from './missileModels.js';
 
 // Shared signature reference (not per-missile copy) — all live AIM-9s have
 // the same sensor profile. Subclasses (AIM-120) overwrite this in their ctor.
@@ -31,45 +32,46 @@ const MISSILE_IR_SIGNATURE = SIGNATURES.missile_ir;
 // _estimateTargetVelocityENU, _segmentMissDistSq) are usable from both.
 // ============================================================================
 
-// AIM-9X performance envelope.
-const BOOST_DURATION       = 3.5;    // s
-const BOOST_ACCEL          = 210;    // m/s² during motor burn
-const BOOST_PEAK_SPEED     = 860;    // m/s, Mach 2.5 ceiling
-// Drag is now scaled by ρ·v² (real missile physics). The old 22 m/s² was
-// roughly a 5 km / 700 m/s AIM-9 operating point. Sea level now bleeds
-// much faster, high altitude much slower — the small IR AIM-9 almost
-// never fires at cruise altitude anyway, so this mostly affects low-
-// altitude chases (drains fast) and rear-quarter tail-chases at medium
-// alt (more forgiving).
-const COAST_DRAG_REF       = 22;     // m/s² at reference altitude + speed
-const COAST_DRAG_REF_V     = 700;    // m/s reference speed for v² scaling
-const COAST_DRAG_REF_ALT   = 5000;   // m reference altitude for ρ scaling
-const MIN_SPEED            = 60;     // m/s absolute floor (ballistic below)
-const MAX_LIFE             = 40;     // s
-const MAX_G                = 40;     // airframe G limit
-const PN_GAIN              = 4.0;    // proportional navigation N
-// Kill envelope.
-// KILL_RADIUS is the lethal radius of the continuous-rod warhead — anything
-// inside this on the swept path is a guaranteed kill (all NPCs, not just the
-// locked target).
-// FUZE_SENSE_RADIUS is the proximity fuze's effective sensing range for the
-// tracked target specifically. At high crossing speeds the missile can pass
-// within this envelope for only a fraction of a frame, so we detect the
-// "closest approach" — the moment the range rate turns from closing to
-// opening — and detonate then. Without this, any shot that isn't close to a
-// pure tail chase ends up flying past the target by 5-15m (the turn-rate
-// limit can't match last-second maneuvering) and the strict swept check
-// misses. With it, crossing and beam shots behave like real all-aspect
-// AIM-9Xs should.
-const KILL_RADIUS          = 10;     // m, warhead lethal radius
-const KILL_RADIUS_SQ       = KILL_RADIUS * KILL_RADIUS;
-const FUZE_SENSE_RADIUS    = 20;     // m, fuze-triggered detonation envelope
-const FUZE_SENSE_RADIUS_SQ = FUZE_SENSE_RADIUS * FUZE_SENSE_RADIUS;
-const SEEKER_HALF_CONE_DEG = 90;     // ±90° HOBS gimbal
-const SEEKER_COS_MIN       = Math.cos(SEEKER_HALF_CONE_DEG * Math.PI / 180);
+// Hard-coded fallback defaults — used ONLY when the ctor is called
+// without a data object (legacy callers). All of these are now driven
+// per-munition from src/data/munitions/*.json via the data object.
+// Keeping the defaults here so this file stays functional standalone
+// (tests, experiments) without needing to scaffold the JSON loader.
+const DEFAULT_AIM9_DATA = {
+	flight: {
+		launchSpeedOffset: 40,
+		boostDurationS: 3.5,
+		boostAccel: 210,
+		peakSpeed: 860,
+		minSpeed: 60,
+		maxLifeS: 40,
+		maxTurnDegPerSec: 60,
+		pnGain: 4.0,
+		dragRef: 22,
+		dragRefSpeed: 700,
+		dragRefAltitude: 5000,
+	},
+	warhead: {
+		killRadiusM: 10,
+		fuzeSenseRadiusM: 20,
+	},
+	seeker: {
+		coneHalfAngleDeg: 90,
+		maxG: 40,
+	},
+	signature: 'missile_ir',
+	simType: 'AIM-9',
+};
 
 export class Missile {
-	constructor(scene, viewer, startPos, heading, pitch, speed, target = null, onKill = null, launcher = null) {
+	constructor(scene, viewer, startPos, heading, pitch, speed, target = null, onKill = null, launcher = null, data = null) {
+		// Data-driven configuration. Every tunable parameter lives on
+		// the `data` object (loaded from src/data/munitions/*.json via
+		// munitionFactory). Default falls back to hardcoded AIM-9X so
+		// callers that don't pass data stay functional.
+		this.data = data || DEFAULT_AIM9_DATA;
+		const d = this.data;
+
 		this.scene = scene;
 		this.viewer = viewer;
 		this.target = target;
@@ -88,26 +90,23 @@ export class Missile {
 		this.pitch = pitch;
 		this.roll = 0;
 		// Launch-rail ejection bump; motor does the real work during boost.
-		this.speed = speed + 40;
+		this.speed = speed + (d.flight.launchSpeedOffset ?? 40);
 
-		this.maxLife = MAX_LIFE;
+		this.maxLife = d.flight.maxLifeS;
 		this.life = this.maxLife;
-		this.boostRemaining = BOOST_DURATION;
+		this.boostRemaining = d.flight.boostDurationS;
 		this.lostLock = false;
 		this.active = true;
 		// Unique id per projectile. Commander view trails key on
-		// `m-${m.id}` and we'd previously left id undefined, so every
-		// missile in the world shared a single `m-undefined` bucket —
-		// samples from different missiles interleaved, producing the
-		// "missile zoomed to its target and back in a frame" artifact
-		// seen at game start. Stable per-instance id fixes it.
+		// `m-${m.id}` — must be unique to avoid samples interleaving.
 		this.id = (Missile._nextId = (Missile._nextId || 0) + 1);
-		// Type tag so HUD labels can distinguish AIM-9 from AIM-120 etc.
-		// Subclasses override in their constructor.
-		this.type = 'AIM-9';
-		// Signature for sensor system (reference, not copy — all AIM-9s
-		// share the same signature definition). Subclasses can overwrite.
-		this.signature = MISSILE_IR_SIGNATURE;
+		// Type tag used by HUD / weaponSystem ammo tracking — comes from
+		// the JSON `simType` field so future AIM-9 variants land on the
+		// same weapon slot.
+		this.type = d.simType || 'AIM-9';
+		// Signature for sensor system. Pull from SIGNATURES by name
+		// stored in JSON.
+		this.signature = SIGNATURES[d.signature] || MISSILE_IR_SIGNATURE;
 
 		this._scratchMatrix = new Cesium.Matrix4();
 		this._scratchHPR = new Cesium.HeadingPitchRoll();
@@ -122,110 +121,104 @@ export class Missile {
 	}
 
 	initMesh() {
-
 		this.mesh = new THREE.Group();
 
+		// Prefer the real AIM-9 GLB model; fall back to the original
+		// procedural build if the async GLB fetch hasn't landed yet
+		// (first few missiles fired at boot time). Subclasses (AIM120)
+		// override the entire initMesh path and don't hit this branch.
+		const templated = cloneAim9Template();
+		const bodyLen = templated ? 3.02 : 2.6;
+		if (templated) {
+			this.mesh.add(templated);
+		} else {
+			this._buildProceduralMissileBody(2.6, 0.07);
+		}
 
-		const bodyLen = 2.6;
-		const radius = 0.07;
+		// Flame and exhaust glow stay procedural in both paths — they're
+		// dynamic effects driven from update() (scale/opacity flicker
+		// during boost, fade during coast), and they need a live handle
+		// for those tweaks. Parameterized on bodyLen so the offsets line
+		// up with either the GLB (3.02 m long) or the fallback (2.6 m).
+		this._buildFlameEffects(bodyLen, 0.07, 1.0, 2.2);
+
+		this.mesh.layers.enable(0);
+		this.mesh.layers.enable(1);
+
+		this.mesh.matrixAutoUpdate = false;
+		this.scene.add(this.mesh);
+	}
+
+	// Original cylinder + cone + fins mesh, kept as a fallback for when
+	// the GLB hasn't loaded yet. Produces a recognizable missile shape
+	// so the first-frame-after-boot shot isn't invisible.
+	_buildProceduralMissileBody(bodyLen, radius) {
 		const bodyGeom = new THREE.CylinderGeometry(radius, radius, bodyLen, 16);
-		const bodyMat = new THREE.MeshStandardMaterial({
-			color: 0xcccccc,
-			metalness: 0.4,
-			roughness: 0.5
-		});
-		const body = new THREE.Mesh(bodyGeom, bodyMat);
-		this.mesh.add(body);
+		const bodyMat = new THREE.MeshStandardMaterial({ color: 0xcccccc, metalness: 0.4, roughness: 0.5 });
+		this.mesh.add(new THREE.Mesh(bodyGeom, bodyMat));
 
 		const noseLen = 0.35;
 		const noseGeom = new THREE.ConeGeometry(radius, noseLen, 16);
 		noseGeom.translate(0, bodyLen / 2 + noseLen / 2, 0);
-		const noseMat = new THREE.MeshStandardMaterial({
-			color: 0x333333,
-			metalness: 0.8,
-			roughness: 0.3
-		});
-		const nose = new THREE.Mesh(noseGeom, noseMat);
-		this.mesh.add(nose);
+		const noseMat = new THREE.MeshStandardMaterial({ color: 0x333333, metalness: 0.8, roughness: 0.3 });
+		this.mesh.add(new THREE.Mesh(noseGeom, noseMat));
 
 		const bandGeom = new THREE.CylinderGeometry(radius + 0.001, radius + 0.001, 0.15, 16);
 		bandGeom.translate(0, bodyLen / 2 - 0.4, 0);
-		const bandMat = new THREE.MeshBasicMaterial({ color: 0xffcc00 });
-		const band = new THREE.Mesh(bandGeom, bandMat);
-		this.mesh.add(band);
+		this.mesh.add(new THREE.Mesh(bandGeom, new THREE.MeshBasicMaterial({ color: 0xffcc00 })));
 
 		const finMat = new THREE.MeshStandardMaterial({ color: 0x444444, metalness: 0.3, roughness: 0.6 });
-
-		const tailFinShape = new THREE.Shape();
-		tailFinShape.moveTo(0, 0);
-		tailFinShape.lineTo(0.4, -0.2);
-		tailFinShape.lineTo(0.4, -0.5);
-		tailFinShape.lineTo(0, -0.5);
-		tailFinShape.lineTo(0, 0);
-
-		const tailFinGeom = new THREE.ExtrudeGeometry(tailFinShape, { depth: 0.02, bevelEnabled: false });
-		tailFinGeom.center();
-		tailFinGeom.translate(0.2, -0.25, 0);
-
 		const rearFinGeom = new THREE.BoxGeometry(0.35, 0.4, 0.02);
 		rearFinGeom.translate(radius + 0.175, 0, 0);
-
 		for (let i = 0; i < 4; i++) {
-			const finGroup = new THREE.Group();
-			const finMesh = new THREE.Mesh(rearFinGeom, finMat);
-			finGroup.add(finMesh);
-
-			finGroup.position.y = -bodyLen / 2 + 0.3;
-			finGroup.rotation.y = i * (Math.PI / 2);
-
-
-			this.mesh.add(finGroup);
+			const g = new THREE.Group();
+			g.add(new THREE.Mesh(rearFinGeom, finMat));
+			g.position.y = -bodyLen / 2 + 0.3;
+			g.rotation.y = i * (Math.PI / 2);
+			this.mesh.add(g);
 		}
-
 		const frontFinGeom = new THREE.BoxGeometry(0.2, 0.15, 0.015);
 		frontFinGeom.translate(radius + 0.1, 0, 0);
-
 		for (let i = 0; i < 4; i++) {
-			const finGroup = new THREE.Group();
-			const finMesh = new THREE.Mesh(frontFinGeom, finMat);
-			finGroup.add(finMesh);
-			finGroup.position.y = bodyLen / 2 - 0.6;
-			finGroup.rotation.y = i * (Math.PI / 2);
-			this.mesh.add(finGroup);
+			const g = new THREE.Group();
+			g.add(new THREE.Mesh(frontFinGeom, finMat));
+			g.position.y = bodyLen / 2 - 0.6;
+			g.rotation.y = i * (Math.PI / 2);
+			this.mesh.add(g);
 		}
+	}
 
+	// Shared flame + glow builder — used by both Missile.initMesh and
+	// AIM120.initAMRAAMMesh (via super access). Dynamic effects live on
+	// this.flameMesh / this.flameCore / this.flameGlow so update() can
+	// pulse and fade them.
+	_buildFlameEffects(bodyLen, radius, flameLen = 1.0, glowScale = 2.2) {
 		const flameColor = new THREE.Color(1.0, 0.6, 0.2);
-
-		const flameGeom = new THREE.ConeGeometry(radius * 0.9, 1.0, 16, 1, true);
+		const flameGeom = new THREE.ConeGeometry(radius * 0.9, flameLen, 16, 1, true);
 		flameGeom.rotateX(Math.PI);
-		flameGeom.translate(0, -0.5, 0);
-
+		flameGeom.translate(0, -flameLen / 2, 0);
 		const flameMat = new THREE.MeshBasicMaterial({
-			color: flameColor,
-			transparent: true,
-			opacity: 0.8,
-			side: THREE.DoubleSide,
-			depthWrite: false,
-			blending: THREE.AdditiveBlending
+			color: flameColor, transparent: true, opacity: 0.8, side: THREE.DoubleSide,
+			depthWrite: false, blending: THREE.AdditiveBlending,
 		});
 		this.flameMesh = new THREE.Mesh(flameGeom, flameMat);
 		this.flameMesh.position.y = -bodyLen / 2;
 		this.mesh.add(this.flameMesh);
 
-		const coreGeom = new THREE.ConeGeometry(radius * 0.5, 0.6, 16, 1, true);
+		const coreLen = flameLen * 0.6;
+		const coreGeom = new THREE.ConeGeometry(radius * 0.5, coreLen, 16, 1, true);
 		coreGeom.rotateX(Math.PI);
-		coreGeom.translate(0, -0.3, 0);
+		coreGeom.translate(0, -coreLen / 2, 0);
 		const coreMat = new THREE.MeshBasicMaterial({
-			color: 0xffffff,
-			transparent: true,
-			opacity: 0.9,
-			side: THREE.DoubleSide,
-			depthWrite: false,
-			blending: THREE.AdditiveBlending
+			color: 0xffffff, transparent: true, opacity: 0.9, side: THREE.DoubleSide,
+			depthWrite: false, blending: THREE.AdditiveBlending,
 		});
 		this.flameCore = new THREE.Mesh(coreGeom, coreMat);
 		this.flameMesh.add(this.flameCore);
 
+		// Exhaust glow sprite — radial-gradient canvas texture, additive-
+		// blended. Always-on-top (depthTest: false) so it punches through
+		// fog / cloud without weird sorting artefacts.
 		const canvSize = 128;
 		const canv = (typeof document !== 'undefined') ? document.createElement('canvas') : null;
 		let glowTexture = null;
@@ -233,39 +226,27 @@ export class Missile {
 			canv.width = canv.height = canvSize;
 			const ctx = canv.getContext('2d');
 			const cx = canvSize / 2;
-			const cy = canvSize / 2;
-			const grad = ctx.createRadialGradient(cx, cy, 0, cx, cy, cx);
-			grad.addColorStop(0.0, 'rgba(255,255,255,1)');
+			const grad = ctx.createRadialGradient(cx, cx, 0, cx, cx, cx);
+			grad.addColorStop(0.00, 'rgba(255,255,255,1)');
 			grad.addColorStop(0.18, 'rgba(255,245,200,1)');
 			grad.addColorStop(0.38, 'rgba(255,160,30,0.95)');
 			grad.addColorStop(0.62, 'rgba(220,60,10,0.6)');
-			grad.addColorStop(1.0, 'rgba(0,0,0,0)');
+			grad.addColorStop(1.00, 'rgba(0,0,0,0)');
 			ctx.fillStyle = grad;
 			ctx.fillRect(0, 0, canvSize, canvSize);
 			glowTexture = new THREE.CanvasTexture(canv);
 			glowTexture.minFilter = THREE.LinearFilter;
 			glowTexture.magFilter = THREE.LinearFilter;
 		}
-
 		const spriteMat = new THREE.SpriteMaterial({
-			map: glowTexture,
-			color: new THREE.Color(1.0, 0.95, 0.9),
-			transparent: true,
-			opacity: 0.98,
-			blending: THREE.AdditiveBlending,
-			depthTest: false,
-			depthWrite: false
+			map: glowTexture, color: new THREE.Color(1.0, 0.95, 0.9),
+			transparent: true, opacity: 0.98, blending: THREE.AdditiveBlending,
+			depthTest: false, depthWrite: false,
 		});
 		this.flameGlow = new THREE.Sprite(spriteMat);
-		this.flameGlow.scale.set(2.2, 2.2, 1.0);
+		this.flameGlow.scale.set(glowScale, glowScale, 1.0);
 		this.flameGlow.position.y = -bodyLen / 2 - 0.08;
 		this.mesh.add(this.flameGlow);
-
-		this.mesh.layers.enable(0);
-		this.mesh.layers.enable(1);
-
-		this.mesh.matrixAutoUpdate = false;
-		this.scene.add(this.mesh);
 	}
 
 	update(dt, npcs) {
@@ -293,18 +274,20 @@ export class Missile {
 		if (this.life <= 0) { this.destroy(); return; }
 
 		// ---- Speed profile: boost → coast ---------------------------------
-		// Drag scales with ρ·v² using the constants above as a reference
-		// operating point. The AIM-9 has a short burn and mostly lives in
-		// coast, so these numbers matter more here than on the AIM-120.
+		// Drag scales with ρ·v² using the data's reference operating
+		// point. Each munition JSON sets its own dragRef / dragRefSpeed
+		// / dragRefAltitude so AIM-9 (short burn, mostly coast) and
+		// AIM-120 (long boost + long coast) can have different tuning.
+		const f = this.data.flight;
 		if (this.boostRemaining > 0) {
-			this.speed = Math.min(BOOST_PEAK_SPEED, this.speed + BOOST_ACCEL * dt);
+			this.speed = Math.min(f.peakSpeed, this.speed + f.boostAccel * dt);
 			this.boostRemaining -= dt;
 		} else {
-			const rhoRef  = airDensity(COAST_DRAG_REF_ALT);
+			const rhoRef  = airDensity(f.dragRefAltitude);
 			const rho     = airDensity(this.alt);
-			const v2Ratio = (this.speed * this.speed) / (COAST_DRAG_REF_V * COAST_DRAG_REF_V);
-			const dragAcc = COAST_DRAG_REF * (rho / Math.max(1e-6, rhoRef)) * v2Ratio;
-			this.speed = Math.max(MIN_SPEED, this.speed - dragAcc * dt);
+			const v2Ratio = (this.speed * this.speed) / (f.dragRefSpeed * f.dragRefSpeed);
+			const dragAcc = f.dragRef * (rho / Math.max(1e-6, rhoRef)) * v2Ratio;
+			this.speed = Math.max(f.minSpeed, this.speed - dragAcc * dt);
 		}
 
 		// ---- Gravity --------------------------------------------------------
@@ -316,7 +299,7 @@ export class Missile {
 			const pRad = this.pitch * Math.PI / 180;
 			let vHoriz = this.speed * Math.cos(pRad);
 			let vVert  = this.speed * Math.sin(pRad) - GRAVITY * dt;
-			this.speed = Math.max(MIN_SPEED, Math.hypot(vHoriz, vVert));
+			this.speed = Math.max(this.data.flight.minSpeed, Math.hypot(vHoriz, vVert));
 			this.pitch = Math.atan2(vVert, vHoriz) * 180 / Math.PI;
 			this.pitch = Math.max(-85, Math.min(85, this.pitch));
 		}
@@ -345,13 +328,16 @@ export class Missile {
 		// Swept-segment hit check against every possible target (player +
 		// NPCs). Self-skip and friendly-fire are explicit so this works
 		// for both player-fired and NPC-fired missiles.
+		const killRadiusSq = this.data.warhead.killRadiusM * this.data.warhead.killRadiusM;
+		const fuzeRadiusSq = this.data.warhead.fuzeSenseRadiusM * this.data.warhead.fuzeSenseRadiusM;
+
 		if (npcs) {
 			for (const npc of npcs) {
 				if (!npc || npc === this.launcher) continue;
 				if (npc.destroyed) continue;
 				if (npc.team && this.team && npc.team === this.team) continue;
 				const missSq = this._segmentMissDistSq(prevLon, prevLat, prevAlt, this.lon, this.lat, this.alt, npc);
-				if (missSq < KILL_RADIUS_SQ) {
+				if (missSq < killRadiusSq) {
 					this.hitNPC(npc);
 					return;
 				}
@@ -361,18 +347,16 @@ export class Missile {
 		// Proximity-fuze closest-approach detection against the tracked
 		// target. Fires when range has stopped decreasing and we're inside
 		// the fuze envelope — catches the high-speed fly-by misses that the
-		// strict swept-segment check above rejects by a few metres. Without
-		// this an all-aspect AIM-9X effectively degrades to a tail chaser,
-		// which isn't right.
+		// strict swept-segment check above rejects by a few metres.
 		if (this.target && !this.target.destroyed) {
 			const dSq = this.calculateDistSqToNPC(this.target);
-			if (dSq < FUZE_SENSE_RADIUS_SQ &&
+			if (dSq < fuzeRadiusSq &&
 				this._prevTargetDistSq !== undefined &&
 				dSq > this._prevTargetDistSq) {
 				this.hitNPC(this.target);
 				return;
 			}
-			this._prevTargetDistSq = dSq < FUZE_SENSE_RADIUS_SQ ? dSq : undefined;
+			this._prevTargetDistSq = dSq < fuzeRadiusSq ? dSq : undefined;
 		} else {
 			this._prevTargetDistSq = undefined;
 		}
@@ -425,7 +409,9 @@ export class Missile {
 		const noseZ = Math.sin(pRad);
 		const losLen = Math.max(1e-6, Cesium.Cartesian3.magnitude(losLocal));
 		const cosAng = (noseX * losLocal.x + noseY * losLocal.y + noseZ * losLocal.z) / losLen;
-		if (cosAng < SEEKER_COS_MIN) {
+		const coneDeg = this.data.seeker?.coneHalfAngleDeg ?? 90;
+		const cosMin  = Math.cos(coneDeg * Math.PI / 180);
+		if (cosAng < cosMin) {
 			this.lostLock = true;
 			return;
 		}
@@ -463,11 +449,13 @@ export class Missile {
 		// (40 G head-on is hard!), dropping to ~75°/s at 300 m/s coast. This
 		// is what makes high-speed crossing shots difficult and tail-chase
 		// shots cheap — same asymmetry real BVR/WVR gunners feel.
-		const maxTurnRadPerS = (MAX_G * 9.81) / Math.max(50, this.speed);
+		const maxG = this.data.seeker?.maxG ?? 40;
+		const pnGain = this.data.flight?.pnGain ?? 4.0;
+		const maxTurnRadPerS = (maxG * 9.81) / Math.max(50, this.speed);
 		const capDeg         = Cesium.Math.toDegrees(maxTurnRadPerS) * dt;
 
-		this.heading += Math.max(-capDeg, Math.min(capDeg, dH * PN_GAIN * dt));
-		this.pitch   += Math.max(-capDeg, Math.min(capDeg, dP * PN_GAIN * dt));
+		this.heading += Math.max(-capDeg, Math.min(capDeg, dH * pnGain * dt));
+		this.pitch   += Math.max(-capDeg, Math.min(capDeg, dP * pnGain * dt));
 		this.pitch   = Math.max(-85, Math.min(85, this.pitch));
 
 		this.debug = {

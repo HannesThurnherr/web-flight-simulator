@@ -1,4 +1,5 @@
 import * as Cesium from 'cesium';
+import { allDatalinks } from './teamDatalink.js';
 
 // ============================================================================
 // Commander ("god's eye") view.
@@ -62,6 +63,24 @@ function colorsForNpc(unit) {
 	const base = COLOR_FACTIONS[unit.team] || COLOR_NPC_FALLBACK;
 	return { marker: base, trail: base.withAlpha(0.55) };
 }
+
+// Helper: was this pointer event aimed at a DOM overlay that sits on top
+// of the Cesium canvas (tooltip, tooltip button, legend panel, etc.) —
+// as opposed to the map itself?
+//
+// The commander's pointerdown / pointerup listeners live on `window` in
+// capture phase so they can beat Cesium's own canvas handlers. That
+// positioning also means they see every pointer event in the page,
+// including clicks on our DOM tooltips. If they treat those as map
+// clicks they'd either start a pan-drag on the tooltip or, worse, call
+// _handleClickAt which picks the canvas underneath the button and
+// closes the tooltip — leaving the button's own click handler with no
+// DOM element to fire on. So when the original target is inside a
+// tooltip we bail out of the map-input path entirely.
+function _isOverlayTarget(target) {
+	if (!target || !target.closest) return false;
+	return !!target.closest('.commander-tooltip');
+}
 // Colors used when a unit (or a trail segment) is behind terrain. Polylines
 // use depthFailMaterial for this natively; points/labels need a manual
 // per-frame occlusion test because Cesium's point graphic has no
@@ -114,8 +133,13 @@ export class CommanderView {
 		// default, toggled with R while the map is open. Entities here are
 		// rebuilt from scratch each frame (cheap at the unit counts we have)
 		// rather than diffed, which keeps the logic readable.
-		this.debugRadarEnabled = false;
-		this._debugEntities    = [];
+		this.debugRadarEnabled    = false;
+		this.debugDatalinkEnabled = false;
+		// Show every team's mesh by default when datalink debug is on
+		// (hostile teams in their own colors, friendly in cyan). Flip
+		// to false to see only the player's team.
+		this.datalinkShowAllTeams = true;
+		this._debugEntities       = [];
 		this._trailTick = 0;
 		// Accumulated simulation time (sum of dt from update()). Used for
 		// trail ageing instead of wall-clock time so pausing the game
@@ -247,7 +271,8 @@ export class CommanderView {
 				<span style="opacity:0.85">M</span> toggle map<br>
 				<span style="opacity:0.85">SPACE</span> pause / resume<br>
 				<span style="opacity:0.85">T</span> trails<br>
-				<span style="opacity:0.85">R</span> radar debug
+				<span style="opacity:0.85">R</span> radar debug<br>
+				<span style="opacity:0.85">D</span> datalink debug
 			</div>
 		`;
 		document.body.appendChild(p);
@@ -273,6 +298,16 @@ export class CommanderView {
 					this.debugRadarEnabled = v;
 					if (!v) this._clearDebugEntities();
 					this.viewer.scene.requestRender();
+				},
+			},
+			{
+				id: 'datalink', label: 'Datalink Debug', hotkey: 'D',
+				get: () => this.debugDatalinkEnabled,
+				set: (v) => {
+					this.debugDatalinkEnabled = v;
+					if (!v) this._clearDebugEntities();
+					this.viewer.scene.requestRender();
+					console.log('[CMDR] datalink debug', v ? 'ON' : 'OFF');
 				},
 			},
 		];
@@ -374,7 +409,7 @@ export class CommanderView {
 		this._applyCamera();
 		this._syncMarkers(playerState, units, missiles);
 		this._syncTrails();
-		this._syncRadarDebug(playerState, units, missiles);
+		this._syncDebugOverlays(playerState, units, missiles);
 		this._refreshControlRows();
 		this._updateTooltips();
 		this.viewer.scene.requestRender();
@@ -401,6 +436,14 @@ export class CommanderView {
 				this.debugRadarEnabled = !this.debugRadarEnabled;
 				if (!this.debugRadarEnabled) this._clearDebugEntities();
 				this.viewer.scene.requestRender();
+			} else if (k === 'd' && this.active) {
+				// D toggles the datalink overlay: thin lines from each
+				// team member that's publishing a radar track to the
+				// position of the tracked target, colored per team.
+				// Reveals the fused picture each side has.
+				this.debugDatalinkEnabled = !this.debugDatalinkEnabled;
+				if (!this.debugDatalinkEnabled) this._clearDebugEntities();
+				this.viewer.scene.requestRender();
 			}
 		});
 
@@ -412,6 +455,12 @@ export class CommanderView {
 		// at the same tier Cesium is at, ahead of its canvas handlers.
 		window.addEventListener('pointerdown', (e) => {
 			if (!this.active) return;
+			// Let pointer events on DOM overlays (tooltip buttons like the
+			// "VIEW" spectator button) pass straight through to the DOM.
+			// If we preventDefault on pointerdown here, the browser cancels
+			// the synthetic click that would otherwise fire on mouse-up,
+			// and our button listener never runs.
+			if (_isOverlayTarget(e.target)) return;
 			if (e.button === 0)      this._dragMode = 'pan';
 			else if (e.button === 2) this._dragMode = 'tilt';
 			else return;
@@ -462,7 +511,14 @@ export class CommanderView {
 		window.addEventListener('pointerup', (e) => {
 			if (!this._dragMode) return;
 			// Short travel ⇒ treat the press as a click, not a drag.
-			if (this._dragDist < 6 && e.button === 0 && this.active) {
+			// But skip the Cesium hit-test entirely if the click landed
+			// on a DOM overlay (tooltip button) — otherwise scene.pick()
+			// at the button's pixel coordinates usually hits empty
+			// canvas next to the marker and _clearAllTooltips() would
+			// yank the button out of the DOM before its own click
+			// listener can fire.
+			if (this._dragDist < 6 && e.button === 0 && this.active &&
+				!_isOverlayTarget(e.target)) {
 				this._handleClickAt(e.clientX, e.clientY);
 			}
 			this._dragMode = null;
@@ -637,7 +693,54 @@ export class CommanderView {
 				this._tooltips.delete(meta.id);
 			} else {
 				const el = this._createTooltipElement(meta.kind);
-				this._tooltips.set(meta.id, { element: el, meta });
+
+				// Structure of a tooltip element:
+				//   root (pointer-events: none)
+				//   ├── contentEl (innerHTML rewritten every frame by
+				//   │              _updateTooltips — holds the telemetry
+				//   │              rows that update as the unit moves)
+				//   └── buttonEl  (persistent; kept across frames so the
+				//                  browser can actually synthesize a
+				//                  click on it. If the button were
+				//                  recreated between pointerdown and
+				//                  pointerup — which was happening when
+				//                  the whole tooltip innerHTML got
+				//                  rewritten every frame — the browser
+				//                  would fail to synthesize the click.)
+				const contentEl = document.createElement('div');
+				el.appendChild(contentEl);
+
+				let buttonEl = null;
+				if (meta.kind !== 'player') {
+					buttonEl = document.createElement('button');
+					buttonEl.setAttribute('data-action', 'spectate');
+					buttonEl.textContent = 'VIEW';
+					buttonEl.style.cssText = `
+						pointer-events: auto;
+						cursor: pointer;
+						margin-top: 4px;
+						background: rgba(0,0,0,0.6);
+						border: 1px solid currentColor;
+						color: inherit;
+						font: inherit;
+						padding: 1px 8px;
+						letter-spacing: 1px;
+						text-shadow: inherit;
+					`;
+					// Per-button click listener — now that the button is
+					// persistent it survives across frames and can own
+					// its own handler instead of needing delegation.
+					buttonEl.addEventListener('click', (e) => {
+						e.preventDefault();
+						e.stopPropagation();
+						window.dispatchEvent(new CustomEvent('spectator-request', {
+							detail: { unit: meta.ref, kind: meta.kind },
+						}));
+					});
+					el.appendChild(buttonEl);
+				}
+
+				this._tooltips.set(meta.id, { element: el, contentEl, buttonEl, meta });
 			}
 		} else {
 			this._clearAllTooltips();
@@ -712,7 +815,16 @@ export class CommanderView {
 			tt.element.style.display = 'block';
 			tt.element.style.left = `${Math.round(win.x) + 14}px`;
 			tt.element.style.top  = `${Math.round(win.y) - 8}px`;
-			tt.element.innerHTML = this._buildTooltipHtml(tt.meta);
+			// Only rewrite the content div, not the entire tooltip —
+			// otherwise the persistent VIEW button would get recreated
+			// every frame and the browser would fail to synthesize a
+			// click event on it (pointerdown target ≠ pointerup target
+			// when the element has been replaced in between).
+			if (tt.contentEl) {
+				tt.contentEl.innerHTML = this._buildTooltipHtml(tt.meta);
+			} else {
+				tt.element.innerHTML = this._buildTooltipHtml(tt.meta);
+			}
 		}
 	}
 
@@ -722,6 +834,12 @@ export class CommanderView {
 		const row = (lbl, val) =>
 			`<div><span style="display:inline-block; width:36px; opacity:0.65">${lbl}</span>${val}</div>`;
 		const dir = (d) => `${Math.round(((d % 360) + 360) % 360).toString().padStart(3, '0')}°`;
+		// NOTE: the "VIEW" spectator button is NOT injected here — it's
+		// a persistent DOM element appended once in _handleClickAt. This
+		// HTML is replaced every frame by _updateTooltips; rebuilding
+		// the button inline each frame broke click synthesis because
+		// pointerdown / pointerup ended up on different element
+		// instances.
 
 		if (kind === 'missile') {
 			const typeTag = ref.type || 'MSL';
@@ -935,7 +1053,8 @@ export class CommanderView {
 			this._debugPrimitives = [];
 		}
 		// Reset the one-shot log gate so toggling off and on again re-logs.
-		if (!this.debugRadarEnabled) this._debugLoggedOnce = false;
+		if (!this.debugRadarEnabled)    this._debugLoggedOnce       = false;
+		if (!this.debugDatalinkEnabled) this._datalinkLoggedOnce    = false;
 	}
 
 	// Add a filled triangle in free 3D space, colored translucent. Used
@@ -950,6 +1069,52 @@ export class CommanderView {
 			Cesium.Cartesian3.fromDegrees(c.lon, c.lat, c.alt),
 		];
 		const geom = Cesium.CoplanarPolygonGeometry.fromPositions({ positions });
+		const prim = this.viewer.scene.primitives.add(new Cesium.Primitive({
+			geometryInstances: new Cesium.GeometryInstance({
+				geometry: geom,
+				attributes: {
+					color: Cesium.ColorGeometryInstanceAttribute.fromColor(color),
+				},
+			}),
+			appearance: new Cesium.PerInstanceColorAppearance({
+				flat: true,
+				translucent: true,
+				closed: false,
+			}),
+			asynchronous: false,
+		}));
+		this._debugPrimitives.push(prim);
+		return prim;
+	}
+
+	// Add an arbitrary triangulated mesh in free 3D space as a single
+	// Primitive. `positions` is an array of {lon, lat, alt} (converted
+	// to ECEF here), `indices` is a flat Uint16/number array of
+	// triangle indices into that position list. Used by _drawRadarCone
+	// to batch 32+ cone-wall triangles into one primitive instead of
+	// creating one Primitive per triangle (which is expensive to
+	// compile each frame).
+	_addDebugMesh(positions, indices, color) {
+		const flat = new Float64Array(positions.length * 3);
+		for (let i = 0; i < positions.length; i++) {
+			const p = positions[i];
+			const c = Cesium.Cartesian3.fromDegrees(p.lon, p.lat, p.alt);
+			flat[i * 3 + 0] = c.x;
+			flat[i * 3 + 1] = c.y;
+			flat[i * 3 + 2] = c.z;
+		}
+		const geom = new Cesium.Geometry({
+			attributes: {
+				position: new Cesium.GeometryAttribute({
+					componentDatatype: Cesium.ComponentDatatype.DOUBLE,
+					componentsPerAttribute: 3,
+					values: flat,
+				}),
+			},
+			indices: new Uint32Array(indices),
+			primitiveType: Cesium.PrimitiveType.TRIANGLES,
+			boundingSphere: Cesium.BoundingSphere.fromVertices(flat),
+		});
 		const prim = this.viewer.scene.primitives.add(new Cesium.Primitive({
 			geometryInstances: new Cesium.GeometryInstance({
 				geometry: geom,
@@ -1088,13 +1253,12 @@ export class CommanderView {
 				const h = (i / RING_SAMPLES) * 360;
 				ring.push(this._offsetByBearing(obs, h, range));
 			}
-			this._addDebugPolyline(ring, color, 2.5);
-			this._addDebugDottedLine(ring, color, 4);
+			this._addDebugPolyline(ring, color, 1.2);
 			// Draw four spokes to anchor the ring to the aircraft.
 			for (const hdg of [0, 90, 180, 270]) {
 				this._addDebugPolyline(
 					[apex, this._offsetByBearing(obs, hdg, range)],
-					color, 1.5,
+					color, 0.8,
 				);
 			}
 			return;
@@ -1105,68 +1269,97 @@ export class CommanderView {
 		const fovH = Math.min(rawH, Math.PI * 80 / 180);
 		const fovV = Math.min(rawV, Math.PI * 80 / 180);
 
-		// Draw a true 3D wireframe pyramid out to `range`, with the apex
-		// at the observer and a rectangular far-face bounded by ±fovH in
-		// azimuth and ±fovV in elevation. We sample the four edges of the
-		// far face (top / bottom / left / right) with an arc of points
-		// each — visually that reads as a curved cone slice in the sky
-		// rather than a flat line on the ground, which is what the old
-		// azimuth-only sampler produced.
-		const apex = { lon: obs.lon, lat: obs.lat, alt: obs.alt };
-		const EDGE_SAMPLES = 12;
+		// Tessellated SPHERICAL SECTOR — the correct geometry for a
+		// radar detection volume. Every point is within some range R
+		// of the observer, within the FOV cone. That's an ice-cream
+		// scoop, not a flat-ended cone:
+		//
+		//    apex (observer)
+		//      │╲     ╱│
+		//      │ ╲   ╱ │    straight cone walls
+		//      │  ╲ ╱  │
+		//      │   X   │
+		//      │  ╱ ╲  │
+		//      │ ╱   ╲ │
+		//      │╱     ╲│    spherical cap (all at range R)
+		//       ╰─────╯
+		//
+		// Mesh composition (all one Primitive):
+		//   1. Apex vertex.
+		//   2. Cap center vertex (nose-forward at range R).
+		//   3. CAP_RINGS concentric rings inside the cap, each with
+		//      SEGMENTS longitude samples. Ring n lives at normalized
+		//      radius φ = n/CAP_RINGS from the center; angular offset
+		//      (az, el) = φ · (fovH·cos θ, fovV·sin θ). All cap points
+		//      sit at distance R from apex (not at fixed XY offset),
+		//      so the cap curves away exactly like a sphere segment.
+		//   4. Triangulation:
+		//        - Inner fan: center → ring1[i] → ring1[i+1]
+		//        - Between rings: two triangles per quad
+		//        - Side walls: apex → rim[i] → rim[i+1]
+		const apex    = { lon: obs.lon, lat: obs.lat, alt: obs.alt };
+		const center  = this._offsetBodyFrame(obs, 0, 0, range);
+		const SEGMENTS  = 32;   // longitude samples around the axis
+		const CAP_RINGS = 4;    // latitude rings inside the cap
 
-		// Far-face edges: each is a sequence of rays at constant sign of
-		// one offset and varying the other. Named by which side of the
-		// rectangular aperture they trace.
-		const edges = {
-			top:    [],   // sweep az from −fovH..+fovH at el = +fovV
-			bottom: [],   // same az sweep at el = −fovV
-			left:   [],   // sweep el from −fovV..+fovV at az = −fovH
-			right:  [],   // same el sweep at az = +fovH
-		};
-		for (let i = 0; i <= EDGE_SAMPLES; i++) {
-			const t = i / EDGE_SAMPLES;
-			const az = -fovH + 2 * fovH * t;
-			const el = -fovV + 2 * fovV * t;
-			edges.top   .push(this._offsetBodyFrame(obs, az,  fovV, range));
-			edges.bottom.push(this._offsetBodyFrame(obs, az, -fovV, range));
-			edges.left  .push(this._offsetBodyFrame(obs, -fovH, el, range));
-			edges.right .push(this._offsetBodyFrame(obs,  fovH, el, range));
+		const meshPositions = [apex, center];
+		const APEX_IDX   = 0;
+		const CENTER_IDX = 1;
+		const RING_BASE  = 2;   // first ring vertex index
+
+		// Generate rings 1..CAP_RINGS. Each ring's point k is placed
+		// at range R along the ray (az = φ·fovH·cos θ, el = φ·fovV·sin θ)
+		// — same length from apex for every cap point, so the whole
+		// surface sits on a sphere of radius R.
+		for (let r = 1; r <= CAP_RINGS; r++) {
+			const phi = r / CAP_RINGS;
+			for (let s = 0; s < SEGMENTS; s++) {
+				const theta = (s / SEGMENTS) * 2 * Math.PI;
+				const az = phi * fovH * Math.cos(theta);
+				const el = phi * fovV * Math.sin(theta);
+				meshPositions.push(this._offsetBodyFrame(obs, az, el, range));
+			}
+		}
+		const ringIdx = (r, s) => RING_BASE + (r - 1) * SEGMENTS + (s % SEGMENTS);
+
+		const meshIndices = [];
+		// Inner fan: center to first ring.
+		for (let s = 0; s < SEGMENTS; s++) {
+			meshIndices.push(CENTER_IDX, ringIdx(1, s), ringIdx(1, s + 1));
+		}
+		// Stitch between adjacent rings.
+		for (let r = 1; r < CAP_RINGS; r++) {
+			for (let s = 0; s < SEGMENTS; s++) {
+				const a = ringIdx(r,     s);
+				const b = ringIdx(r,     s + 1);
+				const c = ringIdx(r + 1, s);
+				const d = ringIdx(r + 1, s + 1);
+				meshIndices.push(a, c, d);
+				meshIndices.push(a, d, b);
+			}
+		}
+		// Side walls: apex to outermost ring (the rim).
+		for (let s = 0; s < SEGMENTS; s++) {
+			meshIndices.push(APEX_IDX, ringIdx(CAP_RINGS, s + 1), ringIdx(CAP_RINGS, s));
 		}
 
-		// Four apex-to-corner spokes so the pyramid reads as a solid
-		// volume even when only one face is edge-on to the camera.
-		const corners = {
-			tl: this._offsetBodyFrame(obs, -fovH,  fovV, range),
-			tr: this._offsetBodyFrame(obs,  fovH,  fovV, range),
-			bl: this._offsetBodyFrame(obs, -fovH, -fovV, range),
-			br: this._offsetBodyFrame(obs,  fovH, -fovV, range),
-		};
-		this._addDebugPolyline([apex, corners.tl], color, 2);
-		this._addDebugPolyline([apex, corners.tr], color, 2);
-		this._addDebugPolyline([apex, corners.bl], color, 2);
-		this._addDebugPolyline([apex, corners.br], color, 2);
-
-		// Four translucent triangular faces meeting at the apex, plus
-		// two for the far-face rectangle (split along the diagonal
-		// because CoplanarPolygonGeometry needs exactly coplanar input
-		// and our "rectangle" isn't guaranteed planar on a curved
-		// Earth at scale). Alpha is kept low so overlapping cones from
-		// multiple NPCs don't drown the map.
-		const fillAlpha = color.alpha != null ? color.alpha * 0.25 : 0.2;
+		const fillAlpha = color.alpha != null ? color.alpha * 0.15 : 0.12;
 		const fill = color.withAlpha(fillAlpha);
-		this._addDebugTriangle(apex, corners.tl, corners.tr, fill); // top face
-		this._addDebugTriangle(apex, corners.tr, corners.br, fill); // right face
-		this._addDebugTriangle(apex, corners.br, corners.bl, fill); // bottom face
-		this._addDebugTriangle(apex, corners.bl, corners.tl, fill); // left face
+		this._addDebugMesh(meshPositions, meshIndices, fill);
 
-		// Far-face rim + dotted-point backup. Draw each edge as a short
-		// polyline and also as pixel-space dots — when one path or the
-		// other fails (as we've seen with world-space primitives in some
-		// Cesium scenes), we still get a readable shape.
-		for (const key of ['top', 'bottom', 'left', 'right']) {
-			this._addDebugPolyline(edges[key], color, 2);
-			this._addDebugDottedLine(edges[key], color, 4);
+		// Wireframe: closed rim loop + 4 spokes from apex through the
+		// cardinal rim points so the cone's 3D orientation is legible
+		// even when the fill alpha is faint. Also add one meridian
+		// arc (apex → center via an arbitrary ring chain) to emphasise
+		// that the cap curves — you see the belly of the scoop.
+		const rim = [];
+		for (let s = 0; s < SEGMENTS; s++) {
+			rim.push(meshPositions[ringIdx(CAP_RINGS, s)]);
+		}
+		this._addDebugPolyline([...rim, rim[0]], color, 1);
+		const spokePick = [0, SEGMENTS / 4, SEGMENTS / 2, (3 * SEGMENTS) / 4];
+		for (const idx of spokePick) {
+			this._addDebugPolyline([apex, rim[idx]], color, 1);
 		}
 	}
 
@@ -1185,12 +1378,20 @@ export class CommanderView {
 			});
 		}
 		this._addDebugPolyline(pts, color, width);
-		this._addDebugDottedLine(pts, color, 4);
+	}
+
+	// Orchestrates all debug overlays in one place — clears the shared
+	// entity pool once, then lets each individual overlay sync method
+	// append to it. Previously each overlay cleared independently, so
+	// whichever ran second wiped the first's work.
+	_syncDebugOverlays(playerState, units, missiles) {
+		this._clearDebugEntities();
+		if (this.debugRadarEnabled)    this._syncRadarDebug(playerState, units, missiles);
+		if (this.debugDatalinkEnabled) this._syncDatalinkDebug(playerState, units);
 	}
 
 	_syncRadarDebug(playerState, units, missiles) {
-		this._clearDebugEntities();
-		if (!this.debugRadarEnabled) return;
+		// Clear is handled by _syncDebugOverlays; this method only adds.
 
 		// Scope filter from pinned tooltips. If any unit is selected
 		// (tooltip open), we only draw its radar artifacts — so the
@@ -1236,7 +1437,7 @@ export class CommanderView {
 					if (!c || !c.radar || !c.target) continue;
 					const t = c.target;
 					if (t.destroyed || t.active === false) continue;
-					this._drawLine(obs, t, trackColor, 2.0);
+					this._drawLine(obs, t, trackColor, 1.0);
 					diag.tracks++;
 				}
 			}
@@ -1258,7 +1459,7 @@ export class CommanderView {
 					!selected.has(m.launcher) &&
 					!selected.has(t)) continue;
 
-				this._drawLine(m, t, lockColor, 3.5);
+				this._drawLine(m, t, lockColor, 1.8);
 				diag.locks++;
 				if (m.constructor && m.constructor.SEEKER_RADAR_DEBUG) {
 					this._drawRadarCone(m, m.constructor.SEEKER_RADAR_DEBUG, lockColor.withAlpha(0.55));
@@ -1274,6 +1475,90 @@ export class CommanderView {
 				'locks=' + diag.locks,
 				'filter=' + (hasFilter ? `${selected.size} selected` : 'all'),
 				'entities=' + this._debugEntities.length);
+		}
+	}
+
+	// ---- Datalink debug overlay -------------------------------------------
+	//
+	// For each team, walks the team's shared datalink.contacts map and
+	// draws a thin line from the publishing unit (who painted the track
+	// on its own radar) to the track's target position. Lines are
+	// colored by team, so at a glance you can see:
+	//
+	//   - How far the datalink picture reaches for each side (AWACS-
+	//     supported teams reach much further than others).
+	//   - Who on a team is actually *contributing* tracks versus just
+	//     consuming the fused picture.
+	//   - How many teammates have independent radar paints on a given
+	//     target (multiple lines converging on the same endpoint).
+	//
+	// Contact selection: we draw every entry in `datalink.allContacts()`
+	// that has a live source whose position we can resolve. Contacts
+	// without a source reference (e.g. stale after the source died)
+	// are skipped rather than anchoring lines at the source's death
+	// coordinates.
+
+	_syncDatalinkDebug(playerState, units) {
+		// Draws the COMMUNICATION MESH on the player's team datalink:
+		// edges between every pair of live team-mates who are on the
+		// net. This is the "who is sharing with whom" view — NOT the
+		// publisher → target view (radar debug already shows that).
+		// Real Link 16 is a mesh, every participant can receive from
+		// every other, so we draw all pairwise edges within a team.
+		//
+		// Inclusion rule: any alive unit with a `team` tag is treated
+		// as a datalink participant. In the future when we differentiate
+		// "comms-equipped vs comms-silent" platforms, this filter
+		// becomes a `unit.datalink === true` check.
+		const teamColor = (team) => {
+			if (team === 'friendly') return COLOR_PLAYER;
+			return COLOR_FACTIONS[team] || COLOR_NPC_FALLBACK;
+		};
+
+		// By default the overlay shows only the player's own team's
+		// mesh. Set `commanderView.datalinkShowAllTeams = true` from
+		// the console to reveal hostile-team meshes too.
+		const showAll = !!this.datalinkShowAllTeams;
+		const playerTeam = playerState && playerState.team;
+
+		// Bucket live units by team. Player is added explicitly so a
+		// solo human + AWACS still produces an edge.
+		const byTeam = new Map();
+		const push = (u) => {
+			if (!u || u.destroyed || u.active === false) return;
+			if (!u.team) return;
+			if (!byTeam.has(u.team)) byTeam.set(u.team, []);
+			byTeam.get(u.team).push(u);
+		};
+		push(playerState);
+		if (units) for (const u of units) push(u);
+
+		let drew = 0;
+		for (const [teamId, members] of byTeam) {
+			if (!showAll && teamId !== playerTeam) continue;
+			if (members.length < 2) continue;
+			const color = teamColor(teamId).withAlpha(0.6);
+			// Pairwise edges. For N members the graph is N·(N−1)/2
+			// edges — small for the team sizes we have (3–5 members).
+			for (let i = 0; i < members.length; i++) {
+				for (let j = i + 1; j < members.length; j++) {
+					const a = members[i], b = members[j];
+					this._addDebugPolyline(
+						[
+							{ lon: a.lon, lat: a.lat, alt: a.alt ?? 0 },
+							{ lon: b.lon, lat: b.lat, alt: b.alt ?? 0 },
+						],
+						color, 1.0,
+					);
+					drew++;
+				}
+			}
+		}
+
+		if (drew > 0 && !this._datalinkLoggedOnce) {
+			this._datalinkLoggedOnce = true;
+			console.log('[CMDR datalink debug] drew', drew, 'mesh edge(s) for',
+				showAll ? 'all teams' : `team ${playerTeam}`);
 		}
 	}
 }

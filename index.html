@@ -27,7 +27,16 @@
 				
 				<div class="menu-main">
 					<div class="menu-scenario">
-						<div class="scenario-header">SCENARIO</div>
+						<div class="scenario-header">AIRFRAME</div>
+						<div class="current-airframe">
+							<canvas id="planePreview" class="plane-preview-compact"></canvas>
+							<div class="current-airframe-info">
+								<div id="currentAirframeName" class="current-airframe-name">—</div>
+								<div id="currentAirframeTags" class="current-airframe-tags"></div>
+								<button id="changeAirframeBtn" type="button" class="change-airframe-btn clickable-ui">CHANGE AIRCRAFT</button>
+							</div>
+						</div>
+						<div class="scenario-header" style="margin-top:14px;">SCENARIO</div>
 						<div id="scenarioCards" class="scenario-cards"></div>
 					</div>
 					<nav class="menu-nav">
@@ -73,6 +82,35 @@
 	<div id="loadingIndicator" class="loading-container">
 		<div class="spinner"></div>
 		<div id="loadingText" class="loading-text">Loading system...</div>
+	</div>
+
+	<div id="airframeModal" class="modal hidden">
+		<div class="modal-header">
+			<div class="modal-title">SELECT AIRFRAME</div>
+			<button class="close-modal">CLOSE</button>
+		</div>
+		<div class="modal-body airframe-picker-body">
+			<div id="airframePickerList" class="airframe-picker-list"></div>
+			<div class="airframe-picker-middle">
+				<canvas id="planePreviewDetail" class="plane-preview-detail"></canvas>
+				<div class="airframe-picker-header">
+					<div id="airframePickerName" class="airframe-picker-name"></div>
+					<div id="airframePickerTags" class="airframe-picker-tags"></div>
+				</div>
+				<div id="airframePickerDesc" class="airframe-picker-desc"></div>
+			</div>
+			<div class="airframe-picker-detail">
+				<div class="airframe-picker-tabs">
+					<button type="button" class="airframe-tab active clickable-ui" data-tab="specs">SPECS</button>
+					<button type="button" class="airframe-tab clickable-ui" data-tab="loadout">LOADOUT</button>
+				</div>
+				<div id="airframePickerSpecs"   class="airframe-picker-specs   airframe-tab-panel"></div>
+				<div id="airframePickerLoadout" class="airframe-picker-loadout airframe-tab-panel hidden"></div>
+			</div>
+		</div>
+		<div class="modal-footer airframe-picker-footer">
+			<button id="airframeConfirmBtn" type="button" class="menu-btn clickable-ui">CONFIRM SELECTION</button>
+		</div>
 	</div>
 
 	<div id="optionsModal" class="modal hidden">
@@ -300,6 +338,7 @@
 	<div id="crashMenu" class="overlay hidden">
 		<h2 class="menu-title crash-header">AIRCRAFT DESTROYED</h2>
 		<button id="respawnBtn" class="menu-btn">RESPAWN</button>
+		<button id="respawnElsewhereBtn" class="menu-btn">CHANGE SPAWN</button>
 	</div>
 
 	<div id="spawnInstruction" class="hidden">

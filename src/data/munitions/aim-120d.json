@@ -1,0 +1,47 @@
+{
+	"id": "aim-120d",
+	"name": "AIM-120D AMRAAM",
+	"shortName": "AIM-120",
+	"category": "AAM",
+	"tags": ["aam", "bvr", "active-radar", "fox-3"],
+	"massKg": 161,
+	"rcsContributionM2": 0.03,
+	"description": "Beyond visual range air-to-air missile with active radar seeker.",
+	"simType": "AIM-120",
+	"signature": "missile_radar",
+	"seekerType": "active_radar",
+	"flight": {
+		"launchSpeedOffset": 50,
+		"boostDurationS": 8.0,
+		"boostAccel": 170,
+		"peakSpeed": 1300,
+		"minSpeed": 60,
+		"maxLifeS": 120,
+		"maxTurnDegPerSec": 40,
+		"pnGain": 4.0,
+		"dragRef": 8,
+		"dragRefSpeed": 1000,
+		"dragRefAltitude": 10000
+	},
+	"warhead": {
+		"killRadiusM": 15,
+		"fuzeSenseRadiusM": 30,
+		"missAbortRadiusMul": 2
+	},
+	"loft": {
+		"terminalRangeM": 15000,
+		"maxLoftRangeM": 70000,
+		"maxLoftDeg": 25
+	},
+	"seeker": {
+		"activeRangeM": 18000,
+		"fovHalfAngleDeg": 30,
+		"nominalDetectRangeM": 25000,
+		"referenceRcs": 5,
+		"notchThresholdAcquire": 30,
+		"notchThresholdTrack": 15,
+		"lockDropTimeoutS": 1.5,
+		"reacquireIntervalS": 0.25,
+		"datalink": true
+	}
+}

@@ -283,39 +283,164 @@ export class EngageBehavior extends Behavior {
 		const ws  = this.pilot.subsystems.weapons;
 		const best = tm && tm.getBest();
 		if (!best) return;
-		const { target, range } = best;
+		const { target, range, estPos, estVel, estSpeed } = best;
 		const unit = ctx.unit;
 
-		// Point at the target. The NPC motion code turns at boost rates
-		// when cmd.boost is true, but the approach phase should be
-		// measured — only firewall AB during evasion or final commit.
-		cmd.targetHeading = bearingFromTo(unit, target);
-
-		// Altitude band. If outside the band, trim pitch toward re-entry.
-		const alt = unit.alt;
-		if      (alt < this.cruiseAltMin) cmd.targetPitch =  5;
-		else if (alt > this.cruiseAltMax) cmd.targetPitch = -3;
-		else                              cmd.targetPitch =  0;
-
-		cmd.targetSpeed = this.cruiseSpeed;
-		cmd.throttle    = 0.85;
-		cmd.boost       = false;
-
-		// Committing to a shot: inside weapon envelope AND within a small
-		// angle off the nose. The AIM-120's datalink guidance tolerates
-		// some off-nose, but a roughly-aligned shot keeps things sane.
-		if (!ws) return;
+		// Pre-pick the weapon so steering knows whether we need a lead
+		// solution (gun) or just point-at-target (missiles, which do
+		// their own guidance post-launch).
 		const now = ctx.now;
-		// Pass the world-wide projectile pool so maxInFlight can be
-		// enforced. ctx.projectiles is set by npcSystem each frame.
-		const weapon = ws.pickWeaponFor(range, now, ctx.projectiles || [], unit);
+		const weapon = ws && ws.pickWeaponFor(range, now, ctx.projectiles || [], unit);
+		const isGun = weapon && weapon.type === 'gun';
+
+		// ---- Pursuit geometry ------------------------------------------------
+		// Aspect: vector from target to self, dotted with target's fwd.
+		//   aspectCos = -1  → we're at bandit's 6 o'clock  (rear hemisphere)
+		//   aspectCos =  0  → beam
+		//   aspectCos = +1  → dead ahead of bandit (head-on merge)
+		// Rear hemisphere is where guns work. Front/beam means we need
+		// to fly a LAG-pursuit curve — aim at a point 800 m behind the
+		// bandit along their reverse velocity, which pulls us inside
+		// their turn circle and bleeds aspect until we're in the rear.
+		const cosLat = Math.cos(unit.lat * Math.PI / 180);
+		const selfFromTgtE = (unit.lon - estPos.lon) * 111320 * cosLat;
+		const selfFromTgtN = (unit.lat - estPos.lat) * 111320;
+		const selfFromTgtU = (unit.alt - estPos.alt);
+		const selfLen = Math.sqrt(selfFromTgtE*selfFromTgtE + selfFromTgtN*selfFromTgtN + selfFromTgtU*selfFromTgtU) || 1;
+		const spd = Math.max(1, estSpeed);
+		const aspectCos = (selfFromTgtE*estVel.E + selfFromTgtN*estVel.N + selfFromTgtU*estVel.U) / (selfLen * spd);
+		// In bandit's rear hemisphere: aspectCos < 0. A threshold of
+		// -0.2 (≈100° off their nose) is the "acceptable gun shot"
+		// window — tighter than this produces chattering between lead
+		// and lag as we cross beam aspect.
+		const inRearHemisphere = aspectCos < -0.2;
+
+		let aimHeading, aimPitch;
+		const useLead = isGun && inRearHemisphere;
+
+		if (useLead) {
+			// Lead pursuit: where bullets arrive at target. Standard
+			// gun shot once we've maneuvered into the rear hemisphere.
+			const lead = this._computeGunLead(unit, {
+				lon: estPos.lon, lat: estPos.lat, alt: estPos.alt,
+				heading: best.estHeading, pitch: best.estPitch, speed: estSpeed,
+			});
+			aimHeading = lead.heading;
+			aimPitch   = lead.pitch;
+		} else if (isGun) {
+			// Lag pursuit: aim 800 m behind bandit's CURRENT projected
+			// position, along the reverse of their velocity. As the
+			// bandit turns, the lag point tracks with them — we're
+			// constantly flying at a spot chasing their tail, which
+			// naturally cuts inside their turn circle.
+			const invSpd = 1 / spd;
+			const aimLon = estPos.lon - (estVel.E * invSpd * 800) / (111320 * cosLat);
+			const aimLat = estPos.lat - (estVel.N * invSpd * 800) / 111320;
+			const aimAlt = estPos.alt - (estVel.U * invSpd * 800);
+			const dE = (aimLon - unit.lon) * 111320 * cosLat;
+			const dN = (aimLat - unit.lat) * 111320;
+			const dU = aimAlt - unit.alt;
+			const horiz = Math.sqrt(dE*dE + dN*dN);
+			aimHeading = (Math.atan2(dE, dN) * 180 / Math.PI + 360) % 360;
+			aimPitch   = Math.atan2(dU, horiz) * 180 / Math.PI;
+		} else {
+			// Missile engagement: point at the projected target. The
+			// missile does its own guidance after launch.
+			aimHeading = bearingFromTo(unit, { lon: estPos.lon, lat: estPos.lat });
+			aimPitch   = null;
+		}
+		cmd.targetHeading = aimHeading;
+
+		// Altitude policy: for missile BVR, hold the 4-10 km band. For
+		// a gun tracking shot we need to actually point the nose UP/DOWN
+		// at the target — a co-altitude band policy would miss every
+		// vertical merge. Gun pitch = lead-solution pitch, clipped wide
+		// enough to follow a vertically maneuvering bandit.
+		const angleOff = Math.abs(angleDiffDeg(unit.heading, cmd.targetHeading));
+		if (isGun && aimPitch !== null) {
+			cmd.targetPitch = Math.max(-45, Math.min(45, aimPitch));
+			// Reattack vs. tracking. When the nose is far off the pipper
+			// (post-merge crossing, or chasing a hard-turning bandit),
+			// we're in an energy-fight — firewall AB and commit to the
+			// turn. When we're close to the pipper we want SMOOTH
+			// tracking — no AB, steady throttle, so the gun solution
+			// doesn't wobble off the target.
+			if (angleOff > 20) {
+				cmd.throttle    = 1.0;
+				cmd.boost       = true;
+				cmd.targetSpeed = 600;
+			} else {
+				cmd.throttle    = 0.9;
+				cmd.boost       = false;
+				cmd.targetSpeed = 380;
+			}
+		} else {
+			const alt = unit.alt;
+			if      (alt < this.cruiseAltMin) cmd.targetPitch =  5;
+			else if (alt > this.cruiseAltMax) cmd.targetPitch = -3;
+			else                              cmd.targetPitch =  0;
+			cmd.targetSpeed = this.cruiseSpeed;
+			cmd.throttle    = 0.85;
+			cmd.boost       = false;
+		}
+
 		if (!weapon) return;
 
-		const angleOff = Math.abs(angleDiffDeg(unit.heading, cmd.targetHeading));
-		if (angleOff > this.fireConeDeg) return;
+		// Gun firing requires BOTH:
+		//   1. Nose on pipper (angle + pitch within the fire cone), and
+		//   2. We're in the bandit's rear hemisphere — anywhere else
+		//      the "aim point" is a lag-pursuit point 800 m behind the
+		//      target, not the target itself. Firing there just wastes
+		//      tracers. inRearHemisphere gate prevents that.
+		// Missiles (AIM-9X / AIM-120 all-aspect) ignore the hemisphere
+		// check — they can be lobbed head-on and guide themselves home.
+		const fireCone = isGun ? 8 : this.fireConeDeg;
+		const pitchErr = aimPitch !== null ? Math.abs(unit.pitch - aimPitch) : 0;
+		if (angleOff > fireCone) return;
+		if (isGun && pitchErr > fireCone) return;
+		if (isGun && !inRearHemisphere) return;
 
 		cmd.fireWeapon   = true;
 		cmd.weaponType   = weapon.type;
 		cmd.weaponTarget = target;
+	}
+
+	// Iterative lead solution for gun fire. Bullet ground speed equals
+	// shooter speed + 1500 m/s (see Bullet.js muzzle vel). Two passes
+	// converge because bullet flight time at gun range is ~1-4 s and
+	// target velocity is bounded. Output: heading/pitch (degrees) the
+	// shooter's nose needs to point at to hit a moving target NOW.
+	_computeGunLead(shooter, target) {
+		const latRad = shooter.lat * Math.PI / 180;
+		const cosLat = Math.cos(latRad);
+
+		let dE = (target.lon - shooter.lon) * 111320 * cosLat;
+		let dN = (target.lat - shooter.lat) * 111320;
+		let dU = (target.alt - shooter.alt);
+
+		const tHdg = (target.heading || 0) * Math.PI / 180;
+		const tPit = (target.pitch   || 0) * Math.PI / 180;
+		const tSpd = target.speed || 0;
+		const tvE = Math.sin(tHdg) * Math.cos(tPit) * tSpd;
+		const tvN = Math.cos(tHdg) * Math.cos(tPit) * tSpd;
+		const tvU = Math.sin(tPit) * tSpd;
+
+		const bulletSpd = (shooter.speed || 0) + 1500;
+
+		let tof = Math.sqrt(dE*dE + dN*dN + dU*dU) / bulletSpd;
+		for (let i = 0; i < 2; i++) {
+			const lE = dE + tvE * tof;
+			const lN = dN + tvN * tof;
+			const lU = dU + tvU * tof;
+			tof = Math.sqrt(lE*lE + lN*lN + lU*lU) / bulletSpd;
+		}
+		const leadE = dE + tvE * tof;
+		const leadN = dN + tvN * tof;
+		const leadU = dU + tvU * tof;
+
+		const horiz = Math.sqrt(leadE*leadE + leadN*leadN);
+		const heading = (Math.atan2(leadE, leadN) * 180 / Math.PI + 360) % 360;
+		const pitch   = Math.atan2(leadU, horiz) * 180 / Math.PI;
+		return { heading, pitch };
 	}
 }

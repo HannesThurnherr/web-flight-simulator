@@ -25,12 +25,23 @@ export const SIGNATURES = {
 		visualSize: 19,
 		unitClass: 'fighter',
 	},
-	// Low-observable fighter. Roughly two orders of magnitude lower RCS than
-	// a clean fighter, plus cooler tailpipe treatment.
+	// Low-observable fighter (F-35 class). Two orders of magnitude lower
+	// RCS than a clean fighter plus cooler tailpipe treatment.
 	stealth_fighter: {
 		rcs: 0.05,
 		irEmission: 100,
 		visualSize: 18,
+		unitClass: 'stealth_fighter',
+	},
+	// Higher-end stealth (F-22 class). ~10× lower RCS than the F-35
+	// bin thanks to more aggressive airframe shaping + serpentine
+	// inlets; IR trimmed further through thrust-vectoring-assisted
+	// low-power cruise (supercruise means less afterburner time, so
+	// less average IR as well).
+	stealth_fighter_hi: {
+		rcs: 0.008,
+		irEmission: 80,
+		visualSize: 19,
 		unitClass: 'stealth_fighter',
 	},
 	// Big radar return, big heat plume, big visual — AWACS / tanker / cargo.
@@ -65,6 +76,26 @@ export const SIGNATURES = {
 		rcs: 0.08,
 		irEmission: 700,
 		visualSize: 4,
+		unitClass: 'missile',
+	},
+	// Ground SAM battery (NASAMS-class). Radar trailer + launcher trucks
+	// present a fair RCS but not a huge one — ground clutter masks them
+	// against terrain return. Low IR (cool diesel APUs) and small visual
+	// footprint; the doctrine assumption is "you know roughly where the
+	// battery is, but you still need to acquire it to SEAD it".
+	sam_site: {
+		rcs: 8,
+		irEmission: 50,
+		visualSize: 9,
+		unitClass: 'sam_site',
+	},
+	// Surface-launched active-radar SAM (AMRAAM-ER / SL-AMRAAM). A bit
+	// hotter than an air-launched AIM-120 because the ground booster
+	// burns longer; RCS and visual size comparable.
+	missile_sam: {
+		rcs: 0.1,
+		irEmission: 900,
+		visualSize: 5,
 		unitClass: 'missile',
 	},
 };

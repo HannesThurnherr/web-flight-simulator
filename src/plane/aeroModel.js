@@ -78,16 +78,20 @@ export function liftCoefficient(alpha) {
 // body-forward (flat-plate-ish behavior at extreme AoA/sideslip). This is
 // not a real transonic/hypersonic model — just enough to keep the energy
 // bookkeeping reasonable at any attitude.
-const CD_ZERO = 0.022;
+// Default parasitic-drag coefficient. Per-plane values can override via
+// PlanePhysics.cdZero (the physics integrator passes its own cdZero in
+// as the 4th argument). F-15 class ≈ 0.022, F-22/F-35 stealth shaping
+// benefits from area rule → ~0.014–0.018.
+const CD_ZERO_DEFAULT = 0.022;
 const INDUCED_K = 0.12;  // ≈ 1/(π·AR·e) with AR≈3, e≈0.85
 // Extra drag when velocity is far from body-forward (flat-plate-ish at extreme
 // attitudes). Kept small so that moderate AoA / sideslip in normal maneuvers
 // doesn't double-count the induced-drag penalty — real fighters don't bleed
 // energy this fast in a hard turn.
 const MISALIGN_DRAG = 0.3;
-export function dragCoefficient(CL, alpha, beta) {
+export function dragCoefficient(CL, alpha, beta, cdZero = CD_ZERO_DEFAULT) {
 	const misalign = Math.sin(alpha) ** 2 + Math.sin(beta) ** 2;
-	return CD_ZERO + INDUCED_K * CL * CL + MISALIGN_DRAG * misalign;
+	return cdZero + INDUCED_K * CL * CL + MISALIGN_DRAG * misalign;
 }
 
 // Side force coefficient from sideslip. Negative sign convention: β > 0

@@ -2,7 +2,13 @@ export class PlaneController {
 	constructor() {
 		this.keys = {};
 		this.prevKeys = {};
-		window.addEventListener('keydown', (e) => this.keys[e.key.toLowerCase()] = true);
+		window.addEventListener('keydown', (e) => {
+			this.keys[e.key.toLowerCase()] = true;
+			// Tab is the browser's default focus-cycle key. Swallow it so
+			// pressing Tab to cycle the designated target doesn't ALSO
+			// move DOM focus to whatever button is next in the page.
+			if (e.key === 'Tab') e.preventDefault();
+		});
 		window.addEventListener('keyup', (e) => this.keys[e.key.toLowerCase()] = false);
 
 		this.mouseDragging = false;
@@ -37,12 +43,17 @@ export class PlaneController {
 				return;
 			}
 
-			// Left mouse: orbit-camera drag. Works even while mouse-steering
-			// is engaged — we just freeze the steering inputs for the
-			// duration of the drag (see the LMB check in update()) so the
-			// plane doesn't try to follow the cursor around. Commander
-			// view keeps its own left-drag handling.
+			// Left mouse: FIRE. Held or clicked while in cockpit view —
+			// same as pressing F / Enter. Commander view lets the
+			// built-in left-click-pan through.
 			if (e.button === 0 && !commanderActive) {
+				this.mouseFireHeld = true;
+			}
+			// Right mouse: orbit-camera drag. Was left-drag previously;
+			// moving to right frees up the left button for trigger /
+			// weapon release, which is the conventional flight-sim
+			// binding.
+			if (e.button === 2 && !commanderActive) {
 				this.mouseDragging = true;
 				this.lastMouseX = e.clientX;
 				this.lastMouseY = e.clientY;
@@ -76,10 +87,9 @@ export class PlaneController {
 		});
 
 		window.addEventListener('mouseup', (e) => {
-			if (e.button === 0) {
-				this.mouseDragging = false;
-			}
-			// MMB release does nothing now — steering is a click-to-toggle.
+			if (e.button === 0) this.mouseFireHeld = false;
+			if (e.button === 2) this.mouseDragging = false;
+			// MMB release does nothing — steering is a click-to-toggle.
 		});
 
 		this.input = {
@@ -95,6 +105,11 @@ export class PlaneController {
 			fireFlare: false,
 			weaponIndex: -1,
 			toggleWeapon: false,
+			// One-shot pulses (true only on the frame the key was pressed,
+			// false otherwise). Tab cycles the designated missile target
+			// through the set of AESA-locked contacts; Shift+Tab reverses.
+			cycleTargetFwd:  false,
+			cycleTargetBack: false,
 			// Mouse steering UI state — read by the HUD for the cursor line.
 			mouseSteering: false,
 			cursorX: this.cursorX,
@@ -112,10 +127,18 @@ export class PlaneController {
 		this.input.boost = !!this.keys[' '];
 		this.input.isDragging = this.mouseDragging;
 
-		this.input.fire = !!this.keys['enter'] || !!this.keys['f'];
+		this.input.fire = !!this.keys['enter'] || !!this.keys['f'] || !!this.mouseFireHeld;
 		this.input.fireFlare = !!this.keys['v'];
 
 		this.input.toggleWeapon = (!!this.keys['q'] && !this.prevKeys['q']);
+
+		// Target cycle: Tab steps forward through the locked contacts,
+		// Shift+Tab steps back. Fire these as single-frame pulses so a
+		// held key doesn't chew through the lock list in a blur.
+		const tabDown  = !!this.keys['tab']   && !this.prevKeys['tab'];
+		const shiftMod = !!this.keys['shift'];
+		this.input.cycleTargetFwd  = tabDown && !shiftMod;
+		this.input.cycleTargetBack = tabDown &&  shiftMod;
 
 		this.input.weaponIndex = -1;
 		if (this.keys['1']) this.input.weaponIndex = 0; // gun

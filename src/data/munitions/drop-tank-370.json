@@ -1,0 +1,12 @@
+{
+	"id": "drop-tank-370",
+	"name": "370 GAL DROP TANK",
+	"shortName": "TANK 370",
+	"category": "TANK",
+	"tags": ["tank", "fuel"],
+	"massKg": 1400,
+	"rcsContributionM2": 0.20,
+	"description": "External fuel tank. Extends combat radius at the cost of drag + hardpoint.",
+	"simType": "TANK",
+	"seekerType": "null"
+}

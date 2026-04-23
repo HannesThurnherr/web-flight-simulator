@@ -1,0 +1,39 @@
+{
+	"id": "wvr-dogfight-guns",
+	"name": "WVR Dogfight — Guns Only",
+	"description": "Player + 2 wingmen vs 3 red vs 3 blue. NO missiles — cannon only. 7 km extended gun range for long-reach tracers. Tests gun lead, pipper, NPC gun AI.",
+	"autoSpawn": false,
+	"playerLoadout": { "AIM-9": 0, "AIM-120": 0 },
+	"spawns": [
+		{
+			"type": "fighter",
+			"team": "friendly",
+			"origin": { "relTo": "player", "bearingDeg": 350, "rangeM": 500, "altOffsetM": -500 },
+			"loadout": {},
+			"count": 1
+		},
+		{
+			"type": "fighter",
+			"team": "friendly",
+			"origin": { "relTo": "player", "bearingDeg":  10, "rangeM": 500, "altOffsetM": -500 },
+			"loadout": {},
+			"count": 1
+		},
+		{
+			"type": "fighter",
+			"team": "hostile-red",
+			"origin": { "relTo": "player", "bearingDeg":  45, "rangeM": 8000, "altOffsetM": -500 },
+			"loadout": {},
+			"count": 3,
+			"jitterM": 500
+		},
+		{
+			"type": "fighter",
+			"team": "hostile-blue",
+			"origin": { "relTo": "player", "bearingDeg": 315, "rangeM": 8000, "altOffsetM": -500 },
+			"loadout": {},
+			"count": 3,
+			"jitterM": 500
+		}
+	]
+}
