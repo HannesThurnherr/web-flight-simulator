@@ -137,9 +137,8 @@ export class HUD {
 		// compass heading tape that lives along the top middle.
 		svg.style.cssText = `
 			position: absolute;
-			top: 16px;
-			left: 75%;
-			transform: translateX(-50%);
+			bottom: 360px;
+			right: 30px;
 			pointer-events: none;
 			z-index: 10;
 			filter: drop-shadow(0 0 4px rgba(0,0,0,0.6));
