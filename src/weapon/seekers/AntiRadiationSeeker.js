@@ -191,9 +191,44 @@ export class AntiRadiationSeeker extends Missile {
 		const dU = (lkp.alt - this.alt);
 		const range = Math.sqrt(dE * dE + dN * dN + dU * dU);
 		if (range < 1) return;
-		const horiz = Math.sqrt(dE * dE + dN * dN);
+		const horizRange = Math.sqrt(dE * dE + dN * dN);
 		const desiredHeading = (Math.atan2(dE, dN) * 180 / Math.PI + 360) % 360;
-		const desiredPitch   = Math.atan2(dU, horiz) * 180 / Math.PI;
+
+		// ---- Cruise + terminal-dive profile -------------------------
+		// Real HARMs fly a high-altitude cruise and pop down on the
+		// target only at terminal range. A pure direct LOS path digs
+		// into terrain whenever the launch was less than well above
+		// the SAM — exactly the geometry where SEAD shots actually
+		// happen (you launch from contested airspace, not from FL400
+		// over flat ground).
+		//
+		// Profile:
+		//   - Beyond TERMINAL_RANGE_M from target: cruise. Hold a
+		//     pitch that targets CRUISE_AGL_M above the target's
+		//     altitude. The horizontal LOS bearing is unchanged
+		//     (PN below); only the *vertical* aim differs.
+		//   - Within TERMINAL_RANGE_M: dive on the target. Aim the
+		//     pitch so we're tracking the target lat/lon/alt
+		//     directly.
+		//   - Smooth blend across BLEND_RANGE_M so the missile rolls
+		//     into the dive instead of bunting.
+		const TERMINAL_RANGE_M = 700;
+		const BLEND_RANGE_M    = 800;  // dive ramps in over [TERMINAL, TERMINAL+BLEND]
+		const CRUISE_AGL_M     = 1500; // sit ~1.5 km above target's alt while transiting
+
+		// Target pitch in cruise mode: aim at (target.alt + cruiseAGL).
+		// Target pitch in terminal mode: aim straight at target alt.
+		const cruiseAimAlt = lkp.alt + CRUISE_AGL_M;
+		const cruiseDU = cruiseAimAlt - this.alt;
+		const cruisePitch = Math.atan2(cruiseDU, Math.max(1, horizRange)) * 180 / Math.PI;
+		const terminalPitch = Math.atan2(dU, Math.max(1, horizRange)) * 180 / Math.PI;
+		// Blend factor: 0 at >TERMINAL+BLEND (full cruise), 1 at <TERMINAL (full dive).
+		let blend = 1;
+		if (horizRange > TERMINAL_RANGE_M + BLEND_RANGE_M) blend = 0;
+		else if (horizRange > TERMINAL_RANGE_M) {
+			blend = 1 - (horizRange - TERMINAL_RANGE_M) / BLEND_RANGE_M;
+		}
+		const desiredPitch = cruisePitch * (1 - blend) + terminalPitch * blend;
 
 		let dH = desiredHeading - this.heading;
 		while (dH < -180) dH += 360;

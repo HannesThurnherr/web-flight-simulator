@@ -425,23 +425,12 @@
 		</div>
 
 		<div id="weapons-hud">
-			<div id="weapon-list">
-				<div class="weapon-item active" id="weapon-gun">
-					<div class="weapon-progress"></div>
-					<span class="weapon-name">M61A1 VULCAN</span>
-					<span class="weapon-ammo">00</span>
-				</div>
-				<div class="weapon-item" id="weapon-missile">
-					<div class="weapon-progress"></div>
-					<span class="weapon-name">AIM-9 SIDEWINDER</span>
-					<span class="weapon-ammo">00</span>
-				</div>
-				<div class="weapon-item" id="weapon-flare">
-					<div class="weapon-progress"></div>
-					<span class="weapon-name">MJU-7A</span>
-					<span class="weapon-ammo">00</span>
-				</div>
-			</div>
+			<!-- Populated dynamically by HUD.updateWeapons() each frame.
+			     One row per carried weapon (gun + every loaded
+			     AAM/AGM), plus a dedicated flare row pinned to the
+			     bottom. Number key reflects in-list position
+			     (1=gun, 2=first carried missile, etc.). -->
+			<div id="weapon-list"></div>
 			<div id="aircraft-icon">
 				<img src="/assets/images/f-15.svg" alt="F-15 Icon">
 				<div id="aircraft-label">F-15</div>

@@ -53,20 +53,21 @@ export class HUD {
 		this.killScoreElem = document.getElementById('kill-score');
 		this.killTimeout = null;
 
-		this.weaponElems = {
-			gun: document.getElementById('weapon-gun'),
-			missile: document.getElementById('weapon-missile'),
-			flare: document.getElementById('weapon-flare')
-		};
+		// Weapon list is populated dynamically by updateWeapons().
+		// Cache the container + a Map<weaponKey, rowElement> so DOM
+		// gets built once per weapon-type and reused across frames
+		// rather than rebuilt each tick. Keys come from weapon.type
+		// (gun, AIM-9M, AIM-9X, AIM-120, METEOR, AGM-88, ...) plus a
+		// dedicated 'flare' key for the pinned-bottom flare slot.
+		this.weaponList = document.getElementById('weapon-list');
+		this.weaponRows = new Map();
+		// Legacy field kept for any other code path that still reads
+		// individual weapon DOM nodes — initialise empty so any
+		// stale querySelector returns undefined gracefully.
+		this.weaponElems = {};
 		this.weaponAmmoElems = {
-			gun: this.weaponElems.gun.querySelector('.weapon-ammo'),
-			missile: this.weaponElems.missile.querySelector('.weapon-ammo'),
-			flare: this.weaponElems.flare.querySelector('.weapon-ammo')
 		};
 		this.weaponProgressElems = {
-			gun: this.weaponElems.gun.querySelector('.weapon-progress'),
-			missile: this.weaponElems.missile.querySelector('.weapon-progress'),
-			flare: this.weaponElems.flare.querySelector('.weapon-progress')
 		};
 
 		this.vignette = document.getElementById('transition-vignette');
@@ -2471,76 +2472,126 @@ export class HUD {
 		}
 	}
 
+	// Build (or fetch from cache) one weapon-list row keyed by weapon
+	// type. Rows are reused across frames so we don't churn DOM when
+	// updating ammo / progress — innerHTML is touched once on creation.
+	_ensureWeaponRow(key) {
+		let row = this.weaponRows.get(key);
+		if (row) return row;
+		row = document.createElement('div');
+		row.className = 'weapon-item';
+		row.dataset.key = key;
+		row.innerHTML =
+			'<div class="weapon-progress"></div>' +
+			'<span class="weapon-name"></span>' +
+			'<span class="weapon-ammo">--</span>';
+		this.weaponList.appendChild(row);
+		this.weaponRows.set(key, row);
+		return row;
+	}
+
+	// One-row update. Pulls name / ammo / progress / classes from
+	// `weapon` (a slot from weaponSystem.weapons or the flareWeapon).
+	// `weaponSlotKey` is the legacy id ('gun' | 'missile' | 'agm' |
+	// 'flare') used by the empty-warning blink path. `slotNumber` is
+	// the in-list index shown as a small "1." / "2." prefix on the
+	// row — matches the player's number-key bind for this weapon.
+	_updateWeaponRow(row, weapon, isActive, isOverheated, isEmptyWarning,
+	                 slotNumberOrNull, progressPct, weaponSystem) {
+		row.style.display = '';
+		row.classList.toggle('active', !!isActive);
+		row.classList.toggle('overheated', !!(isOverheated || isEmptyWarning));
+
+		const nameElem = row.querySelector('.weapon-name');
+		const ammoElem = row.querySelector('.weapon-ammo');
+		const progElem = row.querySelector('.weapon-progress');
+
+		if (nameElem) {
+			const prefix = (slotNumberOrNull != null) ? `${slotNumberOrNull}. ` : '';
+			nameElem.textContent = prefix + (weapon.name || weapon.type || weapon.id);
+		}
+		if (ammoElem) {
+			if (isOverheated) ammoElem.textContent = 'OVERHEAT';
+			else if (weapon.ammo === Infinity) ammoElem.textContent = '∞';
+			else ammoElem.textContent = String(weapon.ammo).padStart(2, '0');
+		}
+		if (progElem) progElem.style.width = `${progressPct}%`;
+	}
+
 	updateWeapons(weaponSystem) {
 		const currentWeapon = weaponSystem.getCurrentWeapon();
 		const now = performance.now() * 0.001;
 
-		const isMissileSelected = !!currentWeapon && (
-			currentWeapon.id === 'missile' ||
-			currentWeapon.id === 'aim-9' ||
-			(currentWeapon.name && currentWeapon.name.toLowerCase().includes('aim-9'))
-		);
-		this.showMissileCrosshair(isMissileSelected);
+		// Show the missile-crosshair overlay whenever a guided weapon
+		// (any AAM, AGM, or otherwise non-gun) is selected. Gun gets
+		// its own pipper logic elsewhere.
+		const isGuidedSelected = !!currentWeapon &&
+			currentWeapon.id !== 'gun' &&
+			currentWeapon.id !== 'flare';
+		this.showMissileCrosshair(isGuidedSelected);
 
-		['gun', 'missile', 'flare'].forEach(id => {
-			const elem = this.weaponElems[id];
-			const ammoElem = this.weaponAmmoElems[id];
-			const progressElem = this.weaponProgressElems[id];
+		// Build the row list dynamically from carried weapons. The
+		// flare row pins to the bottom regardless. Number keys
+		// 1..N map to the Nth carried weapon (see
+		// weaponSystem._carriedWeapons + planeController), so the
+		// label prefix matches what the player sees on the keyboard.
+		const carried = (typeof weaponSystem._carriedWeapons === 'function')
+			? weaponSystem._carriedWeapons()
+			: weaponSystem.weapons.filter(w => w.ammo === Infinity || w.ammo > 0);
 
-			const weapon = id === 'flare' ? weaponSystem.flareWeapon : weaponSystem.weapons.find(w => w.id === id && (id !== 'missile' || w === currentWeapon));
-			const displayWeapon = weapon || (id === 'flare' ? weaponSystem.flareWeapon : weaponSystem.weapons.find(w => w.id === id));
+		const seen = new Set();
 
-			if (elem) {
-				const isEmptyWarning = weaponSystem.emptyWarningTimers && weaponSystem.emptyWarningTimers[id] > 0;
-				const isActive = (currentWeapon && currentWeapon.id === id) ||
-					(id === 'flare' && (now - weaponSystem.flareWeapon.lastFire < 1.0)) ||
-					isEmptyWarning;
-				const isGunOverheated = id === 'gun' && weaponSystem.isGunOverheated;
+		carried.forEach((weapon, idx) => {
+			const key = `w:${weapon.type || weapon.id}`;
+			seen.add(key);
+			const row = this._ensureWeaponRow(key);
 
-				if (isActive) {
-					elem.classList.add('active');
-				} else {
-					elem.classList.remove('active');
-				}
+			const isActive       = weapon === currentWeapon;
+			const isOverheated   = weapon.id === 'gun' && weaponSystem.isGunOverheated;
+			const isEmptyWarning = weaponSystem.emptyWarningTimers
+				&& weaponSystem.emptyWarningTimers[weapon.id] > 0;
 
-				if (isGunOverheated || isEmptyWarning) {
-					elem.classList.add('overheated');
-				} else {
-					elem.classList.remove('overheated');
-				}
-
-				if (isActive && id === 'missile' && displayWeapon) {
-					const nameElem = elem.querySelector('.weapon-name');
-					if (nameElem) nameElem.innerText = displayWeapon.name;
-				}
+			let progressPct = 0;
+			if (weapon.id === 'gun') {
+				progressPct = (weaponSystem.gunHeat || 0) * 100;
+			} else if (weapon.fireRate) {
+				const dt = now - (weapon.lastFire || 0);
+				if (dt < weapon.fireRate) progressPct = (dt / weapon.fireRate) * 100;
 			}
 
-			if (progressElem && displayWeapon) {
-				let progress = 0;
-				if (id === 'gun') {
-					progress = weaponSystem.gunHeat * 100;
-				} else {
-					const timeSinceLast = now - displayWeapon.lastFire;
-					const reloadTime = id === 'flare' ? 1.0 : displayWeapon.fireRate;
-
-					if (timeSinceLast < reloadTime) {
-						progress = (timeSinceLast / reloadTime) * 100;
-					} else {
-						progress = 0;
-					}
-				}
-				progressElem.style.width = `${progress}%`;
-			}
-
-			if (ammoElem && displayWeapon) {
-				if (id === 'gun' && weaponSystem.isGunOverheated) {
-					ammoElem.innerText = 'OVERHEAT';
-				} else if (displayWeapon.ammo === Infinity) {
-					ammoElem.innerText = 'INF';
-				} else {
-					ammoElem.innerText = displayWeapon.ammo.toString().padStart(2, '0');
-				}
-			}
+			this._updateWeaponRow(
+				row, weapon, isActive, isOverheated, isEmptyWarning,
+				idx + 1, progressPct, weaponSystem,
+			);
 		});
+
+		// Flare row — always last, even when empty (so the player
+		// can see flare count even if a magazine is dry).
+		const flare = weaponSystem.flareWeapon;
+		if (flare) {
+			seen.add('flare');
+			const row = this._ensureWeaponRow('flare');
+			const isFlareEmpty = flare.ammo <= 0;
+			const isFlareActiveBlink = (now - flare.lastFire) < 1.0;
+			const isEmptyWarning = weaponSystem.emptyWarningTimers
+				&& weaponSystem.emptyWarningTimers.flare > 0;
+			let progressPct = 0;
+			const dt = now - (flare.lastFire || 0);
+			if (dt < 1.0) progressPct = (dt / 1.0) * 100;
+			this._updateWeaponRow(
+				row, flare, isFlareActiveBlink, false, isEmptyWarning,
+				null, progressPct, weaponSystem,
+			);
+			// Fade out when the magazine is dry — visual cue distinct
+			// from "active" / "overheated".
+			row.style.opacity = isFlareEmpty ? '0.35' : '';
+		}
+
+		// Hide rows for weapons no longer in the carried list (e.g.
+		// the player just emptied an AAM magazine). Keep them in the
+		// DOM cache so a refill / reload re-uses the same row.
+		for (const [key, row] of this.weaponRows) {
+			if (!seen.has(key)) row.style.display = 'none';
+		}
 	}
 }
