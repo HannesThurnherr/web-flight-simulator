@@ -68,6 +68,8 @@ const GIMBAL_EL_MAX = 20;
 const FOV_MIN = 1, FOV_MAX = 30;
 
 let _dragging = false;
+let _dragLastX = 0;
+let _dragLastY = 0;
 let _visible  = false;
 
 // ---- Public API ------------------------------------------------------------
@@ -175,28 +177,41 @@ export function setupTgp() {
 	// also swallow the events from reaching the window-level fire
 	// listener (planeController already gates that on mouseSteering,
 	// but defense-in-depth doesn't hurt).
-	vp.addEventListener('mousedown', (e) => {
+	// Use pointer events with setPointerCapture so we keep getting
+	// pointermove even if the cursor leaves the viewport mid-drag, and
+	// we don't depend on `movementX` (which is 0 across some Cesium
+	// canvas configurations). Tracking lastX/lastY ourselves is
+	// bulletproof.
+	vp.addEventListener('pointerdown', (e) => {
 		if (e.button !== 0) return;
 		e.stopPropagation();
 		e.preventDefault();
 		_dragging = true;
+		_dragLastX = e.clientX;
+		_dragLastY = e.clientY;
 		vp.style.cursor = 'grabbing';
+		try { vp.setPointerCapture(e.pointerId); } catch (_) {}
 	});
-	window.addEventListener('mouseup', (e) => {
-		if (e.button !== 0) return;
-		if (_dragging) {
-			_dragging = false;
-			if (_viewport) _viewport.style.cursor = 'grab';
-		}
-	});
-	window.addEventListener('mousemove', (e) => {
+	const _endDrag = (e) => {
 		if (!_dragging) return;
+		_dragging = false;
+		vp.style.cursor = 'grab';
+		try { vp.releasePointerCapture(e.pointerId); } catch (_) {}
+	};
+	vp.addEventListener('pointerup',     _endDrag);
+	vp.addEventListener('pointercancel', _endDrag);
+	vp.addEventListener('pointermove', (e) => {
+		if (!_dragging) return;
+		const dx = e.clientX - _dragLastX;
+		const dy = e.clientY - _dragLastY;
+		_dragLastX = e.clientX;
+		_dragLastY = e.clientY;
 		// Sensitivity scales with FOV — narrower zoom moves the
 		// gimbal more slowly per pixel, matching how a real
 		// telescope feels.
-		const k = _tgpFovDeg / 30; // 1.0 at wide, ~0.03 at tightest
-		_gimbalAz += e.movementX * 0.4 * k;
-		_gimbalEl -= e.movementY * 0.4 * k; // up on screen = look up
+		const k = _tgpFovDeg / 30;
+		_gimbalAz += dx * 0.4 * k;
+		_gimbalEl -= dy * 0.4 * k;
 		_gimbalAz = Math.max(-GIMBAL_AZ_LIMIT, Math.min(GIMBAL_AZ_LIMIT, _gimbalAz));
 		_gimbalEl = Math.max(GIMBAL_EL_MIN,    Math.min(GIMBAL_EL_MAX,    _gimbalEl));
 	});
@@ -297,20 +312,12 @@ function _ensureFeedViewer() {
 		_tgpViewer.scene.screenSpaceCameraController.enableInputs = false;
 		try { _tgpViewer.cesiumWidget.creditContainer.style.display = 'none'; } catch (e) {}
 
-		// Attach mouse handlers DIRECTLY to the Cesium canvas. The vp
-		// listeners I had before relied on event bubbling, which
-		// doesn't always work cleanly through Cesium's widget DOM
-		// (the canvas can swallow events under some configurations).
-		// Going straight to the canvas is bulletproof.
+		// Wheel handler on the canvas itself — Cesium's canvas swallows
+		// wheel events even with screenSpaceCameraController disabled,
+		// so a viewport-level listener doesn't see them. (Drag uses
+		// pointer events on vp, which DO bubble up cleanly.)
 		const cv = _tgpViewer.canvas;
 		if (cv) {
-			cv.addEventListener('mousedown', (e) => {
-				if (e.button !== 0) return;
-				e.stopPropagation();
-				e.preventDefault();
-				_dragging = true;
-				if (_viewport) _viewport.style.cursor = 'grabbing';
-			});
 			cv.addEventListener('wheel', (e) => {
 				e.stopPropagation();
 				e.preventDefault();
