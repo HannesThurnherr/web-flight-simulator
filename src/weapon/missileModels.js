@@ -140,30 +140,11 @@ _loader.load('/assets/models/agm-88-harm.glb', (gltf) => {
 	console.warn('[missileModels] agm-88 model failed to load', err);
 });
 
-// GBU-12 PAVEWAY II is bundled inside a multi-munition collection glb
-// (the same source contains JDAMs, Mavericks, Sidewinders, etc.).
-// Load the collection once, extract only the GBU-12 subtree by node
-// name, and feed it through the same normalizer so axis + scale
-// convert correctly. Everything else in the file is discarded.
-_loader.load('/assets/models/munition-collection.glb', (gltf) => {
-	let gbuNode = null;
-	gltf.scene.traverse((obj) => {
-		if (gbuNode) return;
-		if (obj.name && /GBU-12/i.test(obj.name)) gbuNode = obj;
-	});
-	if (!gbuNode) {
-		console.warn('[missileModels] GBU-12 node not found in collection');
-		return;
-	}
-	// Clone so we don't mutate the loaded scene graph (in case other
-	// munitions get pulled from the same file later). Reset transform
-	// because the node carries its parent-relative offset, which we
-	// don't want once it's standing alone.
-	const isolated = gbuNode.clone(true);
-	isolated.position.set(0, 0, 0);
-	isolated.rotation.set(0, 0, 0);
-	isolated.scale.set(1, 1, 1);
-	_templates['gbu-12'] = _normalizeMissileModel(isolated, 3.27);
+// GBU-12 PAVEWAY II — dedicated GLB. 500 lb laser-guided iron bomb,
+// distinct silhouette: round nose seeker dome, mid-body strakes,
+// boxfin tail group.
+_loader.load('/assets/models/gbu-12.glb', (gltf) => {
+	_templates['gbu-12'] = _normalizeMissileModel(gltf.scene, 3.27);
 	_templates['gbu-12'].traverse((child) => {
 		if (child.isMesh) {
 			child.castShadow = true;
@@ -171,7 +152,7 @@ _loader.load('/assets/models/munition-collection.glb', (gltf) => {
 		}
 	});
 }, undefined, (err) => {
-	console.warn('[missileModels] munition-collection.glb failed to load', err);
+	console.warn('[missileModels] gbu-12 model failed to load', err);
 });
 
 // Return a fresh clone of the aim-9 template, or null if the GLB hasn't

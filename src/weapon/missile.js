@@ -145,7 +145,16 @@ export class Missile {
 		// during boost, fade during coast), and they need a live handle
 		// for those tweaks. Parameterized on bodyLen so the offsets line
 		// up with either the GLB (3.02 m long) or the fallback (2.6 m).
-		this._buildFlameEffects(bodyLen, 0.07, 1.0, 2.2);
+		//
+		// Skip entirely for unpowered munitions — gravity bombs (GBU-12
+		// and any future LGB / JDAM) have no rocket motor, so a glowing
+		// orb on their tail looks ridiculous. The cleanest signal is
+		// boostDurationS === 0 (those entries have a zero burn time and
+		// zero boostAccel; everything else has a nonzero motor).
+		const hasMotor = !d.flight || (d.flight.boostDurationS ?? 0) > 0;
+		if (hasMotor) {
+			this._buildFlameEffects(bodyLen, 0.07, 1.0, 2.2);
+		}
 
 		this.mesh.layers.enable(0);
 		this.mesh.layers.enable(1);
