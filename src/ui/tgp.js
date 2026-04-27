@@ -62,15 +62,25 @@ let _crosshair = null;
 let _gimbalAz = 0;
 let _gimbalEl = -10;
 let _tgpFovDeg = 10;
+// Gimbal mechanical envelope. Modelled after Sniper / LITENING-class
+// pods: can swing nearly full aft (±150° az), look almost straight
+// down (-89°), and a touch above the horizon (+30°). The envelope is
+// what causes the camera to lose the spot when you fly over it — the
+// real-world reason GBU-12 employment doctrine says "release before
+// passing the target's footprint cone".
 const GIMBAL_AZ_LIMIT = 150;
-const GIMBAL_EL_MIN = -85;
-const GIMBAL_EL_MAX = 20;
+const GIMBAL_EL_MIN = -89;
+const GIMBAL_EL_MAX = 30;
 const FOV_MIN = 1, FOV_MAX = 30;
 
 let _dragging = false;
 let _dragLastX = 0;
 let _dragLastY = 0;
 let _visible  = false;
+// True when the reverse-aim in TRACK / LASE wants an angle outside
+// the gimbal envelope (so the camera is at the mechanical stop and
+// the spot is no longer in frame). Surfaced as "MASKED" in status.
+let _gimbalMasked = false;
 
 // ---- Public API ------------------------------------------------------------
 
@@ -386,6 +396,7 @@ export function updateTgp(playerState, weaponSystem, mainViewer) {
 	// the lock to a new point. Dragging breaks the unit-snap (the
 	// player is clearly retargeting) and the next-frame raycast
 	// below adopts the new ground point as the lock.
+	_gimbalMasked = false;
 	if ((playerDesignation.mode === 'TRACK' || playerDesignation.mode === 'LASE') && !_dragging) {
 		// Follow ground-unit targets if the snap was on one.
 		const t = playerDesignation.target;
@@ -395,8 +406,16 @@ export function updateTgp(playerState, weaponSystem, mainViewer) {
 			playerDesignation.alt = t.alt;
 		}
 		const aim = _gimbalToward(playerState, playerDesignation);
-		_gimbalAz = Math.max(-GIMBAL_AZ_LIMIT, Math.min(GIMBAL_AZ_LIMIT, aim.az));
-		_gimbalEl = Math.max(GIMBAL_EL_MIN,    Math.min(GIMBAL_EL_MAX,    aim.el));
+		// If the desired pointing is outside the gimbal envelope, the
+		// camera will sit at the stop and the spot will visibly drift
+		// off-frame. Flag it so the status block can warn the player.
+		const azClamped = Math.max(-GIMBAL_AZ_LIMIT, Math.min(GIMBAL_AZ_LIMIT, aim.az));
+		const elClamped = Math.max(GIMBAL_EL_MIN,    Math.min(GIMBAL_EL_MAX,    aim.el));
+		if (azClamped !== aim.az || elClamped !== aim.el) {
+			_gimbalMasked = true;
+		}
+		_gimbalAz = azClamped;
+		_gimbalEl = elClamped;
 	}
 	if (playerDesignation.mode === 'LASE') {
 		// Keep the lase-fresh stamp current regardless of drag, so the
@@ -461,10 +480,13 @@ export function updateTgp(playerState, weaponSystem, mainViewer) {
 	const slantRange = _haversine(playerState, playerDesignation);
 	const targetTxt = playerDesignation.target && playerDesignation.target.name
 		? `<div>TGT  <span style="opacity:0.9">${playerDesignation.target.name}</span></div>` : '';
+	const maskedTag = _gimbalMasked
+		? `<span style="float:right; color:#f80; font-weight:bold;">MASKED</span>`
+		: '';
 	_statusEl.innerHTML =
 		`<div>MODE <span style="font-weight:bold;color:${_modeColor()}">${playerDesignation.mode}</span>` +
 		`<span style="float:right; opacity:0.8">FOV ${_tgpFovDeg.toFixed(1)}°</span></div>` +
-		`<div>AZ   ${_gimbalAz.toFixed(0)}°   <span style="margin-left:8px">EL ${_gimbalEl.toFixed(0)}°</span></div>` +
+		`<div>AZ   ${_gimbalAz.toFixed(0)}°   <span style="margin-left:8px">EL ${_gimbalEl.toFixed(0)}°</span>${maskedTag}</div>` +
 		`<div>SPOT ${playerDesignation.lat.toFixed(4)}°, ${playerDesignation.lon.toFixed(4)}°</div>` +
 		`<div>RNG  ${(slantRange / 1000).toFixed(1)} km</div>` +
 		targetTxt;
