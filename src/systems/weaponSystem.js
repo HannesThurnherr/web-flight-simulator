@@ -51,6 +51,13 @@ export class WeaponSystem {
 			// fire() and skips the AESA lock-progress loop in update().
 			{ id: 'agm',     name: 'AGM-88 HARM',       ammo: 0,  maxAmmo: 0,  fireRate: 2.0,
 			  lastFire: 0, type: 'AGM-88',   lockRange: 0,      lockCone: 0,     lockTime: 0 },
+			// GBU-12 Paveway II — laser-guided 500 lb. Fires whenever
+			// the player has a designation (TRACK or LASE on the TGP);
+			// LASE is required during the bomb's terminal phase for
+			// the seeker to hold the spot. id='gbu' bypasses the AESA
+			// lock gate the same way 'agm' does.
+			{ id: 'gbu',     name: 'GBU-12 PAVEWAY II', ammo: 0,  maxAmmo: 0,  fireRate: 2.0,
+			  lastFire: 0, type: 'GBU-12',   lockRange: 0,      lockCone: 0,     lockTime: 0 },
 		];
 
 		this.flareWeapon = { id: 'flare', name: 'MJU-7A', ammo: 30, maxAmmo: 30, fireRate: 0.2, lastFire: 0 };
@@ -289,7 +296,7 @@ export class WeaponSystem {
 				playerState,
 			);
 			this.projectiles.push(bullet);
-		} else if (weapon.id === 'missile' || weapon.id === 'agm') {
+		} else if (weapon.id === 'missile' || weapon.id === 'agm' || weapon.id === 'gbu') {
 			this.lastMissileSide = !this.lastMissileSide;
 			const side = this.lastMissileSide ? 1 : -1;
 			const missileOffset = new THREE.Vector3(15.0 * side, -15.0, 0.0);
@@ -309,6 +316,12 @@ export class WeaponSystem {
 				target = isRadiating(this.designatedEmitter)
 					? this.designatedEmitter
 					: null;
+			} else if (weapon.id === 'gbu') {
+				// GBU has no AESA target — it homes on the laser spot
+				// the player's TGP is currently designating. The
+				// LaserSeeker imports playerDesignation directly each
+				// frame; nothing to thread through here.
+				target = null;
 			} else {
 				target = this.target;
 			}

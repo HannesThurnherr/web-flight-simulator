@@ -157,6 +157,9 @@ let mixer, clock;
 let physics = new PlanePhysics();
 let controller = new PlaneController();
 let hud = new HUD();
+// TGP panel — created once at boot, hidden by default. updateTgp() in
+// simLoop shows/hides based on the current weapon.
+import('./ui/tgp.js').then(m => m.setupTgp());
 // Commander view is created lazily once the Cesium viewer exists. We instantiate
 // it just-in-time in update() the first time we need it — keeping init order
 // simple avoids fighting with the existing async Cesium bring-up.

@@ -107,7 +107,12 @@ export class HUD {
 		this.createMissileCrosshair();
 		this.createCompass();
 		this.createMinimapZoomButtons();
-		this.createFlightDataPanel();
+		// Flight-data panel (AOA / G / VS / SLIP / THR bar) removed by
+		// player request. Left edge is now occupied by the TGP panel
+		// when a laser-guided weapon is selected. The remaining
+		// flight cues (afterburner, stall, throttle level) live in
+		// the existing right-side stack.
+		// this.createFlightDataPanel();
 		this.createStallWarning();
 		this.createAfterburnerIndicator();
 		this.createMissileDebugPanel();
@@ -1875,7 +1880,7 @@ export class HUD {
 
 		this.speedElem.innerText = Math.round(state.speed).toString().padStart(3, '0');
 
-		this.updateFlightData(state);
+		// updateFlightData(state); — panel removed (see constructor)
 		this.updateMissileDebugPanel(state);
 		this.updateMissileMarkers(state);
 		this.updateMouseSteeringOverlay(state);

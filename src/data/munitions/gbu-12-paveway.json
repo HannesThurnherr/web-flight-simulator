@@ -6,7 +6,35 @@
 	"tags": ["gbu", "laser-guided", "500lb"],
 	"massKg": 230,
 	"rcsContributionM2": 0.03,
-	"description": "500 lb laser-guided bomb. Precision strike against soft / hardened targets.",
+	"description": "500 lb laser-guided bomb. Homes on the spot a friendly TGP is lasing. Classic Paveway II — no INS backup, so if you stop lasing during terminal it falls dumb. Effective up to ~10 km from medium-altitude release.",
 	"simType": "GBU-12",
-	"seekerType": "laser"
+	"signature": "missile_radar",
+	"seekerType": "laser",
+	"modelTemplate": "agm-88",
+	"realLengthM": 3.27,
+	"flight": {
+		"launchSpeedOffset": 0,
+		"boostDurationS": 0,
+		"boostAccel": 0,
+		"peakSpeed": 350,
+		"minSpeed": 80,
+		"maxLifeS": 90,
+		"maxTurnDegPerSec": 8,
+		"pnGain": 3.0,
+		"dragRef": 1.5,
+		"dragRefSpeed": 280,
+		"dragRefAltitude": 3000,
+		"vManeuverRef": 250,
+		"gAvailFloor": 0.10
+	},
+	"warhead": {
+		"killRadiusM": 25,
+		"fuzeSenseRadiusM": 30,
+		"missAbortRadiusMul": 2
+	},
+	"seeker": {
+		"fovHalfAngleDeg": 30,
+		"losBreakTimeoutS": 3.0,
+		"maxG": 9
+	}
 }

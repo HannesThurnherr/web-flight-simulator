@@ -40,6 +40,7 @@ import { getActiveScenario } from './scenarios';
 import { CommanderView } from './commanderView';
 import { soundManager } from '../utils/soundManager';
 import { checkCrash, checkGPWS } from './crashDetection';
+import { updateTgp } from '../ui/tgp.js';
 
 const GEOCODE_INTERVAL = 10000;
 const GEOCODE_MIN_DIST = 1000;
@@ -413,6 +414,7 @@ export function update(dt, ctx) {
 	}
 
 	ctx.hud.update(state, isFlying ? (npcSystem ? npcSystem.npcs : []) : []);
+	if (isFlying) updateTgp(state, weaponSystem, getViewer());
 
 	if (ctx.commanderView) {
 		const cv = ctx.commanderView;
