@@ -28,7 +28,12 @@
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 
-const _templates = { aim9: null, aim120: null, meteor: null, 'agm-88': null, 'gbu-12': null };
+const _templates = {
+	aim9: null, aim120: null, meteor: null,
+	'agm-88': null,
+	'gbu-12': null,
+	'jdam-31': null, 'jdam-38': null,
+};
 
 // Rotate + scale + centre the glTF scene so the missile's long axis lies
 // along +Y and the model measures exactly `realLengthM` along that axis.
@@ -153,6 +158,51 @@ _loader.load('/assets/models/gbu-12.glb', (gltf) => {
 	});
 }, undefined, (err) => {
 	console.warn('[missileModels] gbu-12 model failed to load', err);
+});
+
+// GBU-31 / GBU-38 JDAM — both bundled inside the multi-munition
+// collection GLB (no dedicated single-bomb files on hand). Pull the
+// two named subtrees out, scale each to its real length, register
+// under distinct template ids. Same trick as 5c's earlier collection-
+// extraction prototype.
+_loader.load('/assets/models/munition-collection.glb', (gltf) => {
+	// The two JDAM nodes in the collection are conventionally named:
+	//   `JDAM_1`        — single-fin tail variant → assign to GBU-38 (500 lb)
+	//   `JDAM (2)_0`    — paired-fin variant      → assign to GBU-31 (2000 lb)
+	// The mapping is somewhat arbitrary (both nodes look similar at
+	// flight scale); this assignment keeps the larger weapon paired
+	// with the visually busier mesh.
+	const want = {
+		'jdam-38': { match: /^JDAM_/i, len: 2.36 },
+		'jdam-31': { match: /^JDAM \(2\)/i, len: 3.84 },
+	};
+	for (const [tplId, spec] of Object.entries(want)) {
+		let node = null;
+		gltf.scene.traverse((obj) => {
+			if (node) return;
+			if (obj.name && spec.match.test(obj.name)) node = obj;
+		});
+		if (!node) {
+			console.warn(`[missileModels] ${tplId} node not found in munition-collection.glb`);
+			continue;
+		}
+		// Defensive clone + reset transform: the source node carries a
+		// parent-relative offset that we don't want once it's standing
+		// alone.
+		const isolated = node.clone(true);
+		isolated.position.set(0, 0, 0);
+		isolated.rotation.set(0, 0, 0);
+		isolated.scale.set(1, 1, 1);
+		_templates[tplId] = _normalizeMissileModel(isolated, spec.len);
+		_templates[tplId].traverse((child) => {
+			if (child.isMesh) {
+				child.castShadow = true;
+				child.receiveShadow = true;
+			}
+		});
+	}
+}, undefined, (err) => {
+	console.warn('[missileModels] munition-collection.glb (JDAM) failed to load', err);
 });
 
 // Return a fresh clone of the aim-9 template, or null if the GLB hasn't

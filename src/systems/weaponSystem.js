@@ -1,11 +1,13 @@
 import * as THREE from 'three';
 import * as Cesium from 'cesium';
 import { createMunition, munitionIdForSimType } from '../weapon/munitionFactory';
+import { MUNITIONS } from '../weapon/munitions';
 import { Bullet } from '../weapon/bullet';
 import { Flare } from '../weapon/flare';
 import { soundManager } from '../utils/soundManager';
 import { movePosition } from '../utils/math';
 import { isRadiating } from './sensorSystem.js';
+import { playerDesignation } from './designation.js';
 
 export class WeaponSystem {
 	constructor(viewer, scene, playerModel) {
@@ -58,6 +60,18 @@ export class WeaponSystem {
 			// lock gate the same way 'agm' does.
 			{ id: 'gbu',     name: 'GBU-12 PAVEWAY II', ammo: 0,  maxAmmo: 0,  fireRate: 2.0,
 			  lastFire: 0, type: 'GBU-12',   lockRange: 0,      lockCone: 0,     lockTime: 0 },
+			// GBU-38 JDAM — 500 lb GPS-guided. Fires whenever the player
+			// has a designation (TRACK or LASE on the TGP); the seeker
+			// freezes the spot's lat/lon/alt at release and ignores TGP
+			// state changes afterward. Same `id: 'gbu'` slot as the
+			// laser-guided weapons; the fire branch below dispatches on
+			// the munition's seekerType to pick the right target shape.
+			{ id: 'gbu',     name: 'GBU-38 JDAM',       ammo: 0,  maxAmmo: 0,  fireRate: 2.0,
+			  lastFire: 0, type: 'GBU-38',   lockRange: 0,      lockCone: 0,     lockTime: 0 },
+			// GBU-31 JDAM — 2000 lb GPS-guided. Same release behaviour
+			// as the GBU-38 with a substantially larger warhead.
+			{ id: 'gbu',     name: 'GBU-31 JDAM',       ammo: 0,  maxAmmo: 0,  fireRate: 2.0,
+			  lastFire: 0, type: 'GBU-31',   lockRange: 0,      lockCone: 0,     lockTime: 0 },
 		];
 
 		this.flareWeapon = { id: 'flare', name: 'MJU-7A', ammo: 30, maxAmmo: 30, fireRate: 0.2, lastFire: 0 };
@@ -317,11 +331,41 @@ export class WeaponSystem {
 					? this.designatedEmitter
 					: null;
 			} else if (weapon.id === 'gbu') {
-				// GBU has no AESA target — it homes on the laser spot
-				// the player's TGP is currently designating. The
-				// LaserSeeker imports playerDesignation directly each
-				// frame; nothing to thread through here.
-				target = null;
+				// GBU slot covers both laser-guided (GBU-12) and
+				// GPS-guided (GBU-31, GBU-38) bombs. Dispatch on the
+				// munition's seekerType:
+				//   laser → target null; LaserSeeker reads
+				//           playerDesignation each frame.
+				//   gps   → snapshot the current designation as a
+				//           plain {lon,lat,alt} object; GPSSeeker
+				//           freezes it on its instance and ignores
+				//           the singleton afterward. Refuse the shot
+				//           if the TGP is in SLEW (no point to
+				//           freeze) — refund happens below via the
+				//           null-projectile path.
+				const munId = munitionIdForSimType(weapon.type);
+				const data  = munId ? MUNITIONS[munId] : null;
+				const seekerType = data && data.seekerType;
+				if (seekerType === 'gps') {
+					if (!playerDesignation || playerDesignation.mode === 'SLEW') {
+						// Refund the round and bail. The empty-warning
+						// pulse below isn't a great fit (this isn't an
+						// ammo-out condition), but a soft refusal is
+						// better than launching a bomb at null island.
+						weapon.ammo = Math.min(weapon.maxAmmo, weapon.ammo + 1);
+						try { soundManager.play('weapon-warning'); } catch (e) { }
+						return;
+					}
+					target = {
+						lon: playerDesignation.lon,
+						lat: playerDesignation.lat,
+						alt: playerDesignation.alt,
+					};
+				} else {
+					// Laser (GBU-12) and any future seeker that reads
+					// the singleton directly: no target object needed.
+					target = null;
+				}
 			} else {
 				target = this.target;
 			}
