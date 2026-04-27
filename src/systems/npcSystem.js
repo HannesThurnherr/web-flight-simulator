@@ -64,6 +64,14 @@ export class NPCSystem {
 		this.modelTemplate = null;
 		this.animations = [];
 		this.loaded = false;
+		// Generic platform-model cache: any GLB path → { template,
+		// animations, loaded, failed }. Populated lazily by spawnPlatform
+		// the first time it sees a new path. Replaces the old hardcoded
+		// E-767 / Patriot keyword lookup, which silently fell back to
+		// the F-15 template for any unknown path — that's the bug
+		// where every ground unit spawned looked like a SAM-shaped
+		// F-15 in spectator view.
+		this._platformTemplates = new Map();
 
 		this._scratchMatrix = new Cesium.Matrix4();
 		this._scratchHPR = new Cesium.HeadingPitchRoll();
@@ -75,6 +83,9 @@ export class NPCSystem {
 	}
 
 	loadModel() {
+		// Player-fighter template — used by createNPCMesh (air-to-air
+		// fighter spawns, no per-spawn model path). Kept as its own slot
+		// because `loaded` gates the whole NPCSystem.
 		this.loader.load('/assets/models/f-15-strike-eagle.glb', (gltf) => {
 			this.modelTemplate = gltf.scene;
 			this.animations = gltf.animations;
@@ -84,52 +95,44 @@ export class NPCSystem {
 					child.receiveShadow = true;
 				}
 			});
-			// highlightMeshes / stripOrdnance helpers available for
-			// iteration on model cleanup; not used in the normal load
-			// path.
 			this.loaded = true;
 		});
-		// AWACS model (Boeing E-767) — loaded lazily alongside the
-		// fighter so spawnAwacs() has it available. Kept as a separate
-		// template because its scale and animations are different.
-		this.loader.load('/assets/models/e-767-awacs.glb', (gltf) => {
-			this.awacsTemplate = gltf.scene;
-			this.awacsAnimations = gltf.animations;
-			this.awacsTemplate.traverse((child) => {
+		// Warm-preload the AWACS so a scenario starting with awacs-bvr
+		// doesn't have a one-frame queue-and-retry on the very first
+		// spawnPlatform call. Every other platform GLB loads lazily on
+		// its first spawn — see _preloadPlatformModel + spawnPlatform.
+		this._preloadPlatformModel('/assets/models/e-767-awacs.glb');
+	}
+
+	// Lazy GLB loader for any platform's model. Called by spawnPlatform
+	// the first time it encounters a new path. Subsequent spawns of
+	// the same platform reuse the cached `template`, so 5× SA-15 in a
+	// scenario costs one HTTP fetch.
+	_preloadPlatformModel(path) {
+		if (!path) return;
+		if (this._platformTemplates.has(path)) return;
+		const slot = { template: null, animations: null, loaded: false, failed: false };
+		this._platformTemplates.set(path, slot);
+		this.loader.load(path, (gltf) => {
+			slot.template   = gltf.scene;
+			slot.animations = gltf.animations;
+			slot.template.traverse((child) => {
 				if (child.isMesh) {
 					child.castShadow = true;
 					child.receiveShadow = true;
 				}
 			});
-		}, undefined, (err) => {
-			console.warn('[NPCSystem] e-767 model failed to load', err);
-		});
-		// MIM-104 Patriot GLB — used visually for the NASAMS SAM site
-		// platform (despite NASAMS being the performance reference, the
-		// user explicitly picked the Patriot visual). Preloaded next to
-		// the fighter so spawnPlatform() has it ready.
-		this.loader.load('/assets/models/mim-104-patriot.glb', (gltf) => {
-			this.patriotTemplate   = gltf.scene;
-			this.patriotAnimations = gltf.animations;
-			this.patriotTemplate.traverse((child) => {
-				if (child.isMesh) {
-					child.castShadow = true;
-					child.receiveShadow = true;
-				}
-			});
-			// Log so we can see in console whether this template is
-			// available before the user clicks Start on the scenario.
+			slot.loaded = true;
 			try {
-				const box = new THREE.Box3().setFromObject(this.patriotTemplate);
+				const box  = new THREE.Box3().setFromObject(slot.template);
 				const size = new THREE.Vector3();
 				box.getSize(size);
-				console.log('[NPCSystem] patriot template loaded, size(m):',
-					size.x.toFixed(1), size.y.toFixed(1), size.z.toFixed(1));
-			} catch (e) {
-				console.log('[NPCSystem] patriot template loaded (size query failed)');
-			}
+				console.log('[NPCSystem] platform model loaded:', path,
+					'size(m):', size.x.toFixed(1), size.y.toFixed(1), size.z.toFixed(1));
+			} catch (e) { /* size query is best-effort */ }
 		}, undefined, (err) => {
-			console.warn('[NPCSystem] patriot model failed to load', err);
+			console.warn('[NPCSystem] platform model failed to load:', path, err);
+			slot.failed = true;
 		});
 	}
 
@@ -305,40 +308,39 @@ export class NPCSystem {
 			return null;
 		}
 
-		// Resolve the mesh template. Preloaded templates are selected by
-		// path keyword — fast and keeps this generic so further platforms
-		// just need their GLB dropped next to the existing ones in
-		// public/assets/models/ + a JSON registered under src/data/
-		// platforms/. If the required template hasn't finished loading
-		// yet (GLB fetch is async; a user who clicks Start the moment
-		// the app boots can beat it), queue the spawn and retry in the
-		// next update tick. Previously we fell back to the fighter
-		// template silently, which produced an "invisible / wrong
-		// model" bug where the SAM site rendered as a sideways F-15.
-		let template = null;
-		let animations = null;
-		let required = null;
-		if (platform.model && platform.model.includes('e-767')) {
-			required   = 'e-767';
-			template   = this.awacsTemplate;
-			animations = this.awacsAnimations;
-		} else if (platform.model && platform.model.includes('patriot')) {
-			required   = 'patriot';
-			template   = this.patriotTemplate;
-			animations = this.patriotAnimations;
-		} else {
-			// Unknown model path — fall back to the fighter template so
-			// the platform still spawns (useful during authoring).
-			required   = 'fighter';
-			template   = this.modelTemplate;
-			animations = this.animations;
+		// Resolve the mesh template via the generic per-path cache.
+		// First time we see a platform's GLB path, kick off the load
+		// and queue the spawn for retry once the GLB lands. Cached
+		// hits return instantly. No more keyword sniffing — drop a
+		// new GLB into public/assets/models/, point a platform JSON
+		// at it, and the platform renders correctly without any code
+		// change. (The previous "fall back to F-15" behaviour was the
+		// reason every ground unit looked like a sideways F-15 in
+		// spectator view.)
+		const path = platform.model;
+		if (!path) {
+			console.warn('[spawnPlatform] platform has no model path:', platformId);
+			return null;
 		}
-		if (!template) {
-			console.warn('[spawnPlatform] template', required, 'not loaded yet; queuing', platformId);
+		let slot = this._platformTemplates.get(path);
+		if (!slot) {
+			this._preloadPlatformModel(path);
+			slot = this._platformTemplates.get(path);
+		}
+		if (slot.failed) {
+			console.warn('[spawnPlatform] model failed to load, skipping spawn:',
+				platformId, path);
+			return null;
+		}
+		if (!slot.loaded) {
+			console.warn('[spawnPlatform] model not loaded yet; queuing:',
+				platformId, path);
 			if (!this._pendingPlatformSpawns) this._pendingPlatformSpawns = [];
 			this._pendingPlatformSpawns.push({ platformId, lon, lat, alt, team, pilotOverrides });
 			return null;
 		}
+		const template   = slot.template;
+		const animations = slot.animations;
 
 		const namePrefix = platform.kind === 'airborne' ? 'SENTRY' : platformId.toUpperCase();
 		const name = `${namePrefix} ${100 + Math.floor(Math.random() * 900)}`;
@@ -358,6 +360,40 @@ export class NPCSystem {
 		const s = platform.modelScale ?? 1.0;
 		model.scale.set(s, s, s);
 		group.add(model);
+
+		// Ground anchor. Two related problems to solve:
+		//
+		//   1. THREE.js scales models around their local origin, which
+		//      the artist may have placed at the model's centre, top,
+		//      or anywhere but its base. Without correction the model
+		//      hovers (or sinks) by some authored offset × the scale
+		//      factor.
+		//
+		//   2. `npc.alt` is the single point everything game-state
+		//      reads as "where is this unit": targeting reticles,
+		//      missile fuze proximity, commander markers. If we anchor
+		//      the visible model at its base AND set npc.alt to terrain
+		//      altitude, every probe returns the wheels — the body
+		//      above the ground is invisible to the hit detection.
+		//
+		// Universal fix: anchor the model at its CENTRE in group-local
+		// coords, and lift the spawn altitude by half the model height
+		// so the body's centre ends up at terrain + halfHeight. Visual
+		// base touches terrain, npc.alt sits at the body's centre of
+		// mass — both correct.
+		//
+		// Only applied to ground platforms — airborne fighters use a
+		// physics-driven altitude and don't terrain-clamp at all.
+		let centerAltOffsetM = 0;
+		if (platform.kind === 'ground') {
+			model.updateMatrixWorld(true);
+			const bbox = new THREE.Box3().setFromObject(model);
+			if (isFinite(bbox.min.z)) {
+				// Translate so model's z-centre lies at the group origin.
+				model.position.z -= (bbox.min.z + bbox.max.z) * 0.5;
+				centerAltOffsetM = (bbox.max.z - bbox.min.z) * 0.5;
+			}
+		}
 
 		// Debug beacon for ground platforms. Tall, bright, always visible
 		// even if the GLB orientation is off or the model is buried. A
@@ -387,12 +423,24 @@ export class NPCSystem {
 			action.play();
 		}
 
-		// Sensors — merge defaults with the platform's per-sensor overrides.
-		const sensors = {
-			radar:   { ...FIGHTER_RADAR_DEFAULT, ...(platform.sensors?.radar   || {}) },
-			ir:      { ...FIGHTER_IRST_DEFAULT,  ...(platform.sensors?.ir      || {}) },
-			eyeball: { ...FIGHTER_EYEBALL_DEFAULT,...(platform.sensors?.eyeball|| {}) },
-		};
+		// Sensors — start with defaults only for the channels the platform
+		// JSON actually declares. A building (`sensors: {}` / empty) ends
+		// up with NO radar, NO IR, NO eyeball — which is correct, because
+		// nothing about a barracks scans the sky. Previously this merged
+		// FIGHTER_RADAR_DEFAULT into every ground unit unconditionally,
+		// so the command post wound up with a 150 km-range fighter radar
+		// happily painting bandits and showing up as a north-facing
+		// debug emitter on the commander-view overlay.
+		const sensors = {};
+		if (platform.sensors?.radar) {
+			sensors.radar = { ...FIGHTER_RADAR_DEFAULT, ...platform.sensors.radar };
+		}
+		if (platform.sensors?.ir) {
+			sensors.ir = { ...FIGHTER_IRST_DEFAULT, ...platform.sensors.ir };
+		}
+		if (platform.sensors?.eyeball) {
+			sensors.eyeball = { ...FIGHTER_EYEBALL_DEFAULT, ...platform.sensors.eyeball };
+		}
 		const sigKey = platform.signature || 'fighter';
 		const signature = { ...(SIGNATURES[sigKey] || SIGNATURES.fighter) };
 
@@ -450,7 +498,12 @@ export class NPCSystem {
 			// on terrain. Defer the terrain lookup to the update loop
 			// because the tile may not be loaded the frame we spawn.
 			_needsGroundClamp: isStatic,
-			_groundOffsetM: platform.groundOffsetM ?? 0,
+			// Ground clamp lifts npc.alt to terrain + the model's body half-
+			// height, so the targeting point sits at the body's centre rather
+			// than at the wheels. The platform JSON's own groundOffsetM is
+			// added on top — useful for tents / structures that should be
+			// pushed slightly up out of terrain noise.
+			_groundOffsetM: (platform.groundOffsetM ?? 0) + centerAltOffsetM,
 			signature,
 			sensors,
 			contacts: new Map(),
@@ -467,7 +520,7 @@ export class NPCSystem {
 		this.npcs.push(npc);
 		console.log('[spawnPlatform]', platformId, 'spawned at',
 			`lon=${lon.toFixed(4)} lat=${lat.toFixed(4)} alt=${alt.toFixed(0)}m`,
-			`kind=${platform.kind} template=${required}`);
+			`kind=${platform.kind} model=${path}`);
 		return npc;
 	}
 
@@ -518,7 +571,7 @@ export class NPCSystem {
 	// sensor/HUD layers see NPC gun fire via the same channel as
 	// NPC missile fire.
 	// Bullet + missile spawn delegates to src/systems/npcRendering.js.
-	_spawnNpcBullet(npc)                   { return spawnNpcBullet(this, npc); }
+	_spawnNpcBullet(npc, aim = null)       { return spawnNpcBullet(this, npc, aim); }
 	_spawnNpcMissile(npc, weaponType, tgt) { return spawnNpcMissile(this, npc, weaponType, tgt); }
 
 	clear() {

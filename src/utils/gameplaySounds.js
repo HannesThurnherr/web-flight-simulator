@@ -41,8 +41,18 @@ export async function initSounds(camera, onLoaded) {
 		soundManager.loadSound('zoom-in', '/assets/sounds/zoom-in.mp3', false, 0.5),
 		soundManager.loadSound('missile-fire', '/assets/sounds/missile-firing-1.mp3', false, 0.75),
 		soundManager.loadSound('m61-firing', '/assets/sounds/m61-firing.mp3', true, 0.75),
-		soundManager.loadSound('rwr-tws', '/assets/sounds/rwr-tws.mp3', true, 0.2),
-		soundManager.loadSound('rwr-lock', '/assets/sounds/rwr-lock.mp3', false, 0.2),
+		soundManager.loadSound('rwr-tws', '/assets/sounds/rwr-tws.mp3', true, 0.10),
+		soundManager.loadSound('rwr-lock', '/assets/sounds/rwr-lock.mp3', false, 0.10),
+		// Phase 3c — distinct cues for the *player being painted*. Re-uses
+		// the same audio assets as the player's own lock progress, but
+		// with separate sound names so the two states can play at the same
+		// time without stepping on each other.
+		//   rwr-spike      = continuous tone, played while any bandit has
+		//                    you in STT (fox-3 commit imminent).
+		//   rwr-spike-ping = one-shot tick the moment a new bandit's STT
+		//                    spike fires — the "snap" that draws the eye.
+		soundManager.loadSound('rwr-spike',      '/assets/sounds/rwr-tws.mp3',  true,  0.18),
+		soundManager.loadSound('rwr-spike-ping', '/assets/sounds/rwr-lock.mp3', false, 0.18),
 		soundManager.loadSound('wind', '/assets/sounds/wind.mp3', true, 0.25),
 		soundManager.loadSound('terrain-pull-up', '/assets/sounds/terrain-pull-up.mp3', false, 0.9),
 		soundManager.loadSound('warning', '/assets/sounds/warning.mp3', false, 0.6),

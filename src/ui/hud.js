@@ -124,12 +124,14 @@ export class HUD {
 	// draw close to centre, like a real scope.
 	createRwrScope() {
 		const NS = 'http://www.w3.org/2000/svg';
-		const size = 100;
+		const size = 170;
+		const statusH = 36;
+		const totalH = size + statusH;
 		const svg = document.createElementNS(NS, 'svg');
 		svg.id = 'rwr-scope';
 		svg.setAttribute('width',  size);
-		svg.setAttribute('height', size);
-		svg.setAttribute('viewBox', `0 0 ${size} ${size}`);
+		svg.setAttribute('height', totalH);
+		svg.setAttribute('viewBox', `0 0 ${size} ${totalH}`);
 		// Offset right of screen center so the scope doesn't overlap the
 		// compass heading tape that lives along the top middle.
 		svg.style.cssText = `
@@ -149,7 +151,7 @@ export class HUD {
 			el.setAttribute('r', radius);
 			el.setAttribute('fill', 'rgba(0, 20, 0, 0.55)');
 			el.setAttribute('stroke', 'rgba(0, 255, 0, 0.5)');
-			el.setAttribute('stroke-width', 1);
+			el.setAttribute('stroke-width', 1.2);
 			return el;
 		};
 		svg.appendChild(ring(r));
@@ -167,18 +169,18 @@ export class HUD {
 			line.setAttribute('x1', x1); line.setAttribute('y1', y1);
 			line.setAttribute('x2', x2); line.setAttribute('y2', y2);
 			line.setAttribute('stroke', 'rgba(0, 255, 0, 0.7)');
-			line.setAttribute('stroke-width', 1.2);
+			line.setAttribute('stroke-width', 1.5);
 			return line;
 		};
-		for (let i = 0; i < 4; i++) svg.appendChild(tick(i * Math.PI / 2, 8));
+		for (let i = 0; i < 4; i++) svg.appendChild(tick(i * Math.PI / 2, 14));
 
 		// "NOSE" cue at top so it's unambiguous which way is forward.
 		const noseLabel = document.createElementNS(NS, 'text');
 		noseLabel.setAttribute('x', cx);
-		noseLabel.setAttribute('y', 10);
+		noseLabel.setAttribute('y', 16);
 		noseLabel.setAttribute('fill', '#0f0');
 		noseLabel.setAttribute('font-family', 'AceCombat, monospace');
-		noseLabel.setAttribute('font-size', '8');
+		noseLabel.setAttribute('font-size', '12');
 		noseLabel.setAttribute('text-anchor', 'middle');
 		noseLabel.textContent = 'RWR';
 		svg.appendChild(noseLabel);
@@ -188,8 +190,39 @@ export class HUD {
 		contactGroup.id = 'rwr-contacts';
 		svg.appendChild(contactGroup);
 
+		// ---- Status block below the scope ---------------------------------
+		// Two lines:
+		//   Line 1: own radar mode (TWS / STT) and a SPIKE warning when
+		//           being painted by an STT lock.
+		//   Line 2: count summary "X EMITTERS — Y STT".
+		// Updated each frame in updateRwrScope.
+		const statusGroup = document.createElementNS(NS, 'g');
+		statusGroup.id = 'rwr-status';
+
+		const modeLabel = document.createElementNS(NS, 'text');
+		modeLabel.setAttribute('x', cx);
+		modeLabel.setAttribute('y', size + 14);
+		modeLabel.setAttribute('fill', '#0f0');
+		modeLabel.setAttribute('font-family', 'AceCombat, monospace');
+		modeLabel.setAttribute('font-size', '11');
+		modeLabel.setAttribute('text-anchor', 'middle');
+		modeLabel.textContent = 'MODE: TWS';
+		statusGroup.appendChild(modeLabel);
+
+		const countLabel = document.createElementNS(NS, 'text');
+		countLabel.setAttribute('x', cx);
+		countLabel.setAttribute('y', size + 28);
+		countLabel.setAttribute('fill', 'rgba(0, 255, 0, 0.7)');
+		countLabel.setAttribute('font-family', 'AceCombat, monospace');
+		countLabel.setAttribute('font-size', '10');
+		countLabel.setAttribute('text-anchor', 'middle');
+		countLabel.textContent = '0 EMITTERS';
+		statusGroup.appendChild(countLabel);
+
+		svg.appendChild(statusGroup);
+
 		this.uiContainer.appendChild(svg);
-		this.rwrScope = { svg, contactGroup, size, cx, cy, r };
+		this.rwrScope = { svg, contactGroup, size, cx, cy, r, modeLabel, countLabel };
 	}
 
 	updateRwrScope(state) {
@@ -198,6 +231,37 @@ export class HUD {
 		const rwr = state && state.rwr;
 		// Clear previous contacts.
 		while (s.contactGroup.firstChild) s.contactGroup.removeChild(s.contactGroup.firstChild);
+
+		// Status block — own radar mode + emitter summary. Always
+		// updated whether or not anything's painting us.
+		const ownMode = state && state.sensors && state.sensors.radar
+			? state.sensors.radar.mode
+			: 'search';
+		const ownModeLabel = ownMode === 'track' ? 'STT' : 'TWS';
+		let total = 0;
+		let stt = 0;
+		if (rwr) {
+			for (const [, c] of rwr) {
+				if (!c) continue;
+				total++;
+				if (c.lockType === 'track') stt++;
+			}
+		}
+		if (s.modeLabel) {
+			if (stt > 0) {
+				s.modeLabel.textContent = `SPIKE — MODE ${ownModeLabel}`;
+				s.modeLabel.setAttribute('fill', '#ff4040');
+			} else {
+				s.modeLabel.textContent = `MODE: ${ownModeLabel}`;
+				s.modeLabel.setAttribute('fill', '#0f0');
+			}
+		}
+		if (s.countLabel) {
+			s.countLabel.textContent = total === 0
+				? 'NO EMITTERS'
+				: `${total} EMITTER${total === 1 ? '' : 'S'}${stt > 0 ? ` — ${stt} STT` : ''}`;
+		}
+
 		if (!rwr || rwr.size === 0) return;
 
 		const NS = 'http://www.w3.org/2000/svg';
@@ -216,30 +280,30 @@ export class HUD {
 			// Chevron: triangle pointing toward the aircraft centre, i.e.
 			// showing the bearing the threat is on.
 			const chev = document.createElementNS(NS, 'polygon');
-			const size = 5;
+			const chevSize = 8;
 			const toCenterAng = Math.atan2(s.cy - y, s.cx - x);
 			const p = (t, perp) => {
 				const ax = Math.cos(toCenterAng + perp) * t;
 				const ay = Math.sin(toCenterAng + perp) * t;
 				return [x + ax, y + ay];
 			};
-			const [x1, y1] = p(size, 0);
-			const [x2, y2] = p(size * 0.8,  Math.PI * 0.85);
-			const [x3, y3] = p(size * 0.8, -Math.PI * 0.85);
+			const [x1, y1] = p(chevSize, 0);
+			const [x2, y2] = p(chevSize * 0.8,  Math.PI * 0.85);
+			const [x3, y3] = p(chevSize * 0.8, -Math.PI * 0.85);
 			chev.setAttribute('points', `${x1},${y1} ${x2},${y2} ${x3},${y3}`);
 			chev.setAttribute('fill', color);
 			chev.setAttribute('stroke', '#000');
-			chev.setAttribute('stroke-width', 0.6);
+			chev.setAttribute('stroke-width', 0.8);
 			s.contactGroup.appendChild(chev);
 
 			// Small label showing lock type.
 			if (c.lockType === 'track') {
 				const lbl = document.createElementNS(NS, 'text');
 				lbl.setAttribute('x', x);
-				lbl.setAttribute('y', y + 13);
+				lbl.setAttribute('y', y + 18);
 				lbl.setAttribute('fill', '#ff4040');
 				lbl.setAttribute('font-family', 'AceCombat, monospace');
-				lbl.setAttribute('font-size', '7');
+				lbl.setAttribute('font-size', '10');
 				lbl.setAttribute('text-anchor', 'middle');
 				lbl.textContent = 'STT';
 				s.contactGroup.appendChild(lbl);

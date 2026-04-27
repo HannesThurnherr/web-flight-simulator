@@ -53,24 +53,56 @@ export function thrustAltitudeFactor(altitudeMeters) {
 // physics integrator to produce forces in newtons.
 // ============================================================================
 
-// Lift coefficient vs angle of attack.
-// Linear regime up to stall, then a linear drop to a post-stall floor.
-// Rough F-15-ish values: dCL/dα = 5.0 rad⁻¹, α_stall = 18°, CL_max ≈ 1.57.
-const CL_ALPHA = 5.0;            // per radian
-const ALPHA_STALL = 18 * Math.PI / 180;
-const POSTSTALL_FLOOR = 0.30;    // CL drops to 30% of peak well past stall
-const POSTSTALL_DROP_WINDOW = 15 * Math.PI / 180; // reach floor ~15° past stall
-export function liftCoefficient(alpha) {
+// Lift coefficient vs angle of attack — parametrized high-alpha model.
+//
+// Three regimes blended smoothly via a tanh window centred on α_stall:
+//
+//   1. Attached flow (|α| < α_stall):
+//        CL = (CL_max / α_stall) · α        (linear, slope set by clMax/αstall)
+//
+//   2. Post-stall flat-plate lift (|α| ≫ α_stall):
+//        CL = postStallPlateau · sin(2α)    (peaks near 45°, → 0 at 90°)
+//
+//      A flat plate held at angle α to the freestream produces a normal
+//      force ∝ sin²α; resolving into the lift direction gives the
+//      classic 2·sin α·cos α = sin 2α curve. Real wings retain a similar
+//      shape deep into stall — this is what lets a Cobra-pulling jet
+//      keep generating *some* lift past 60° AoA, even though it's far
+//      below the attached-flow peak.
+//
+//   3. Smooth blend across α_stall:
+//        σ(α) = ½·(1 + tanh((|α| − α_stall) / blendWidth))
+//        CL  = (1 − σ)·CL_attached + σ·CL_flatPlate
+//
+// Per-plane parameters (all optional, sensible F-15-ish defaults):
+//   alphaStallDeg     — α at which attached lift peaks. Default 18°.
+//   clMaxStall        — peak CL just before stall. Default 1.57.
+//   postStallPlateau  — scales the flat-plate post-stall curve.
+//                       Default 1.0. TV/LERX airframes (F-22, Su-37) use
+//                       1.2–1.4 → recover lift in deep post-stall.
+//   stallBlendDeg     — width of the tanh transition. Default 5°.
+//                       Crisper-stalling jets (F-15) use a narrower
+//                       window; benign-stall jets use a wider one.
+const ALPHA_STALL_DEFAULT       = 18 * Math.PI / 180;
+const CL_MAX_DEFAULT            = 1.57;
+const POST_STALL_PLATEAU_DEFAULT = 1.0;
+const STALL_BLEND_DEFAULT       = 5 * Math.PI / 180;
+export function liftCoefficient(alpha, params = null) {
+	const alphaStall      = params?.alphaStallRad      ?? ALPHA_STALL_DEFAULT;
+	const clMax           = params?.clMaxStall         ?? CL_MAX_DEFAULT;
+	const postStall       = params?.postStallPlateau   ?? POST_STALL_PLATEAU_DEFAULT;
+	const blend           = params?.stallBlendRad      ?? STALL_BLEND_DEFAULT;
+
+	const clAlpha = clMax / alphaStall; // linear slope (per radian)
 	const absA = Math.abs(alpha);
-	if (absA <= ALPHA_STALL) {
-		return CL_ALPHA * alpha;
-	}
-	const sign = Math.sign(alpha);
-	const peak = CL_ALPHA * ALPHA_STALL;
-	const past = absA - ALPHA_STALL;
-	const t = Math.min(1, past / POSTSTALL_DROP_WINDOW);
-	const factor = 1 - (1 - POSTSTALL_FLOOR) * t;
-	return sign * peak * factor;
+
+	// Smooth blend factor: 0 in attached regime, 1 in flat-plate regime.
+	const sigma = 0.5 * (1 + Math.tanh((absA - alphaStall) / Math.max(1e-3, blend)));
+
+	const linearCl    = clAlpha * alpha;
+	const flatPlateCl = postStall * Math.sin(2 * alpha);
+
+	return (1 - sigma) * linearCl + sigma * flatPlateCl;
 }
 
 // Drag coefficient. Parabolic polar CD = CD0 + k·CL², plus a crude

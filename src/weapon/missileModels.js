@@ -28,7 +28,7 @@
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 
-const _templates = { aim9: null, aim120: null };
+const _templates = { aim9: null, aim120: null, meteor: null, 'agm-88': null };
 
 // Rotate + scale + centre the glTF scene so the missile's long axis lies
 // along +Y and the model measures exactly `realLengthM` along that axis.
@@ -109,6 +109,37 @@ _loader.load('/assets/models/aim-120-amraam.glb', (gltf) => {
 	console.warn('[missileModels] aim-120 model failed to load', err);
 });
 
+// MBDA Meteor — same length class as AIM-120 (3.65 m), but distinctive
+// silhouette: square-ish ramjet intakes mid-body. Visual identity matters
+// for the player: a salvo with mixed AMRAAM + Meteor should be obviously
+// mixed in the trail/spawn camera.
+_loader.load('/assets/models/mbda-meteor.glb', (gltf) => {
+	_templates.meteor = _normalizeMissileModel(gltf.scene, 3.65);
+	_templates.meteor.traverse((child) => {
+		if (child.isMesh) {
+			child.castShadow = true;
+			child.receiveShadow = true;
+		}
+	});
+}, undefined, (err) => {
+	console.warn('[missileModels] meteor model failed to load', err);
+});
+
+// AGM-88 HARM. Long body (4.17 m), prominent seeker dome — distinctive
+// from AAMs in flight, helps the player visually track that an
+// anti-radiation shot is in the air.
+_loader.load('/assets/models/agm-88-harm.glb', (gltf) => {
+	_templates['agm-88'] = _normalizeMissileModel(gltf.scene, 4.17);
+	_templates['agm-88'].traverse((child) => {
+		if (child.isMesh) {
+			child.castShadow = true;
+			child.receiveShadow = true;
+		}
+	});
+}, undefined, (err) => {
+	console.warn('[missileModels] agm-88 model failed to load', err);
+});
+
 // Return a fresh clone of the aim-9 template, or null if the GLB hasn't
 // landed yet. Callers fall back to a procedural build when null.
 export function cloneAim9Template() {
@@ -117,4 +148,16 @@ export function cloneAim9Template() {
 
 export function cloneAim120Template() {
 	return _templates.aim120 ? _templates.aim120.clone(true) : null;
+}
+
+// Generic dispatch keyed on the munition JSON's `modelTemplate` field.
+// Used by AIM120-class missiles whose data points at a non-default
+// shape ("meteor"). Falls back to the AIM-120 template when the named
+// template isn't loaded yet so first-frame-after-boot shots still
+// render *something* recognisable.
+export function cloneMissileTemplate(name) {
+	const t = _templates[name];
+	if (t) return t.clone(true);
+	if (_templates.aim120) return _templates.aim120.clone(true);
+	return null;
 }

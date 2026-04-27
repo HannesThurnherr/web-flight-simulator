@@ -301,6 +301,16 @@
 						<span class="btn-desc">BACK TO MENU</span>
 					</button>
 				</nav>
+				<div class="pause-volume" id="pauseVolume">
+					<div class="pause-volume-row">
+						<span class="pause-volume-label">VOLUME</span>
+						<button id="pauseMuteBtn" class="pause-mute-btn" type="button" aria-label="Toggle mute">
+							<span id="pauseMuteIcon">🔊</span>
+						</button>
+						<span id="pauseVolumeValue" class="pause-volume-value">70%</span>
+					</div>
+					<input type="range" id="pauseVolumeSlider" min="0" max="100" step="1" value="70" class="pause-volume-slider" />
+				</div>
 			</div>
 			<div class="pause-main">
 				<div class="pause-map-wrapper">
@@ -330,6 +340,13 @@
 							<span id="pause-time" class="coord-value">2026-01-01T00:00:00Z</span>
 						</div>
 					</div>
+				</div>
+				<div class="pause-killlog-wrapper">
+					<div class="map-header">
+						<span class="map-title">ENGAGEMENT LOG</span>
+						<span id="pause-killlog-count" class="map-location">0 EVENTS</span>
+					</div>
+					<div id="pause-killlog" class="pause-killlog"></div>
 				</div>
 			</div>
 		</div>

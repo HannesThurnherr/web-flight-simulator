@@ -22,6 +22,7 @@
 import * as Cesium from 'cesium';
 import { advanceLonLatAlt } from '../plane/aeroModel.js';
 import { Flare } from '../weapon/flare.js';
+import { pushKill } from './eventLog.js';
 import { particles } from '../utils/particles.js';
 import { soundManager } from '../utils/soundManager.js';
 import { getTeamDatalink, tickAllDatalinks } from './teamDatalink.js';
@@ -164,17 +165,50 @@ export function npcSystemUpdate(sys, dt, playerState, simTime = 0) {
 			npc.throttle      = cmd.throttle;
 			npc.isBoosting    = cmd.boost;
 
+			// Phase 3c — radar mode management. NPC radar sits in 'search'
+			// (= TWS in our naming) most of the time, briefly flashes to
+			// 'track' (= STT) when the EngageBehavior commits to a Fox-3
+			// shot, and stays in track while any of its own active-radar
+			// missiles is in flight (datalink support phase). Once both
+			// commit and missile-in-flight are gone, drops back to TWS.
+			// Player RWR sees the difference via `lockType` on the
+			// contact's RWR entry.
+			if (npc.sensors && npc.sensors.radar) {
+				const commitAt = npc.pilot._sttCommitAt;
+				const inCommit = (commitAt != null) && (simTime - commitAt) < 5;
+				let hasLiveRadarMsl = false;
+				for (const p of ctxProjectiles) {
+					if (!p || !p.active) continue;
+					if (p.launcher !== npc) continue;
+					if (p.type === 'AIM-120' || p.type === 'METEOR' || p.type === 'NASAMS-MSL') {
+						hasLiveRadarMsl = true;
+						break;
+					}
+				}
+				npc.sensors.radar.mode = (inCommit || hasLiveRadarMsl) ? 'track' : 'search';
+			}
+
 			// Flare release is gated by the countermeasure subsystem
-			// (inventory + cooldown); behaviors only express intent.
+			// (inventory + burst cooldown). Real CMDS dispense in
+			// programmed bursts — one trigger pull fires a 4-round
+			// salvo. Behaviors set fireFlare on the standard ~1.5 s
+			// cadence; each one consumes up to 4 cartridges, magazines
+			// drain accordingly. F-15 ALE-45 loadouts are 60 cartridges,
+			// so a sustained engagement can easily run a jet dry.
 			if (cmd.fireFlare) {
 				const cm = npc.pilot.subsystems.countermeasures;
-				if (cm && cm.consumeFlare(simTime)) {
-					if (!sys.flares) sys.flares = [];
-					sys.flares.push(new Flare(
-						sys.scene, sys.viewer,
-						{ lon: npc.lon, lat: npc.lat, alt: npc.alt },
-						npc.heading, npc.pitch, npc.speed,
-					));
+				if (cm) {
+					const n = cm.consumeFlareBurst(simTime, 4);
+					if (n > 0) {
+						if (!sys.flares) sys.flares = [];
+						for (let i = 0; i < n; i++) {
+							sys.flares.push(new Flare(
+								sys.scene, sys.viewer,
+								{ lon: npc.lon, lat: npc.lat, alt: npc.alt },
+								npc.heading, npc.pitch, npc.speed,
+							));
+						}
+					}
 				}
 			}
 
@@ -192,11 +226,22 @@ export function npcSystemUpdate(sys, dt, playerState, simTime = 0) {
 						// seeker, no datalink registration — it's
 						// ballistic and unguided. Each "consume"
 						// slot produces a single tracer round; the
-						// pilot's high fireRate (0.08s) turns this
-						// into a steady stream while the
-						// EngageBehavior keeps the nose on the
-						// pipper.
-						sys._spawnNpcBullet(npc);
+						// pilot's high fireRate turns this into a
+						// steady stream while the EngageBehavior (or
+						// AAA pilot) keeps the aim on the pipper.
+						//
+						// Static AAA pilots (ZSU-23, etc.) write
+						// cmd.gunHeading / cmd.gunPitch each tick
+						// with their lead solution — the chassis
+						// doesn't rotate, only the turret does, so
+						// the bullet exits along the lead vector
+						// rather than the unit's body forward. For
+						// fighter pilots these fields are absent and
+						// the bullet defaults to body-forward.
+						const aim = (cmd.gunHeading != null || cmd.gunPitch != null)
+							? { heading: cmd.gunHeading, pitch: cmd.gunPitch }
+							: null;
+						sys._spawnNpcBullet(npc, aim);
 					} else {
 						const projectile = sys._spawnNpcMissile(npc, cmd.weaponType, cmd.weaponTarget);
 						// Register with the team datalink so
@@ -323,6 +368,13 @@ export function npcSystemUpdate(sys, dt, playerState, simTime = 0) {
 					// Emit wreckage + explosion effects so the
 					// kill reads visually the same as an air-to-
 					// air kill.
+					pushKill({
+						shooter: 'TERRAIN',
+						target:  npc,
+						weapon:  'TERRAIN',
+						at:      performance.now() * 0.001,
+						reason:  'crash',
+					});
 					npc.destroyed = true;
 					try {
 						particles.spawnExplosion(npc.lon, npc.lat, terrainH + 2,

@@ -23,6 +23,7 @@ export const gameSettings = {
 	showHud: true,
 	showHorizonLines: true,
 	soundEnabled: true,
+	volume: 0.7,
 	minimapRange: 10,
 	// Persisted pre-flight selections. These mean the user doesn't have
 	// to re-pick a scenario, airframe and spawn every time the page
@@ -93,7 +94,12 @@ export function applySettings(ctx = {}) {
 	}
 
 	if (soundManager && soundManager.listener) {
-		soundManager.listener.setMasterVolume(gameSettings.soundEnabled ? 1.0 : 0.0);
+		// Final master = mute switch × volume slider. Either being off
+		// silences everything; both come back together after toggle.
+		const v = gameSettings.soundEnabled
+			? Math.max(0, Math.min(1, gameSettings.volume ?? 1.0))
+			: 0;
+		soundManager.listener.setMasterVolume(v);
 	}
 
 	const viewer = getViewer();

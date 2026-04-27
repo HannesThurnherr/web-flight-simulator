@@ -1,0 +1,54 @@
+{
+	"id": "meteor",
+	"name": "MBDA METEOR BVRAAM",
+	"shortName": "METEOR",
+	"category": "AAM",
+	"tags": ["aam", "bvr", "active-radar", "fox-3", "ramjet"],
+	"massKg": 190,
+	"rcsContributionM2": 0.04,
+	"description": "Throttleable-ramjet beyond visual range air-to-air missile. Sustains Mach 4 throughout flight where AMRAAM bleeds to subsonic — no-escape zone roughly 3× larger than AIM-120D. Same Fox-3 architecture: midcourse datalink, active-radar terminal.",
+	"simType": "METEOR",
+	"signature": "missile_radar",
+	"seekerType": "active_radar",
+	"modelTemplate": "meteor",
+	"realLengthM": 3.65,
+	"flight": {
+		"launchSpeedOffset": 50,
+		"boostDurationS": 50.0,
+		"boostAccel": 170,
+		"peakSpeed": 1350,
+		"minSpeed": 200,
+		"maxLifeS": 200,
+		"maxTurnDegPerSec": 40,
+		"pnGain": 4.0,
+		"dragRef": 4,
+		"dragRefSpeed": 1100,
+		"dragRefAltitude": 12000,
+		"vManeuverRef": 800,
+		"gAvailFloor": 0.10
+	},
+	"warhead": {
+		"killRadiusM": 17,
+		"fuzeSenseRadiusM": 32,
+		"missAbortRadiusMul": 2
+	},
+	"loft": {
+		"terminalRangeM": 18000,
+		"maxLoftRangeM": 120000,
+		"maxLoftDeg": 35
+	},
+	"seeker": {
+		"activeRangeM": 22000,
+		"fovHalfAngleDeg": 30,
+		"nominalDetectRangeM": 28000,
+		"referenceRcs": 5,
+		"notchThresholdAcquire": 30,
+		"notchThresholdTrack": 25,
+		"lockDropTimeoutS": 2.5,
+		"reacquireIntervalS": 0.25,
+		"reacquireBackoffMul": 2.0,
+		"reacquireMaxIntervalS": 4.0,
+		"reacquireMaxAttempts": 5,
+		"datalink": true
+	}
+}

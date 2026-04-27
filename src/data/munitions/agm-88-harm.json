@@ -6,7 +6,35 @@
 	"tags": ["agm", "sead", "anti-radiation"],
 	"massKg": 360,
 	"rcsContributionM2": 0.05,
-	"description": "High-speed anti-radiation missile. SEAD workhorse — homes on emitting radars.",
+	"description": "High-speed anti-radiation missile. Passive seeker locks emitting radars at launch and homes; if the emitter shuts down, dead-reckons to last-known position for ~10 s. SEAD workhorse — best paired with a tactic that forces the SAM to radiate (decoy run, ISR cue, sustained STT spike).",
 	"simType": "AGM-88",
-	"seekerType": "anti_radiation"
+	"signature": "missile_radar",
+	"seekerType": "anti_radiation",
+	"modelTemplate": "agm-88",
+	"realLengthM": 4.17,
+	"flight": {
+		"launchSpeedOffset": 30,
+		"boostDurationS": 6.0,
+		"boostAccel": 200,
+		"peakSpeed": 720,
+		"minSpeed": 80,
+		"maxLifeS": 80,
+		"maxTurnDegPerSec": 25,
+		"pnGain": 3.5,
+		"dragRef": 12,
+		"dragRefSpeed": 700,
+		"dragRefAltitude": 6000,
+		"vManeuverRef": 500,
+		"gAvailFloor": 0.10
+	},
+	"warhead": {
+		"killRadiusM": 12,
+		"fuzeSenseRadiusM": 25,
+		"missAbortRadiusMul": 2
+	},
+	"seeker": {
+		"fovHalfAngleDeg": 40,
+		"emissionLossMemoryS": 10,
+		"maxG": 25
+	}
 }

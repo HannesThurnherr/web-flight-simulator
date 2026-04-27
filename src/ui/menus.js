@@ -12,6 +12,103 @@
 import { enterSpawnPicking, exitSpawnPicking, quickRespawn, hasScenarioSpawnPoint } from '../systems/spawnFlow';
 import { setRenderOptimization } from '../world/cesiumWorld';
 import { gameSettings, saveSettings, applySettings, updateSettingsUI } from './settings';
+import { soundManager } from '../utils/soundManager';
+
+// Push the volume controls' state into the master gain. Lives next to
+// the pause-menu wiring so the pause-screen slider/mute and the main
+// settings modal share a single update path. Mute switch × slider:
+// either being off silences everything; the slider's value is preserved
+// across a mute toggle so re-enabling brings the audio back where it
+// was.
+function applyVolumeFromSettings() {
+	if (!soundManager || !soundManager.listener) return;
+	const v = gameSettings.soundEnabled
+		? Math.max(0, Math.min(1, gameSettings.volume ?? 1))
+		: 0;
+	soundManager.listener.setMasterVolume(v);
+}
+
+// Sync the pause-menu volume widgets (slider, mute icon, % readout) to
+// the live gameSettings. Called every time the pause modal opens so the
+// widgets reflect any changes made via the main settings modal in the
+// meantime, and after a slider/button event so the readout updates.
+function refreshPauseVolumeWidgets() {
+	const slider = document.getElementById('pauseVolumeSlider');
+	const value  = document.getElementById('pauseVolumeValue');
+	const muteBtn = document.getElementById('pauseMuteBtn');
+	const muteIcon = document.getElementById('pauseMuteIcon');
+	const wrap   = document.getElementById('pauseVolume');
+	if (!slider || !value || !muteBtn || !muteIcon) return;
+	const pct = Math.round(((gameSettings.volume ?? 1) * 100));
+	slider.value = String(pct);
+	const muted = !gameSettings.soundEnabled || (gameSettings.volume ?? 1) <= 0;
+	value.textContent = muted ? 'MUTE' : `${pct}%`;
+	muteIcon.textContent = gameSettings.soundEnabled ? '🔊' : '🔇';
+	muteBtn.classList.toggle('muted', !gameSettings.soundEnabled);
+	if (wrap) wrap.classList.toggle('muted', muted);
+}
+import { getEvents } from '../systems/eventLog';
+
+// Render the kill / crash log into the pause-screen panel. Called from
+// the pause-open handler so the snapshot always reflects what just
+// happened up to the moment the player hit Escape.
+//
+// Layout: one row per event, time on the left, "X → Y · WEAPON" on the
+// right. Player-involved events get a colour cue (cyan when player is
+// the shooter, red when player is the victim); crashes use amber.
+function renderPauseKillLog() {
+	const root = document.getElementById('pause-killlog');
+	const count = document.getElementById('pause-killlog-count');
+	if (!root) return;
+
+	const events = getEvents();
+	if (count) count.textContent = `${events.length} EVENT${events.length === 1 ? '' : 'S'}`;
+
+	if (events.length === 0) {
+		root.innerHTML = '<div class="killlog-empty">— no engagements yet —</div>';
+		return;
+	}
+
+	// Newest first. The mission tape is stored chronological; flip on
+	// render so the player sees what just happened without scrolling.
+	const now = performance.now() * 0.001;
+	const rows = [];
+	for (let i = events.length - 1; i >= 0; i--) {
+		const e = events[i];
+		const ago = Math.max(0, now - e.at);
+		const m = Math.floor(ago / 60);
+		const s = Math.floor(ago % 60);
+		const time = `T-${m}:${s.toString().padStart(2, '0')}`;
+
+		const cls = ['killlog-row'];
+		if (e.reason === 'crash') cls.push('crash');
+		if (e.shooter === 'PLAYER') cls.push('player-killer');
+		if (e.target  === 'PLAYER') cls.push('player-victim');
+		// Faction colour cue for non-player parties.
+		if (e.shooterTeam) cls.push('team-' + e.shooterTeam);
+
+		rows.push(`
+			<div class="${cls.join(' ')}">
+				<span class="killlog-time">${time}</span>
+				<span class="killlog-body">
+					<span class="killlog-shooter">${escapeHtml(e.shooter)}</span>
+					<span class="killlog-arrow">▶</span>
+					<span class="killlog-target">${escapeHtml(e.target)}</span>
+					<span class="killlog-weapon">[${escapeHtml(e.weapon)}]</span>
+				</span>
+			</div>
+		`);
+	}
+	root.innerHTML = rows.join('');
+}
+
+function escapeHtml(s) {
+	if (s == null) return '';
+	return String(s)
+		.replace(/&/g, '&amp;')
+		.replace(/</g, '&lt;')
+		.replace(/>/g, '&gt;');
+}
 
 // Hide every modal in the document. Shared helper used by almost every
 // button handler below.
@@ -127,6 +224,29 @@ export function setupPauseAndRespawnButtons(ctx) {
 		setRenderOptimization(true);
 		location.reload();
 	};
+
+	// ---- Pause-menu volume widgets ------------------------------------------
+	const slider  = document.getElementById('pauseVolumeSlider');
+	const muteBtn = document.getElementById('pauseMuteBtn');
+	if (slider) {
+		slider.addEventListener('input', () => {
+			gameSettings.volume = Math.max(0, Math.min(1, slider.value / 100));
+			applyVolumeFromSettings();
+			refreshPauseVolumeWidgets();
+			saveSettings();
+		});
+	}
+	if (muteBtn) {
+		muteBtn.addEventListener('click', () => {
+			gameSettings.soundEnabled = !gameSettings.soundEnabled;
+			applyVolumeFromSettings();
+			refreshPauseVolumeWidgets();
+			saveSettings();
+		});
+	}
+	// Initial sync so the widgets reflect persisted state on first
+	// pause-modal open.
+	refreshPauseVolumeWidgets();
 
 	// Crash-menu RESPAWN: put the player back into the ongoing scenario
 	// at the spawn pose captured on initial confirm-spawn, without
@@ -250,6 +370,8 @@ export function setupGlobalKeybinds(ctx) {
 				ctx.hud.resizeMinimap();
 				ctx.pauseGameplaySounds();
 				ctx.hud.update(state, []);
+				renderPauseKillLog();
+				refreshPauseVolumeWidgets();
 			} else if (ctx.currentState === 'PAUSED') {
 				ctx.setCurrentState('FLYING');
 				if (ctx.dialogueSystem) ctx.dialogueSystem.resume();

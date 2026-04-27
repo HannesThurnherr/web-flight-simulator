@@ -19,7 +19,7 @@ import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { PlanePhysics } from './planePhysics';
 import { JetFlame } from './jetFlame';
 import { SIGNATURES } from '../systems/signatures';
-import { FIGHTER_RADAR_DEFAULT } from '../systems/sensorSystem';
+import { FIGHTER_RADAR_DEFAULT, FIGHTER_IRST_DEFAULT } from '../systems/sensorSystem';
 import { WeaponSystem } from '../systems/weaponSystem';
 import { getViewer } from '../world/cesiumWorld';
 import { soundManager } from '../utils/soundManager';
@@ -91,6 +91,18 @@ export function loadPlayerPlane(plane, ctx) {
 			// Reset to default (in case we came from a plane that had
 			// overrides).
 			Object.assign(state.sensors.radar, FIGHTER_RADAR_DEFAULT);
+		}
+		// IR sensor suite varies by airframe:
+		//   - F-15 / generic fighter: forward IRST cone (default).
+		//   - F-22: no air-to-air IRST in real life — only MAWS for
+		//     missile threats (modeled by fov=0; the FOV check rejects
+		//     fighter targets, while missile-class targets bypass FOV
+		//     in scanIR() and are still caught).
+		//   - F-35: DAS gives genuine all-aspect IR coverage for both
+		//     fighters and missiles.
+		Object.assign(state.sensors.ir, FIGHTER_IRST_DEFAULT);
+		if (plane.irOverride) {
+			Object.assign(state.sensors.ir, plane.irOverride);
 		}
 		// Apply physics overrides (thrust / agility / G-limits) onto
 		// the shared physics instance.

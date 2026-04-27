@@ -5,15 +5,19 @@
 // aircraft each tick (no command fighting).
 //
 // Priority convention (lower index wins):
-//   0  MissileEvasion       — break active threats or die
-//   1  TerrainAvoid         — pull up; GPWS safety net
-//   2  Engage               — target in envelope → steer & fire (stub)
-//   3  Patrol               — waypoint / sector hold               (stub)
-//   4  Cruise               — default; hold altitude + heading
+//   0  ForwardTerrainAvoid  — predicted ridge ahead → pull up early
+//   1  MissileEvasion       — break active threats or die
+//   2  Crank                — post-AAM-launch off-axis support
+//   3  TerrainAvoid         — pull up; GPWS safety net (immediate AGL)
+//   4  Engage               — target in envelope → steer & fire (stub)
+//   5  Patrol               — waypoint / sector hold               (stub)
+//   6  Cruise               — default; hold altitude + heading
 //
 // Add a new behavior: subclass Behavior, implement isActive + apply,
 // register it in the priority list (see ai/index.js).
 // ============================================================================
+
+import { forwardLookTerrain } from '../sensorSystem.js';
 
 export class Behavior {
 	constructor(name) {
@@ -82,6 +86,104 @@ export class CruiseBehavior extends Behavior {
 		cmd.targetPitch = Math.max(-8, Math.min(8, altErr / 400));
 		cmd.targetSpeed = this.targetSpeed;
 		cmd.throttle    = 0.65;
+	}
+}
+
+// ----------------------------------------------------------------------------
+// ForwardTerrainAvoidBehavior — predictive look-ahead pull-up.
+//
+// The plain TerrainAvoidBehavior below only reads AGL straight under
+// the aircraft. By the time AGL gets dangerous on a fast jet diving
+// for the deck during evasion, there's no pull-up room left — the NPC
+// commits and dies. This behaviour is the predictive counterpart: it
+// casts a chord forward along the unit's heading + pitch (sized by
+// airspeed: 8 s of flight, with a 2.5 km floor) and checks if terrain
+// rises into the path via `sensorSystem.forwardLookTerrain` (which
+// uses the same multi-sample + curvature-corrected check Phase 3d
+// landed for sensor masking).
+//
+// Priority is *above* MissileEvasion. A beaming NPC about to fly
+// into a ridge will briefly hand control here, climb to clear, then
+// MissileEvasion takes back over. We don't try to soft-blend pitch
+// and heading authority — that would need a behaviour-arch change;
+// instead the override is short-lived (a second or two) and rare,
+// so the loss of beam continuity is acceptable. Heading is held at
+// current heading (we don't rotate), only pitch is overridden, so
+// the missile's geometry-prediction stays roughly valid.
+//
+// Throttled to 5 Hz so we don't pile globe.getHeight calls on every
+// 60 Hz frame; the chord doesn't change meaningfully in 200 ms.
+// ----------------------------------------------------------------------------
+export class ForwardTerrainAvoidBehavior extends Behavior {
+	constructor(opts = {}) {
+		super('ForwardTerrainAvoid');
+		this.lookAheadSeconds = opts.lookAheadSeconds ?? 8;
+		this.minLookAheadM    = opts.minLookAheadM    ?? 2500;
+		this.clearanceM       = opts.clearanceM       ?? 50;
+		// Time-to-impact thresholds. Below `panicTtiS` we go full pull;
+		// between panic and warn we ramp the climb command.
+		this.warnTtiS  = opts.warnTtiS  ?? 7;
+		this.panicTtiS = opts.panicTtiS ?? 2.5;
+		// Internal cadence + cached result so isActive() can be queried
+		// 60 Hz cheaply.
+		this._lastCheckAt = -Infinity;
+		this._cachedHit   = null;
+		this._cachedTti   = Infinity;
+	}
+
+	_recheck(unit, now) {
+		if (now - this._lastCheckAt < 0.2) return;
+		this._lastCheckAt = now;
+		const speed = Math.max(60, unit.speed || 0);
+		const lookAhead = Math.max(this.minLookAheadM, speed * this.lookAheadSeconds);
+		const hit = forwardLookTerrain(unit, lookAhead, 6, this.clearanceM);
+		this._cachedHit = hit;
+		this._cachedTti = hit ? (hit.distance / speed) : Infinity;
+	}
+
+	isActive(ctx) {
+		const unit = ctx.unit;
+		if (!unit) return false;
+		// Don't fight the static-clamp on parked SAMs and similar.
+		if (unit.isStatic) return false;
+		this._recheck(unit, ctx.now ?? 0);
+		// Active when an obstruction lies within the warning window.
+		// Clearing happens automatically: once the NPC pitches up and
+		// the chord is clear, the next recheck returns null and
+		// isActive flips off, handing control back to the next
+		// behaviour in the priority list (usually MissileEvasion or
+		// Engage).
+		return this._cachedHit !== null && this._cachedTti < this.warnTtiS;
+	}
+
+	apply(ctx, cmd) {
+		const tti = this._cachedTti;
+		// Pull-up urgency: smooth ramp from a gentle 18° at warnTti
+		// down to a hard 45° at panicTti and below. Keeps the climb
+		// proportional to the threat — gentle pulls preserve more
+		// energy and don't fight the missile-evasion command quite as
+		// hard when the ridge is still 6+ seconds away.
+		const t = Math.max(0, Math.min(1,
+			(this.warnTtiS - tti) / Math.max(0.1, this.warnTtiS - this.panicTtiS)));
+		const targetPitch = 18 + 27 * t; // 18° → 45°
+		cmd.targetPitch = targetPitch;
+		// Hold current heading — we want to clear the obstacle without
+		// abandoning whatever maneuver was in progress. Heading is the
+		// missile-evasion behaviour's authority; we yield it back as
+		// soon as we're clear.
+		cmd.targetHeading = ctx.unit.heading;
+		// Roll wings level so the climb is efficient (full lift vector
+		// vertical). Behaviours don't address roll directly — they
+		// command heading + pitch and the autopilot handles bank — but
+		// the autopilot already keeps wings level when there's no
+		// heading-change demand, so this falls out for free.
+		cmd.throttle = 1.0;
+		cmd.boost    = true;
+		cmd.targetSpeed = 600;
+		// Suppress weapons / countermeasures during the override —
+		// we're 100% focused on not dying to terrain right now.
+		cmd.fireWeapon = false;
+		cmd.fireFlare  = false;
 	}
 }
 
@@ -244,6 +346,116 @@ export class MissileEvasionBehavior extends Behavior {
 }
 
 // ----------------------------------------------------------------------------
+// CrankBehavior — BVR post-launch off-axis support.
+//
+// Real-world doctrine: after firing an active-radar missile (AIM-120,
+// METEOR), you don't keep the nose on the bandit. You "crank" 35-50°
+// off-axis. Two reasons:
+//   1) Missile defense — putting the bandit on your beam reduces your
+//      closure rate, makes their return shot harder to solve, and gives
+//      you more lateral separation to evade if they shoot you back.
+//   2) Datalink support — modern AESA radars can hold the target on
+//      the gimbal edge well past 50° off-axis, so the missile keeps
+//      getting midcourse updates even though our nose is dragged.
+//
+// We activate as soon as the pilot has an in-flight active-radar
+// missile from this launcher, AND a valid target. We deactivate when
+// every such missile has gone inactive (hit / dud / out of fuel) — at
+// which point either Engage retakes (range still in envelope) or the
+// pilot drifts back to cruise.
+//
+// `crankAngleDeg` is the off-axis bearing relative to the bandit. We
+// alternate left/right per trigger so successive shooters don't crank
+// into each other on a multi-ship engagement.
+// ----------------------------------------------------------------------------
+export class CrankBehavior extends Behavior {
+	constructor(opts = {}) {
+		super('Crank');
+		this.crankAngleDeg = opts.crankAngleDeg ?? 40;
+		// Switch which side we crank toward each time we re-trigger,
+		// so a four-ship doesn't all crank into the same airspace and
+		// pile up.
+		this._side = (Math.random() < 0.5) ? +1 : -1;
+		// Cache the side once we've started cranking and only flip
+		// after the engagement resolves, so a single crank doesn't
+		// oscillate side every frame.
+		this._activeSide = null;
+	}
+
+	// Find any in-flight active-radar missile we launched that's still
+	// supporting on a target. Reads ctx.projectiles (the world-wide
+	// projectile pool). The launcher comparison is reference-equality
+	// against the unit, so this Just Works for both NPC and player
+	// pilots if they ever get one.
+	_supportingMissile(ctx) {
+		const proj = ctx.projectiles;
+		if (!Array.isArray(proj) || proj.length === 0) return null;
+		const me = ctx.unit;
+		for (const p of proj) {
+			if (!p || !p.active) continue;
+			if (p.launcher !== me) continue;
+			// Only crank for active-radar missiles (the ones that need
+			// midcourse datalink). IR Sidewinders are fire-and-forget
+			// — no support needed, keep the nose on the bandit.
+			const t = p.type;
+			if (t !== 'AIM-120' && t !== 'METEOR' && t !== 'NASAMS-MSL') continue;
+			return p;
+		}
+		return null;
+	}
+
+	isActive(ctx) {
+		const tm = this.pilot.subsystems.targetManager;
+		if (!tm || !tm.getBest()) return false;
+		const m = this._supportingMissile(ctx);
+		if (!m) {
+			// Nothing in flight from us → reset side bias for the
+			// next shot.
+			this._activeSide = null;
+			return false;
+		}
+		return true;
+	}
+
+	apply(ctx, cmd) {
+		const tm   = this.pilot.subsystems.targetManager;
+		const best = tm.getBest();
+		const unit = ctx.unit;
+
+		// Bearing FROM our nose TO the bandit's projected position.
+		const bearingToTgt = bearingFromTo(unit, { lon: best.estPos.lon, lat: best.estPos.lat });
+
+		// Lock in a crank side at the moment we start supporting; keep
+		// it until the missile resolves. Without this lock the side
+		// would flip every time `isActive` re-evaluates and the NPC
+		// would porpoise across the bandit's nose.
+		if (this._activeSide === null) {
+			this._activeSide = this._side;
+			// Flip the next-shooter bias so a follow-up wingman shot
+			// cranks the other way.
+			this._side = -this._side;
+		}
+
+		// Crank heading = bandit bearing ± crankAngle. Sign depends on
+		// which side we picked.
+		const cranked = (bearingToTgt + this._activeSide * this.crankAngleDeg + 360) % 360;
+		cmd.targetHeading = cranked;
+
+		// Hold a sensible BVR support altitude/speed. Stay AB-warm so
+		// we have energy if the bandit tries to crank back into us
+		// after launch. Don't fire — Engage handles that and we're
+		// already supporting an in-flight missile.
+		const alt = unit.alt;
+		if      (alt < 6000)  cmd.targetPitch =  3;
+		else if (alt > 11000) cmd.targetPitch = -2;
+		else                  cmd.targetPitch =  0;
+		cmd.targetSpeed = 380;
+		cmd.throttle    = 0.95;
+		cmd.boost       = false;
+	}
+}
+
+// ----------------------------------------------------------------------------
 // EngageBehavior — offensive counterpart to MissileEvasion.
 //
 // Active when the pilot's TargetManager has a valid target (hostile
@@ -316,23 +528,35 @@ export class EngageBehavior extends Behavior {
 		const inRearHemisphere = aspectCos < -0.2;
 
 		let aimHeading, aimPitch;
-		const useLead = isGun && inRearHemisphere;
-
-		if (useLead) {
-			// Lead pursuit: where bullets arrive at target. Standard
-			// gun shot once we've maneuvered into the rear hemisphere.
+		// Always compute the gun lead solution when the chosen weapon is
+		// a gun — we need it for snapshot fire decisions even when our
+		// steering is using lag pursuit. `leadHeading/Pitch` is the
+		// "where bullets arrive" direction; `aimHeading/Pitch` is what
+		// we tell the autopilot to fly.
+		let leadHeading = null;
+		let leadPitch   = null;
+		if (isGun) {
 			const lead = this._computeGunLead(unit, {
 				lon: estPos.lon, lat: estPos.lat, alt: estPos.alt,
 				heading: best.estHeading, pitch: best.estPitch, speed: estSpeed,
 			});
-			aimHeading = lead.heading;
-			aimPitch   = lead.pitch;
+			leadHeading = lead.heading;
+			leadPitch   = lead.pitch;
+		}
+
+		if (isGun && inRearHemisphere) {
+			// Standard tracking shot from bandit's rear hemisphere.
+			// Steer to the lead solution and fire when the pipper
+			// settles.
+			aimHeading = leadHeading;
+			aimPitch   = leadPitch;
 		} else if (isGun) {
-			// Lag pursuit: aim 800 m behind bandit's CURRENT projected
-			// position, along the reverse of their velocity. As the
-			// bandit turns, the lag point tracks with them — we're
-			// constantly flying at a spot chasing their tail, which
-			// naturally cuts inside their turn circle.
+			// Outside the rear hemisphere we lag-pursue toward the
+			// bandit's tail to bleed aspect. Lag point: 800 m behind
+			// the bandit's projected position along their reverse
+			// velocity. As they turn, the lag point tracks with them,
+			// so we're always flying at "chase their tail" — cuts
+			// inside their turn circle.
 			const invSpd = 1 / spd;
 			const aimLon = estPos.lon - (estVel.E * invSpd * 800) / (111320 * cosLat);
 			const aimLat = estPos.lat - (estVel.N * invSpd * 800) / 111320;
@@ -386,19 +610,101 @@ export class EngageBehavior extends Behavior {
 
 		if (!weapon) return;
 
-		// Gun firing requires BOTH:
-		//   1. Nose on pipper (angle + pitch within the fire cone), and
-		//   2. We're in the bandit's rear hemisphere — anywhere else
-		//      the "aim point" is a lag-pursuit point 800 m behind the
-		//      target, not the target itself. Firing there just wastes
-		//      tracers. inRearHemisphere gate prevents that.
-		// Missiles (AIM-9X / AIM-120 all-aspect) ignore the hemisphere
-		// check — they can be lobbed head-on and guide themselves home.
-		const fireCone = isGun ? 8 : this.fireConeDeg;
-		const pitchErr = aimPitch !== null ? Math.abs(unit.pitch - aimPitch) : 0;
-		if (angleOff > fireCone) return;
-		if (isGun && pitchErr > fireCone) return;
-		if (isGun && !inRearHemisphere) return;
+		// ---- WEZ (Weapons Employment Zone) gate for active-radar AAMs -------
+		//
+		// `WeaponSubsystem.maxRange` is the kinematic Rmax — the
+		// theoretical edge of the missile's envelope. Real PK falls off
+		// fast inside that limit because a bled-out AMRAAM can't pull G
+		// at terminal phase (Phase 1.4 already enforces this in the
+		// missile's own kinematics — the AI just needs to not fire
+		// pointless shots from the absolute edge). Effective range
+		// scales with target aspect:
+		//   - bandit closing on us (aspectCos > 0) → full envelope
+		//   - bandit beaming (aspectCos ≈ 0)       → ~65% of envelope
+		//   - bandit running cold (aspectCos < 0)  → ~30% of envelope
+		// Below those thresholds we hold fire and either keep cranking
+		// in (Engage steers nose-on) or, if pre-launch, just close.
+		const isRadarAam = weapon.type === 'AIM-120'
+			|| weapon.type === 'METEOR'
+			|| weapon.type === 'NASAMS-MSL';
+		if (isRadarAam) {
+			// aspectCos was computed above for the gun-aspect check.
+			// +1 = bandit pointing at us (head-on); -1 = bandit cold.
+			const wezScale = 0.3 + 0.7 * Math.max(0, (1 + aspectCos) / 2);
+			const effectiveMax = weapon.maxRange * wezScale;
+			if (range > effectiveMax) return;
+		}
+
+		// ---- Firing gate ----------------------------------------------------
+		//
+		// Gun and missile decisions are different. For missiles we just
+		// check the steering aim is within `fireConeDeg` and let the
+		// seeker handle the rest. For guns we evaluate the LEAD
+		// solution: a head-on or beam merge can produce a perfectly
+		// good snapshot if our nose happens to cross the bullet-impact
+		// direction, even though we're flying lag pursuit overall.
+		// That's why real fighters get high-aspect M61 kills on the
+		// merge — the gun cares where bullets arrive, not where the
+		// pursuit-pursuit aim point is.
+		if (isGun) {
+			// Tight fire cone — M61 dispersion is tiny (~5 mils) so
+			// realistic hit probability requires the pipper actually
+			// on the target. 4° is roughly 70 m at 1 km.
+			const FIRE_CONE_TRACKING = 4;  // sustained tracking shot
+			const FIRE_CONE_SNAP     = 3;  // snapshot cone (tighter, since
+			                                // we only get one or two frames)
+
+			const headingErrToLead = Math.abs(angleDiffDeg(unit.heading, leadHeading));
+			const pitchErrToLead   = Math.abs(unit.pitch - leadPitch);
+
+			// Range check: even with lead-on-pipper, beyond ~3.2 km
+			// the bullet flight time exceeds 2 s and the target moves
+			// out of the kill volume before bullets arrive. Real
+			// combat-effective gun range ≈ that distance.
+			if (range > 3200) return;
+
+			const inFireCone = inRearHemisphere
+				? (headingErrToLead < FIRE_CONE_TRACKING && pitchErrToLead < FIRE_CONE_TRACKING)
+				: (headingErrToLead < FIRE_CONE_SNAP    && pitchErrToLead < FIRE_CONE_SNAP);
+			if (!inFireCone) return;
+		} else {
+			// Missile fire: just check steering aim aligns with target
+			// projection. Seeker / datalink takes it from there.
+			const fireCone = this.fireConeDeg;
+			const pitchErr = aimPitch !== null ? Math.abs(unit.pitch - aimPitch) : 0;
+			if (angleOff > fireCone) return;
+			if (pitchErr > fireCone) return;
+		}
+
+		// ---- Phase 3c: STT pre-fire flash (radar AAMs only) -----------------
+		//
+		// All firing gates have passed. For an active-radar shot we
+		// don't pull the trigger immediately — we briefly "snap" the
+		// radar to STT so the bandit's RWR has a chance to scream
+		// before the missile is on the rail. ~1.5 s of advertised
+		// lock matches modern AESA doctrine: TWS-cruise, flash to STT
+		// for the launch, back to TWS for the support phase. The
+		// commit timestamp lives on the pilot so the radar-mode
+		// manager in npcUpdate can read it.
+		if (isRadarAam) {
+			const FLASH_S = 1.5;
+			if (this.pilot._sttCommitTarget !== target) {
+				// First frame of commit — record the timestamp + target
+				// and let this frame end with no fire. The radar will
+				// flip to STT on the next mode-management tick.
+				this.pilot._sttCommitAt = ctx.now;
+				this.pilot._sttCommitTarget = target;
+				return;
+			}
+			if ((ctx.now - this.pilot._sttCommitAt) < FLASH_S) {
+				return; // still flashing — bandit is being warned
+			}
+			// Flash window has elapsed. Fire and clear the commit
+			// state. (The live-missile check in npcUpdate will keep
+			// the radar in track for datalink support.)
+			this.pilot._sttCommitAt = null;
+			this.pilot._sttCommitTarget = null;
+		}
 
 		cmd.fireWeapon   = true;
 		cmd.weaponType   = weapon.type;

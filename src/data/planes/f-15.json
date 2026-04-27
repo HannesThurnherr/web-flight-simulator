@@ -12,7 +12,12 @@
 		"mass": 20000,
 		"wingArea": 56.5,
 		"cdZero": 0.022,
-		"controlCoef": { "pitch": 8.0, "roll": 9.0, "yaw": 2.5 }
+		"controlCoef": { "pitch": 8.0, "roll": 9.0, "yaw": 2.5 },
+		"alphaStallDeg": 18,
+		"clMaxStall": 1.55,
+		"postStallPlateau": 0.9,
+		"stallBlendDeg": 4,
+		"departureSusceptibility": 0.85
 	},
 	"hardpoints": [
 		{ "id": "cheek-L1",     "label": "Fuselage Cheek L-1", "type": "fuselage", "accepts": ["AAM"] },

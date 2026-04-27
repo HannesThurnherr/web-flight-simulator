@@ -1,0 +1,44 @@
+{
+	"id": "sead-intro",
+	"name": "SEAD Intro — IADS Probe",
+	"description": "Small integrated air defence system 60 km ahead: one Early-Warning Radar, two SA-15 Tor SHORADs cueing off it, two ZSU-23-4 Shilka point-defence guns around the command post, and the command post itself. Tactical lesson: the SAMs run silent until the EWR pings you. Strike the EWR and the SAMs are blind; bait their radar on then strike them with anti-radiation munitions. The Shilkas always-radiate but only kill at <3 km — punching through low risks getting shredded by 23 mm tracers. No friendly fighters, no hostile CAP — pure SEAD/strike.",
+	"autoSpawn": false,
+	"spawns": [
+		{
+			"type": "platform",
+			"platformId": "ewr",
+			"team": "hostile-red",
+			"origin": { "relTo": "player", "bearingDeg": 0,  "rangeM": 65000, "altOffsetM": -3000 }
+		},
+		{
+			"type": "platform",
+			"platformId": "sa-15-tor",
+			"team": "hostile-red",
+			"origin": { "relTo": "player", "bearingDeg": 350, "rangeM": 55000, "altOffsetM": -3000 }
+		},
+		{
+			"type": "platform",
+			"platformId": "sa-15-tor",
+			"team": "hostile-red",
+			"origin": { "relTo": "player", "bearingDeg": 10,  "rangeM": 55000, "altOffsetM": -3000 }
+		},
+		{
+			"type": "platform",
+			"platformId": "command-post",
+			"team": "hostile-red",
+			"origin": { "relTo": "player", "bearingDeg": 0,   "rangeM": 60000, "altOffsetM": -3000 }
+		},
+		{
+			"type": "platform",
+			"platformId": "zsu-23-shilka",
+			"team": "hostile-red",
+			"origin": { "relTo": "player", "bearingDeg": 358, "rangeM": 60500, "altOffsetM": -3000 }
+		},
+		{
+			"type": "platform",
+			"platformId": "zsu-23-shilka",
+			"team": "hostile-red",
+			"origin": { "relTo": "player", "bearingDeg": 2,   "rangeM": 59500, "altOffsetM": -3000 }
+		}
+	]
+}

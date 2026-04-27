@@ -23,6 +23,7 @@ import * as Cesium from 'cesium';
 import { getViewer } from '../world/cesiumWorld';
 import { soundManager } from '../utils/soundManager';
 import { stopAllFlyingSounds } from '../utils/gameplaySounds';
+import { pushKill } from './eventLog';
 
 // Internal rate-limit for the terrain-sample crash check. Kept module-
 // private because no other caller needs to see it.
@@ -148,6 +149,18 @@ export function checkCrash(ctx) {
 	const terrainHeight = viewer.scene.globe.getHeight(cartographic);
 
 	if (terrainHeight !== undefined && state.alt <= terrainHeight + 5) {
+		// Player flew into the deck. Missile-kill case is logged in
+		// the missile's hitNPC — only push the terrain reason here so
+		// we don't double-log when both fire on the same frame.
+		if (!state.destroyed) {
+			pushKill({
+				shooter: 'TERRAIN',
+				target:  state,
+				weapon:  'TERRAIN',
+				at:      performance.now() * 0.001,
+				reason:  'crash',
+			});
+		}
 		doCrashTransition(ctx);
 	}
 }

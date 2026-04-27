@@ -14,12 +14,15 @@ export class WeaponSystem {
 
 		this.weapons = [
 			{ id: 'gun',     name: 'M61A1 CANNON',    ammo: Infinity, maxAmmo: Infinity, fireRate: 0.05, lastFire: 0 },
-			// AIM-9X: short-range IIR, ±10° cone. Modern imaging-IR seekers
-			// acquire and lock in well under a second — 0.5 s models the
-			// brief seeker slew + cooling-gate confirmation without the
-			// old arcade-style 2 s stare.
+			// AIM-9M: legacy reticle IR seeker. Cheap, plentiful, but
+			// flare-vulnerable; narrower acquisition cone than the X.
+			{ id: 'missile', name: 'AIM-9M SIDEWINDER', ammo: 0,  maxAmmo: 0,  fireRate: 1.0,
+			  lastFire: 0, type: 'AIM-9M',   lockRange: 12000, lockCone: 0.96,  lockTime: 0.7 },
+			// AIM-9X: imaging-IR + thrust-vectoring. ±90° HOBS cone,
+			// near-immune to flare decoys, ~50G turns. The premium WVR
+			// option vs the older 9M.
 			{ id: 'missile', name: 'AIM-9X SIDEWINDER', ammo: 6,  maxAmmo: 6,  fireRate: 1.0,
-			  lastFire: 0, type: 'AIM-9',    lockRange: 15000, lockCone: 0.985, lockTime: 0.5 },
+			  lastFire: 0, type: 'AIM-9X',   lockRange: 25000, lockCone: 0.0,   lockTime: 0.4 },
 			// AIM-120D: active-radar BVR. Modern AESA fighter radars
 			// (APG-63V3, APG-77, APG-81, APG-82) hold firing-grade
 			// tracks essentially continuously in TWS; transitioning to
@@ -30,6 +33,23 @@ export class WeaponSystem {
 			// tracking range, not an arbitrarily tighter number.
 			{ id: 'missile', name: 'AIM-120D AMRAAM',  ammo: 4,  maxAmmo: 4,  fireRate: 1.5,
 			  lastFire: 0, type: 'AIM-120',  lockRange: 120000, lockCone: 0.92,  lockTime: 0.3 },
+			// MBDA Meteor BVRAAM. Same Fox-3 architecture as AMRAAM —
+			// midcourse datalink + active-radar terminal — but the
+			// throttleable ramjet sustains thrust for the full flight,
+			// so its no-escape zone is roughly 3× larger. Effective
+			// launch range bumped to 180 km; the lockCone is the same
+			// (it's a function of the radar's gimbal, not the missile)
+			// and lockTime is identical (the radar doesn't know which
+			// missile is loaded behind it).
+			{ id: 'missile', name: 'MBDA METEOR',      ammo: 0,  maxAmmo: 0,  fireRate: 1.5,
+			  lastFire: 0, type: 'METEOR',   lockRange: 180000, lockCone: 0.92,  lockTime: 0.3 },
+			// AGM-88 HARM. Anti-radiation seeker — passive, no AESA
+			// lock required. The seeker scans hostile radiating units
+			// at launch and auto-picks the strongest in cone. id='agm'
+			// (not 'missile') is what bypasses the lockStatus gate in
+			// fire() and skips the AESA lock-progress loop in update().
+			{ id: 'agm',     name: 'AGM-88 HARM',       ammo: 0,  maxAmmo: 0,  fireRate: 2.0,
+			  lastFire: 0, type: 'AGM-88',   lockRange: 0,      lockCone: 0,     lockTime: 0 },
 		];
 
 		this.flareWeapon = { id: 'flare', name: 'MJU-7A', ammo: 30, maxAmmo: 30, fireRate: 0.2, lastFire: 0 };
@@ -117,15 +137,44 @@ export class WeaponSystem {
 		return this.weapons[this.selectedWeaponIndex];
 	}
 
+	// "Carried" = gun (always has ammo) or any missile slot the loadout
+	// actually loaded. Used by toggleWeapon / selectWeapon below so the
+	// player never gets stuck on an empty slot — pressing 2 lands on
+	// the first non-empty missile, Q-cycle skips empty slots entirely.
+	// Without this, a default-loaded F-15 (no AIM-9M) would happily
+	// cycle into the AIM-9M slot, name it on the HUD, and silently
+	// fail to fire — exactly the "AIM-9X won't fire" bug the player
+	// sees when they think they're on AIM-9X but are actually on the
+	// AIM-9M slot one over.
+	_carriedWeapons() {
+		const list = [];
+		for (const w of this.weapons) {
+			if (w.ammo === Infinity || w.ammo > 0) list.push(w);
+		}
+		return list;
+	}
+
 	toggleWeapon() {
-		this.selectedWeaponIndex = (this.selectedWeaponIndex + 1) % this.weapons.length;
+		const carried = this._carriedWeapons();
+		if (carried.length === 0) return;
+		const cur = this.weapons[this.selectedWeaponIndex];
+		let pos = carried.indexOf(cur);
+		if (pos < 0) pos = -1; // current weapon empty / not in carried list
+		const next = carried[(pos + 1) % carried.length];
+		this.selectedWeaponIndex = this.weapons.indexOf(next);
 		try { soundManager.play('weapon-switch'); } catch (e) { }
 	}
 
 	selectWeapon(index) {
-		if (index >= 0 && index < this.weapons.length) {
-			this.selectedWeaponIndex = index;
-		}
+		// `index` is interpreted as the Nth *carried* weapon, not the raw
+		// array index. So key 1 → gun, key 2 → first non-empty missile,
+		// key 3 → second non-empty missile, etc. This makes the keys
+		// adapt to whatever the player loaded — pressing 2 always
+		// selects "the first AAM I'm carrying", regardless of whether
+		// that's an AIM-9M, AIM-9X, AIM-120, or METEOR.
+		const carried = this._carriedWeapons();
+		if (index < 0 || index >= carried.length) return;
+		this.selectedWeaponIndex = this.weapons.indexOf(carried[index]);
 		try { soundManager.play('weapon-switch'); } catch (e) { }
 	}
 
@@ -227,22 +276,23 @@ export class WeaponSystem {
 				playerState,
 			);
 			this.projectiles.push(bullet);
-		} else if (weapon.id === 'missile') {
+		} else if (weapon.id === 'missile' || weapon.id === 'agm') {
 			this.lastMissileSide = !this.lastMissileSide;
 			const side = this.lastMissileSide ? 1 : -1;
 			const missileOffset = new THREE.Vector3(15.0 * side, -15.0, 0.0);
 
 			const launchPos = this.calculateWeaponPos(missileOffset) || startPos;
-			const target = this.target;
+			// AAMs hand the seeker the AESA-locked target. AGM-88 HARM
+			// (anti-radiation) ignores it entirely and auto-picks the
+			// strongest emitter at launch time from playerState.npcs;
+			// passing target=null keeps the behaviour explicit.
+			const target = (weapon.id === 'agm') ? null : this.target;
 
 			// Factory dispatch on the weapon's simType. Returns the
 			// right seeker-class instance for whatever munition is
 			// loaded in that slot (AIM-120D → AIM120, AIM-9X → Missile,
-			// future HARM / LGB / JDAM → their own seeker classes).
-			// Currently uses the first munition matching the simType;
-			// when the loadout system tracks per-slot munitions, the
-			// specific id loaded on the fired rack can be threaded
-			// through here.
+			// AGM-88 → AntiRadiationSeeker, future LGB / JDAM → their
+			// own seeker classes).
 			const munitionId = munitionIdForSimType(weapon.type);
 			const projectile = createMunition(
 				munitionId,
@@ -274,7 +324,13 @@ export class WeaponSystem {
 			}
 			return;
 		}
-		if (now - flareWeapon.lastFire < 1.0) return;
+		// No artificial cooldown — modern CMDS will dispense as fast
+		// as the pilot pulls the button. The only gate is "don't start
+		// a new burst while the previous one is still pulsing out",
+		// which is implicit: each press queues 6 flares spaced
+		// flareInterval apart, and the queue drains in update(). Held
+		// key = back-to-back bursts until the magazine is dry.
+		if (this.flareQueue > 0) return;
 
 		flareWeapon.ammo--;
 		flareWeapon.lastFire = now;
@@ -502,8 +558,11 @@ export class WeaponSystem {
 		if (!playerState.npcs || playerState.npcs.length === 0) return out;
 
 		const weapon = this.getCurrentWeapon();
-		const lockRange = weapon && weapon.lockRange ? weapon.lockRange : 10000;
-		const lockCone  = weapon && weapon.lockCone  ? weapon.lockCone  : 0.985;
+		const lockRange = (weapon && weapon.lockRange != null) ? weapon.lockRange : 10000;
+		// Note: lockCone of 0 = ±90° (HOBS), perfectly valid. Older
+		// `weapon.lockCone ? ... : 0.985` truthy fallback would have
+		// snapped that back to a 10° cone, breaking AIM-9X HOBS.
+		const lockCone  = (weapon && weapon.lockCone  != null) ? weapon.lockCone  : 0.985;
 
 		for (const npc of playerState.npcs) {
 			if (npc.destroyed) continue;

@@ -84,11 +84,18 @@ export function syncNpcMeshMatrices(npcSys) {
 // other. Pushed onto the shared `projectiles` pool so the sensor /
 // HUD layers see NPC gun fire via the same channel as NPC missile
 // fire.
-export function spawnNpcBullet(npcSys, npc) {
+// `aim` (optional) overrides the launch heading + pitch — for ground
+// AAA platforms whose chassis stays put while the turret traverses to
+// a lead solution. When omitted, the bullet exits along the unit's
+// own heading/pitch (correct for fighters, where the nose IS the gun
+// pointing direction).
+export function spawnNpcBullet(npcSys, npc, aim = null) {
 	const nosePos = { lon: npc.lon, lat: npc.lat, alt: npc.alt };
+	const heading = (aim && typeof aim.heading === 'number') ? aim.heading : npc.heading;
+	const pitch   = (aim && typeof aim.pitch   === 'number') ? aim.pitch   : npc.pitch;
 	const bullet = new Bullet(
 		npcSys.scene, npcSys.viewer, nosePos,
-		npc.heading, npc.pitch, npc.speed,
+		heading, pitch, npc.speed,
 		null, // onKill — NPC-on-NPC / NPC-on-player gun kills don't score
 		npc,
 	);

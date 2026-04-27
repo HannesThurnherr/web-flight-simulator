@@ -1,0 +1,40 @@
+{
+	"id": "sa-15-tor",
+	"name": "SA-15 Tor SHORAD",
+	"kind": "ground",
+	"model": "/assets/models/9k330-tor.glb",
+	"modelRotation": { "x": 0, "y": 0, "z": 0 },
+	"modelScale": 0.05,
+	"signature": "shorad",
+	"groundOffsetM": 0,
+	"sensors": {
+		"radar": {
+			"enabled": true,
+			"active": false,
+			"mode": "search",
+			"nominalRange": 25000,
+			"referenceRcs": 5,
+			"fovHalfHDeg": 180,
+			"fovHalfVDeg": 60,
+			"notchThreshold": 50
+		}
+	},
+	"pilot": {
+		"type": "static-sam",
+		"defaultParams": {
+			"missileType": "NASAMS-MSL",
+			"magazine": 8,
+			"salvoSize": 1,
+			"conserveLastN": 2,
+			"intraSalvoGapS": 1.5,
+			"perTargetReengageS": 14,
+			"maxInFlight": 4,
+			"minRangeM": 1500,
+			"maxRangeM": 12000,
+			"emcon": true,
+			"cueRangeM": 35000,
+			"emconHoldS": 4
+		}
+	},
+	"physicsOverrides": { "mass": 35000, "wingArea": 1 }
+}

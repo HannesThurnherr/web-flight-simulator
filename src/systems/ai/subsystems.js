@@ -38,8 +38,13 @@ export class CountermeasureSubsystem extends Subsystem {
 		super('CountermeasureSubsystem');
 		this.flareCount = opts.flares ?? 30;
 		this.chaffCount = opts.chaff  ?? 30;
-		this.minFlareInterval = opts.minFlareInterval ?? 0.25;
-		this.minChaffInterval = opts.minChaffInterval ?? 0.25;
+		// Per-burst cooldowns. Real CMDS doesn't have a meaningful
+		// cooldown — the dispenser fires as fast as the pilot can pull
+		// the button. The behavior layer already paces flare release
+		// (~1.5 s in MissileEvasionBehavior), so this just protects
+		// against same-frame double-triggers.
+		this.minFlareInterval = opts.minFlareInterval ?? 0.05;
+		this.minChaffInterval = opts.minChaffInterval ?? 0.05;
 		this._lastFlare = -Infinity;
 		this._lastChaff = -Infinity;
 	}
@@ -60,6 +65,21 @@ export class CountermeasureSubsystem extends Subsystem {
 		this._lastFlare = now;
 		return true;
 	}
+
+	// Dispense up to `count` flares as a programmed CMDS burst — one
+	// pull of the chaff/flare button on a real F-15 fires 4 cartridges
+	// over ~0.05 s. The cooldown check applies to the *burst* (so
+	// behaviors firing fireFlare every 1.5 s aren't gated per-cartridge),
+	// but the magazine drains by however many actually went out.
+	// Returns the number of flares dispensed.
+	consumeFlareBurst(now, count = 4) {
+		if (!this.canFlare(now)) return 0;
+		const n = Math.min(count, this.flareCount);
+		this.flareCount -= n;
+		this._lastFlare = now;
+		return n;
+	}
+
 	consumeChaff(now) {
 		if (!this.canChaff(now)) return false;
 		this.chaffCount--;
@@ -255,7 +275,11 @@ export class WeaponSubsystem extends Subsystem {
 		this.weapons = opts.weapons || [
 			{ type: 'AIM-120', ammo: 4, maxAmmo: 4, fireRate: 12.0, maxInFlight: 1,
 			  lastFire: -Infinity, minRange: 3000,  maxRange: 70000 },
-			{ type: 'AIM-9',   ammo: 2, maxAmmo: 2, fireRate: 3.0,  maxInFlight: 2,
+			// Default fighter NPCs carry AIM-9X (modern fleet baseline).
+			// AIM-9M is available as a separate sim type for legacy or
+			// adversary-air loadouts via the platform JSON's `weapons`
+			// override.
+			{ type: 'AIM-9X',  ammo: 2, maxAmmo: 2, fireRate: 3.0,  maxInFlight: 2,
 			  lastFire: -Infinity, minRange: 500,   maxRange: 9000  },
 			// Gun. Sits last so pickWeaponFor prefers missiles when both
 			// are in envelope, but falls through cleanly once missile

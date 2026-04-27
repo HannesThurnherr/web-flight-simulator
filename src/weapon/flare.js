@@ -1,6 +1,36 @@
 import * as THREE from 'three';
 import * as Cesium from 'cesium';
 
+// Module-level registry of all active flares in the world. IR seekers
+// query this once per frame to evaluate flare-vs-target signal and
+// decide whether to transfer lock. Flares register themselves in the
+// constructor and unregister on destroy().
+const _activeFlares = [];
+export function getActiveFlares() { return _activeFlares; }
+function _register(f)   { _activeFlares.push(f); }
+function _unregister(f) {
+	const i = _activeFlares.indexOf(f);
+	if (i >= 0) _activeFlares.splice(i, 1);
+}
+
+// Effective IR signal of a flare at a given age. Real MJU-7 / MJU-32
+// flares burn very hot for ~1 s, then taper. Peak ~3000 (compared to
+// fighter tailpipe ≈ 200) so it strongly outshines a target — but the
+// taper is fast, so a missile that can hold a half-second of CCM
+// integration generally rides through.
+const FLARE_PEAK_IR        = 3000;
+const FLARE_BURN_RAMP_S    = 0.15; // ignite to peak
+const FLARE_BURN_HOLD_S    = 0.85; // duration at peak
+const FLARE_BURN_TAPER_S   = 1.5;  // peak → near zero
+function flareIrAt(ageS) {
+	if (ageS < FLARE_BURN_RAMP_S) return FLARE_PEAK_IR * (ageS / FLARE_BURN_RAMP_S);
+	const t = ageS - FLARE_BURN_RAMP_S;
+	if (t < FLARE_BURN_HOLD_S) return FLARE_PEAK_IR;
+	const tt = t - FLARE_BURN_HOLD_S;
+	if (tt > FLARE_BURN_TAPER_S) return 0;
+	return FLARE_PEAK_IR * (1 - tt / FLARE_BURN_TAPER_S);
+}
+
 export class Flare {
 	constructor(scene, viewer, startPos, heading, pitch, speed) {
 		this.scene = scene;
@@ -19,6 +49,14 @@ export class Flare {
 		this.life = 4.0;
 		this.maxLife = 4.0;
 		this.active = true;
+
+		// IR-seeker-facing fields. Carried so a flare slots into the
+		// missile target-pick scoring without special cases. Velocity
+		// is essentially zero (the flare ejects aft and decelerates
+		// fast); for seeker geometry we just read lon/lat/alt.
+		this.signature = { unitClass: 'flare', irEmission: FLARE_PEAK_IR };
+		this._birthTime = performance.now() * 0.001;
+		_register(this);
 
 		this._scratchCartesian = new Cesium.Cartesian3();
 		this._scratchMatrix = new Cesium.Matrix4();
@@ -206,6 +244,21 @@ export class Flare {
 		}
 	}
 
+	// IR signal at the current time. Read by seekers via the flare's
+	// public `getEffectiveIr()`. Updates the live signature emission so
+	// any code that reads `flare.signature.irEmission` directly also
+	// gets the right scaled value.
+	getEffectiveIr() {
+		const age = performance.now() * 0.001 - this._birthTime;
+		const ir = flareIrAt(age);
+		this.signature.irEmission = ir;
+		return ir;
+	}
+
+	// Mirror Missile/Bullet interface — chaff used `get destroyed()`,
+	// flare uses the same so seeker filters work uniformly.
+	get destroyed() { return !this.active; }
+
 	destroy() {
 		this.active = false;
 		if (this.group) {
@@ -215,5 +268,6 @@ export class Flare {
 			this.scene.remove(t);
 		}
 		this.trail = [];
+		_unregister(this);
 	}
 }

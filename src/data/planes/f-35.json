@@ -13,8 +13,14 @@
 		"mass": 17000,
 		"wingArea": 42.7,
 		"cdZero": 0.019,
-		"controlCoef": { "pitch": 7.5, "roll": 8.5, "yaw": 2.5 }
+		"controlCoef": { "pitch": 7.5, "roll": 8.5, "yaw": 2.5 },
+		"alphaStallDeg": 19,
+		"clMaxStall": 1.65,
+		"postStallPlateau": 1.0,
+		"stallBlendDeg": 5,
+		"departureSusceptibility": 0.55
 	},
+	"irOverride": { "fov": 3.14159, "nominalRange": 50000 },
 	"hardpoints": [
 		{ "id": "bay-L-main",  "label": "Left Bay Main",       "type": "internal", "accepts": ["AAM", "AGM", "GBU"] },
 		{ "id": "bay-L-side",  "label": "Left Bay Side",       "type": "internal", "accepts": ["AAM"] },

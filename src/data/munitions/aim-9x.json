@@ -3,32 +3,37 @@
 	"name": "AIM-9X SIDEWINDER",
 	"shortName": "AIM-9X",
 	"category": "AAM",
-	"tags": ["aam", "wvr", "ir", "fox-2", "hobs"],
+	"tags": ["aam", "wvr", "iir", "fox-2", "hobs", "tv"],
 	"massKg": 85,
 	"rcsContributionM2": 0.01,
-	"description": "High off-boresight imaging IR seeker for within-visual-range dogfighting.",
-	"simType": "AIM-9",
+	"description": "Block II/III imaging IR Sidewinder. Thrust-vectoring tail control gives ~50 G turns post-launch and high-off-boresight (±90°) lockup. Focal-plane-array seeker discriminates aircraft silhouette from flare bloom — almost immune to traditional IR countermeasures.",
+	"simType": "AIM-9X",
 	"signature": "missile_ir",
-	"seekerType": "ir",
+	"seekerType": "iir",
 	"flight": {
 		"launchSpeedOffset": 50,
-		"boostDurationS": 4.0,
+		"boostDurationS": 5.0,
 		"boostAccel": 290,
-		"peakSpeed": 920,
+		"peakSpeed": 1000,
 		"minSpeed": 80,
-		"maxLifeS": 45,
-		"maxTurnDegPerSec": 80,
+		"maxLifeS": 60,
+		"maxTurnDegPerSec": 100,
 		"pnGain": 4.0,
-		"dragRef": 20,
-		"dragRefSpeed": 700,
-		"dragRefAltitude": 5000
+		"dragRef": 16,
+		"dragRefSpeed": 800,
+		"dragRefAltitude": 6000,
+		"vManeuverRef": 600,
+		"gAvailFloor": 0.20
 	},
 	"warhead": {
-		"killRadiusM": 10,
-		"fuzeSenseRadiusM": 20
+		"killRadiusM": 11,
+		"fuzeSenseRadiusM": 22
 	},
 	"seeker": {
 		"coneHalfAngleDeg": 90,
-		"maxG": 40
+		"maxG": 50,
+		"flareResistance": 0.92,
+		"trackRangeM": 25000,
+		"aspectIrEnabled": true
 	}
 }

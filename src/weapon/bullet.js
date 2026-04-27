@@ -3,6 +3,7 @@ import * as Cesium from 'cesium';
 import { movePosition } from '../utils/math';
 import { particles } from '../utils/particles';
 import { soundManager } from '../utils/soundManager';
+import { pushKill } from '../systems/eventLog.js';
 
 export class Bullet {
 	// `launcher` (optional) is the unit that fired this round. Used for
@@ -193,6 +194,13 @@ export class Bullet {
 	}
 
 	hitTarget(target) {
+		pushKill({
+			shooter: this.launcher,
+			target,
+			weapon:  'GUN',
+			at:      performance.now() * 0.001,
+			reason:  'kill',
+		});
 		target.destroyed = true;
 		if (this.onKill) this.onKill(target);
 		try {

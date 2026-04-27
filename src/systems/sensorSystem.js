@@ -83,22 +83,122 @@ const RWR_MEMORY            = 3.0;
 let _sensorScene = null;
 export function setSensorScene(scene) { _sensorScene = scene; }
 
-const _rayScratch   = { origin: new Cesium.Cartesian3(), direction: new Cesium.Cartesian3() };
-const _dirScratch   = new Cesium.Cartesian3();
+// ---- Multi-sample line-of-sight ---------------------------------------------
+//
+// The original implementation cast a single `globe.pick` ray. That works
+// for short, near-vertical LOS but fails on the long, slanted geometry
+// typical of BVR engagements: picks miss tile boundaries and return
+// false-clear when an actual ridge is occluding. The result was that
+// "go low" gave almost no defensive value — radars (and IR, and the
+// eyeball) routinely punched through mountains.
+//
+// Replacement: walk the chord between observer and target in N samples,
+// at each one compare the LOS altitude (linearly interpolated, with an
+// earth-curvature correction) against `globe.getHeight()` at that
+// lon/lat. Any sample where terrain rises above the LOS by more than
+// CLEARANCE_M flags the whole chord as masked.
+//
+// Why getHeight is faster than pick: pick does a per-frame ray vs the
+// terrain mesh (many triangle tests at the current LOD). getHeight is
+// a 2D height-map lookup against the cached tile pyramid — at typical
+// frame depth it's an order of magnitude cheaper. So 6-8 getHeights
+// is comfortably less work than one pick on slanted geometry, AND
+// produces a more reliable answer.
 
-function isTerrainBlocked(fromCart, toCart) {
-	if (!_sensorScene || !_sensorScene.globe) return false;
-	Cesium.Cartesian3.subtract(toCart, fromCart, _dirScratch);
-	const len = Cesium.Cartesian3.magnitude(_dirScratch);
-	if (len < 1) return false;
-	Cesium.Cartesian3.divideByScalar(_dirScratch, len, _dirScratch);
-	Cesium.Cartesian3.clone(fromCart, _rayScratch.origin);
-	Cesium.Cartesian3.clone(_dirScratch, _rayScratch.direction);
-	const hit = _sensorScene.globe.pick(_rayScratch, _sensorScene);
-	if (!hit) return false;
-	const hitDist = Cesium.Cartesian3.distance(fromCart, hit);
-	// Small epsilon so targets sitting right on the deck don't flag.
-	return hitDist < len - 5;
+const TERRAIN_LOS_SAMPLES = 6;
+const TERRAIN_LOS_CLEARANCE_M = 30;
+// 4/3·R_earth — the standard radar-refraction effective earth radius.
+// Atmospheric refraction bends radio waves slightly down so they reach
+// past the geometric horizon; this is the conventional first-order
+// correction. Visual / IR get a tiny bit *less* curvature benefit but
+// the difference at our ranges is small enough that we use the same
+// constant for all three channels.
+const R_EFF = 6371000 * (4 / 3);
+
+const _cartoEnd0 = new Cesium.Cartographic();
+const _cartoEnd1 = new Cesium.Cartographic();
+const _cartoSamp = new Cesium.Cartographic();
+
+// Walk the chord between two ECEF points and return the closest sample
+// at which terrain rises above the LOS (with curvature correction +
+// clearance margin). Returns null when the chord is clear, otherwise
+// `{ t, distance, terrainH, losAlt }` describing the obstruction:
+//   t          [0,1] fraction along the chord
+//   distance   metres along the chord from `fromCart` to the hit
+//   terrainH   terrain altitude at the sample
+//   losAlt     LOS altitude at the sample (terrainH > losAlt − margin)
+// Used directly by both the sensor occlusion check (just needs boolean)
+// and by Phase 3a's NPC forward-look terrain avoid (needs distance to
+// scale pull-up urgency).
+export function chordTerrainHit(fromCart, toCart, samples = TERRAIN_LOS_SAMPLES, clearanceM = TERRAIN_LOS_CLEARANCE_M) {
+	if (!_sensorScene || !_sensorScene.globe) return null;
+
+	const L = Cesium.Cartesian3.distance(fromCart, toCart);
+	if (L < 100) return null;
+
+	const fromC = Cesium.Cartographic.fromCartesian(fromCart, undefined, _cartoEnd0);
+	const toC   = Cesium.Cartographic.fromCartesian(toCart,   undefined, _cartoEnd1);
+	if (!fromC || !toC) return null;
+
+	const h0 = fromC.height;
+	const h1 = toC.height;
+	const dLon = toC.longitude - fromC.longitude;
+	const dLat = toC.latitude  - fromC.latitude;
+	const bulgeRef = (L * L) / (2 * R_EFF);
+
+	for (let i = 1; i < samples; i++) {
+		const t = i / samples;
+		_cartoSamp.longitude = fromC.longitude + t * dLon;
+		_cartoSamp.latitude  = fromC.latitude  + t * dLat;
+		_cartoSamp.height    = 0;
+
+		const terrainH = _sensorScene.globe.getHeight(_cartoSamp);
+		if (terrainH == null) continue;
+
+		const losAlt = h0 + t * (h1 - h0) - t * (1 - t) * bulgeRef;
+		if (terrainH > losAlt - clearanceM) {
+			return { t, distance: t * L, terrainH, losAlt };
+		}
+	}
+	return null;
+}
+
+export function isTerrainBlocked(fromCart, toCart) {
+	return chordTerrainHit(fromCart, toCart) !== null;
+}
+
+// Forward-look terrain check from a unit's current pose. Casts a chord
+// of length `lookAheadM` along the unit's heading + pitch; returns the
+// same {t, distance, terrainH, losAlt} shape as `chordTerrainHit`, or
+// null if the path is clear.
+//
+// Used by `ForwardTerrainAvoidBehavior`: if the chord hits terrain
+// within ~5-10 s of flight time, the NPC commands a pull-up scaled by
+// how close the impact is. This is what stops NPCs from flying into
+// ridges during evasion dives — the bare AGL check (in
+// `TerrainAvoidBehavior`) only fires once they're already committed.
+const _scratchFromCart = new Cesium.Cartesian3();
+const _scratchToCart   = new Cesium.Cartesian3();
+export function forwardLookTerrain(unit, lookAheadM = 5000, samples = 6, clearanceM = 50) {
+	if (!unit || lookAheadM <= 0) return null;
+	const headingDeg = unit.heading || 0;
+	const pitchDeg   = unit.pitch   || 0;
+	const headingRad = headingDeg * Math.PI / 180;
+	const pitchRad   = pitchDeg   * Math.PI / 180;
+
+	const R = 6371000;
+	const dLat = (lookAheadM * Math.cos(headingRad) * Math.cos(pitchRad)) / R;
+	const dLon = (lookAheadM * Math.sin(headingRad) * Math.cos(pitchRad))
+	           / (R * Math.cos(unit.lat * Math.PI / 180));
+	const dAlt = lookAheadM * Math.sin(pitchRad);
+
+	const toLon = unit.lon + (dLon * 180 / Math.PI);
+	const toLat = unit.lat + (dLat * 180 / Math.PI);
+	const toAlt = unit.alt + dAlt;
+
+	Cesium.Cartesian3.fromDegrees(unit.lon, unit.lat, unit.alt, undefined, _scratchFromCart);
+	Cesium.Cartesian3.fromDegrees(toLon,    toLat,    toAlt,    undefined, _scratchToCart);
+	return chordTerrainHit(_scratchFromCart, _scratchToCart, samples, clearanceM);
 }
 
 // ---- Helpers ---------------------------------------------------------------

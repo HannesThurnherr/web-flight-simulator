@@ -156,6 +156,50 @@ export class PlanePhysics {
 		// override this lower via physicsOverrides.cdZero.
 		this.cdZero = 0.022;
 
+		// ---- High-alpha aero parameters (Phase 7b) ---------------------------
+		// Per-airframe lift-curve shape — passed into liftCoefficient(). See
+		// aeroModel.js for the full model. F-15-ish defaults; F-22 / Su-class
+		// raise clMaxStall + postStallPlateau and stallBlendDeg to recover
+		// lift deep into post-stall.
+		this.alphaStallDeg     = 18;
+		this.clMaxStall        = 1.57;
+		this.postStallPlateau  = 1.0;
+		this.stallBlendDeg     = 5;
+
+		// Departure susceptibility — how violently the airframe yaws when
+		// driven past critical α at low V. Real high-alpha behaviour: vortex
+		// shedding becomes asymmetric → wing rock + nose slice. TV airframes
+		// (F-22) damp this through nozzle authority; clean-wing classics
+		// (F-15) depart hard. Scales a smoothly-varying pseudo-noise yaw
+		// kick whose magnitude grows past α_stall and dies above ~250 m/s
+		// (where aero stability dominates anyway).
+		this.departureSusceptibility = 0.6;
+		this._departurePhase = Math.random() * Math.PI * 2;
+
+		// Control authority floor — small constant moment-per-stick term
+		// that does NOT scale with q̄. Real elevator/aileron retain a sliver
+		// of authority at near-zero airspeed via prop/jet wash and (in fly-
+		// by-wire jets) the FCS reflexively going to large deflections.
+		// Without this the aircraft is utterly uncontrollable below ~80 kts;
+		// with it the pilot can still nudge attitude while recovering from
+		// a botched high-alpha maneuver.
+		this.controlAuthorityFloor = { pitch: 1500, roll: 1200, yaw: 600 }; // N·m at full stick
+
+		// ---- Thrust vectoring (Phase 7a) -------------------------------------
+		// Adds a thrust-based moment that does NOT depend on dynamic pressure
+		// — survives at low V where aero controls have died. Off by default
+		// (null); set per-plane via physicsOverrides.tv.
+		//
+		//   axes      'pitch' | 'pitchYaw'   which axes get TV
+		//   authority effective moment arm × Cm_δ in metres. Moment is
+		//             M_tv = thrust · authority · stick.
+		//             Sample: F-22 ≈ 2.0 m (±20° nozzle, ~6 m moment arm).
+		//   vMax      airspeed (m/s) at which TV authority has fully faded
+		//             — above this aero surfaces dominate and the nozzles
+		//             return to neutral for thrust efficiency. Default 220.
+		//   fadeBand  m/s window over which fade goes from 1 → 0. Default 60.
+		this.tv = null;
+
 		// ----- Runtime state
 		this.position = null; // managed by main.js via lon/lat/alt; kept null here
 		this.velocity = new THREE.Vector3(0, 0, 0); // world-frame ENU, m/s
@@ -192,6 +236,11 @@ export class PlanePhysics {
 		this.alpha = 0;      // angle of attack (rad)
 		this.beta  = 0;      // sideslip (rad)
 		this.loadFactor = 1; // current vertical G (lift/weight)
+
+		// Thrust-vectoring nozzle deflection (rad), as actually commanded
+		// after the airspeed fade. Exposed so the flame renderer can rotate
+		// the exhaust plume in sync. Pitch up (nose-up command) is positive.
+		this.tvDeflection = { pitch: 0, yaw: 0 };
 
 		// Scratch vectors to avoid per-frame allocation.
 		this._scratch = {
@@ -258,6 +307,32 @@ export class PlanePhysics {
 		}
 		if (typeof o.gSoftLimit === 'number') this.gSoftLimit = o.gSoftLimit;
 		if (typeof o.gHardLimit === 'number') this.gHardLimit = o.gHardLimit;
+
+		// High-alpha lift-curve shape (Phase 7b).
+		if (typeof o.alphaStallDeg    === 'number') this.alphaStallDeg    = o.alphaStallDeg;
+		if (typeof o.clMaxStall       === 'number') this.clMaxStall       = o.clMaxStall;
+		if (typeof o.postStallPlateau === 'number') this.postStallPlateau = o.postStallPlateau;
+		if (typeof o.stallBlendDeg    === 'number') this.stallBlendDeg    = o.stallBlendDeg;
+
+		if (typeof o.departureSusceptibility === 'number') {
+			this.departureSusceptibility = o.departureSusceptibility;
+		}
+		if (o.controlAuthorityFloor) {
+			const f = o.controlAuthorityFloor;
+			if (typeof f.pitch === 'number') this.controlAuthorityFloor.pitch = f.pitch;
+			if (typeof f.roll  === 'number') this.controlAuthorityFloor.roll  = f.roll;
+			if (typeof f.yaw   === 'number') this.controlAuthorityFloor.yaw   = f.yaw;
+		}
+
+		// Thrust vectoring (Phase 7a).
+		if (o.tv) {
+			this.tv = {
+				axes: o.tv.axes === 'pitchYaw' ? 'pitchYaw' : 'pitch',
+				authority: typeof o.tv.authority === 'number' ? o.tv.authority : 2.0,
+				vMax:      typeof o.tv.vMax      === 'number' ? o.tv.vMax      : 220,
+				fadeBand:  typeof o.tv.fadeBand  === 'number' ? o.tv.fadeBand  : 60,
+			};
+		}
 	}
 
 	// Called by main.js when entering FLYING. Seeds the integrator with a
@@ -328,6 +403,7 @@ export class PlanePhysics {
 			beta:  this.beta,         // rad, sideslip
 			loadFactor: this.loadFactor, // G (lift / weight), ≈1 in level flight
 			gLimiterActive: this.gLimiterActive,
+			tvDeflection: this.tvDeflection, // {pitch, yaw} radians, 0 if no TV
 		};
 	}
 
@@ -364,7 +440,12 @@ export class PlanePhysics {
 			this.alpha = Math.atan2(-S.vBody.z, S.vBody.y);
 			this.beta  = Math.asin(THREE.MathUtils.clamp(S.vBody.x / V, -1, 1));
 
-			const CL = liftCoefficient(this.alpha);
+			const CL = liftCoefficient(this.alpha, {
+				alphaStallRad:    this.alphaStallDeg * Math.PI / 180,
+				clMaxStall:       this.clMaxStall,
+				postStallPlateau: this.postStallPlateau,
+				stallBlendRad:    this.stallBlendDeg * Math.PI / 180,
+			});
 			const CD = dragCoefficient(CL, this.alpha, this.beta, this.cdZero);
 			const CY = sideForceCoefficient(this.beta);
 
@@ -431,6 +512,69 @@ export class PlanePhysics {
 			this.inputSign.y * input.roll  * this.controlCoef.y * q,
 			this.inputSign.z * input.yaw   * this.controlCoef.z * q,
 		);
+
+		// ---- Control-authority floor (Phase 7b) --------------------------
+		// Small q̄-independent moment so elevator/aileron/rudder do
+		// *something* at near-zero airspeed (jet wash, FCS authority).
+		// Lets the pilot recover attitude after a botched cobra instead
+		// of helplessly tumbling to the ground.
+		const floor = this.controlAuthorityFloor;
+		S.moment.x += this.inputSign.x * pitchInput  * floor.pitch;
+		S.moment.y += this.inputSign.y * input.roll  * floor.roll;
+		S.moment.z += this.inputSign.z * input.yaw   * floor.yaw;
+
+		// ---- Thrust vectoring (Phase 7a) ---------------------------------
+		// Thrust-based pitch (and optionally yaw) moment, faded by airspeed
+		// so it dominates only at low V where aero authority has died.
+		// At V > vMax + fadeBand the nozzles are neutral and the airframe
+		// flies on aero surfaces alone.
+		if (this.tv) {
+			const tvFade = THREE.MathUtils.clamp(
+				1 - (V - this.tv.vMax) / Math.max(1e-3, this.tv.fadeBand),
+				0, 1,
+			);
+			if (tvFade > 0) {
+				const tvMoment = thrustMag * this.tv.authority * tvFade;
+				S.moment.x += this.inputSign.x * pitchInput * tvMoment;
+				if (this.tv.axes === 'pitchYaw') {
+					S.moment.z += this.inputSign.z * input.yaw * tvMoment;
+				}
+				// Effective nozzle deflection for the flame renderer.
+				// MAX_NOZZLE = 20° matches F-119 thrust-vectoring spec.
+				const MAX_NOZZLE = 20 * Math.PI / 180;
+				this.tvDeflection.pitch = pitchInput * tvFade * MAX_NOZZLE;
+				this.tvDeflection.yaw = (this.tv.axes === 'pitchYaw')
+					? input.yaw * tvFade * MAX_NOZZLE
+					: 0;
+			} else {
+				this.tvDeflection.pitch = 0;
+				this.tvDeflection.yaw = 0;
+			}
+		} else {
+			this.tvDeflection.pitch = 0;
+			this.tvDeflection.yaw = 0;
+		}
+
+		// ---- Departure / wing-rock at high alpha (Phase 7b) --------------
+		// Past critical α at non-trivial airspeed, asymmetric vortex
+		// shedding gives the airframe a yaw kick (and a smaller roll
+		// kick — wing rock). Cheaper than a real CFD model: a smoothly
+		// varying pseudo-noise sourced from the integrator's accumulated
+		// "phase". Magnitude scales with how far past stall we are and
+		// dies above ~250 m/s where stable aero takes over.
+		const alphaStallRad = this.alphaStallDeg * Math.PI / 180;
+		const alphaExcess = Math.abs(this.alpha) - alphaStallRad;
+		if (alphaExcess > 0 && this.departureSusceptibility > 0) {
+			this._departurePhase += dt * 6.0; // ~1 Hz wing-rock-ish
+			const excessFactor = Math.min(1, alphaExcess / (15 * Math.PI / 180));
+			const speedFactor  = Math.max(0, 1 - V / 250);
+			// Treat departureSusceptibility as a dimensionless yaw-moment
+			// coefficient and scale by q̄·S to land in N·m.
+			const kick = this.departureSusceptibility * excessFactor * speedFactor
+			           * q * this.wingArea * 0.5;
+			S.moment.z += kick * Math.sin(this._departurePhase);
+			S.moment.y += kick * 0.4 * Math.sin(this._departurePhase * 1.7 + 1.3);
+		}
 
 		// Aerodynamic rate damping scales with ρV (linear in airspeed).
 		// At V=0 this is zero — airframe tumbles freely, which is physically

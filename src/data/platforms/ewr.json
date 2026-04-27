@@ -1,0 +1,24 @@
+{
+	"id": "ewr",
+	"name": "Early-Warning Radar",
+	"kind": "ground",
+	"model": "/assets/models/96l6e-radar.glb",
+	"modelRotation": { "x": 0, "y": 0, "z": 0 },
+	"modelScale": 0.01,
+	"signature": "ewr",
+	"groundOffsetM": 0,
+	"sensors": {
+		"radar": {
+			"enabled": true,
+			"active": true,
+			"mode": "search",
+			"nominalRange": 250000,
+			"referenceRcs": 5,
+			"fovHalfHDeg": 180,
+			"fovHalfVDeg": 70,
+			"notchThreshold": 50
+		}
+	},
+	"pilot": { "type": "ewr" },
+	"physicsOverrides": { "mass": 80000, "wingArea": 1 }
+}

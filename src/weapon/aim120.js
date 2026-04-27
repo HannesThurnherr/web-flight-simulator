@@ -6,9 +6,10 @@ import { soundManager } from '../utils/soundManager';
 import { Missile } from './missile';
 import { SIGNATURES } from '../systems/signatures';
 import { detectRadar } from '../systems/sensorSystem';
+import { pushKill } from '../systems/eventLog.js';
 import { airDensity, GRAVITY } from '../plane/aeroModel.js';
 import { getTeamDatalink } from '../systems/teamDatalink.js';
-import { cloneAim120Template } from './missileModels.js';
+import { cloneAim120Template, cloneMissileTemplate } from './missileModels.js';
 
 const AIM120_SIGNATURE = SIGNATURES.missile_radar;
 
@@ -50,6 +51,8 @@ const DEFAULT_AIM120_DATA = {
 		dragRef: 8,
 		dragRefSpeed: 1000,
 		dragRefAltitude: 10000,
+		vManeuverRef: 600,
+		gAvailFloor: 0.05,
 	},
 	warhead: {
 		killRadiusM: 15,
@@ -67,9 +70,12 @@ const DEFAULT_AIM120_DATA = {
 		nominalDetectRangeM: 25000,
 		referenceRcs: 5,
 		notchThresholdAcquire: 30,
-		notchThresholdTrack: 15,
-		lockDropTimeoutS: 1.5,
+		notchThresholdTrack: 25,
+		lockDropTimeoutS: 2.5,
 		reacquireIntervalS: 0.25,
+		reacquireBackoffMul: 2.0,
+		reacquireMaxIntervalS: 4.0,
+		reacquireMaxAttempts: 5,
 		datalink: true,
 	},
 };
@@ -173,13 +179,25 @@ export class AIM120 extends Missile {
 	initAMRAAMMesh() {
 		this.mesh = new THREE.Group();
 
-		// Prefer the real AIM-120C GLB model; fall back to the procedural
-		// AMRAAM shape (cylinder + long mid-body strakes + rear fins) if
-		// the GLB fetch hasn't landed yet. The procedural path was the
-		// original mesh build — kept verbatim so the visual identity of
-		// first-frame-after-boot shots is preserved.
-		const templated = cloneAim120Template();
-		const bodyLen = templated ? 3.66 : 3.65;
+		// Read the live munition data via `this.data` — the destructured
+		// `d` from the constructor isn't in scope inside this method.
+		// (Earlier version referenced `d.modelTemplate` here and threw
+		// on every fire of an AMRAAM-class missile, with the side-effect
+		// of having already decremented ammo: classic "fired one and
+		// the count went to zero" bug.)
+		const d = this.data || {};
+
+		// Prefer the real GLB model. Munition JSONs specifying a non-
+		// default shape (e.g. Meteor with its ramjet intakes) use
+		// `modelTemplate: "meteor"` and dispatch through the generic
+		// helper; everything else uses the AIM-120 template. Fall back
+		// to the procedural AMRAAM shape (cylinder + long mid-body
+		// strakes + rear fins) if no GLB is loaded yet so first-frame-
+		// after-boot shots still render.
+		const templated = d.modelTemplate
+			? cloneMissileTemplate(d.modelTemplate)
+			: cloneAim120Template();
+		const bodyLen = templated ? (d.realLengthM ?? 3.66) : 3.65;
 		const radius  = 0.09; // 178 mm diameter → 89 mm radius (for fallback fins/flame scaling)
 		if (templated) {
 			this.mesh.add(templated);
@@ -592,45 +610,56 @@ export class AIM120 extends Missile {
 		const observer = this._seekerObserver();
 
 		// Case A: we have a target — can we still see it?
-		// Use the *tracking* radar config (notch off), not the acquisition
-		// one. Once we have lock, inertial integration carries the seeker
-		// through brief Doppler nulls; only hard-physical losses (out of
-		// FOV, out of range, terrain-masked) should break track here.
+		// Use the *tracking* radar config (wider notch). Once we have
+		// lock, inertial integration carries the seeker through brief
+		// Doppler nulls; only hard-physical losses (out of FOV, out of
+		// range, terrain-masked, deep notch) should break track here.
 		if (this.target && !this.target.destroyed && this.target.active !== false) {
 			const det = detectRadar(observer, this.target, this._seekerRadarTrack);
 			if (det) {
 				this._lockLostTimer = 0;
-				// Clear maddog if the target popped back into view.
+				this._reacqAttempt = 0;
+				this._reacqTimer = 0;
 				this.maddog = false;
 				return;
 			}
 		}
 
-		// Case B: target gone or undetected this frame. Accumulate timer.
+		// Case B: target gone, destroyed, or undetected this frame.
+		// Accumulate the lock-lost timer and run the reacquire scan on
+		// an exponentially backed-off cadence — first retry comes fast
+		// (0.25 s) so a brief notch blip recovers cleanly, but a target
+		// that holds beam through 4 attempts is genuinely lost.
 		this._lockLostTimer = (this._lockLostTimer || 0) + dt;
+		this._reacqTimer    = (this._reacqTimer    || 0) + dt;
+		this._reacqAttempt  = this._reacqAttempt   ?? 0;
 
-		// Always try to reacquire periodically — both while the timer is
-		// below LOCK_DROP_TIMEOUT (to snap back immediately if the
-		// original comes out of the notch) and after we've gone maddog
-		// (to recover from a sustained loss). The seeker preferring the
-		// DL-track-closest candidate means we usually pick the original
-		// bogey again.
-		this._reacqTimer = (this._reacqTimer || 0) + dt;
-		if (this._reacqTimer >= this.data.seeker.reacquireIntervalS) {
+		const seeker     = this.data.seeker;
+		const baseIv     = seeker.reacquireIntervalS    ?? 0.25;
+		const backoffMul = seeker.reacquireBackoffMul   ?? 2.0;
+		const maxIv      = seeker.reacquireMaxIntervalS ?? 4.0;
+		const maxAttempts= seeker.reacquireMaxAttempts  ?? 5;
+
+		const nextIv = Math.min(maxIv, baseIv * Math.pow(backoffMul, this._reacqAttempt));
+
+		if (this._reacqAttempt < maxAttempts && this._reacqTimer >= nextIv) {
 			this._reacqTimer = 0;
+			this._reacqAttempt++;
 			const picked = this._scanForLock(allTargets);
 			if (picked) {
 				this.target = picked;
 				this._lockLostTimer = 0;
+				this._reacqAttempt = 0;
 				this.maddog = false;
 				return;
 			}
 		}
 
 		// Still no detection and the drop timer has elapsed → maddog.
-		// Guidance will fall through to DR on the last DL track; the
-		// reacquire loop above keeps trying to climb back out.
-		if (this._lockLostTimer >= this.data.seeker.lockDropTimeoutS && !this.maddog) {
+		// Guidance falls through to dead-reckoning on the last DL track.
+		// Once we're past maxAttempts the reacquire scan no longer
+		// fires, so a target that beat the back-off window stays beaten.
+		if (this._lockLostTimer >= seeker.lockDropTimeoutS && !this.maddog) {
 			this.maddog = true;
 		}
 	}
@@ -707,8 +736,22 @@ export class AIM120 extends Missile {
 		while (dH >  180) dH -= 360;
 		const dP = desiredPitch - this.pitch;
 
-		const cap = (this.data.flight.maxTurnDegPerSec ?? 40) * dt;
-		const pn  =  this.data.flight.pnGain ?? 4.0;
+		// Speed-dependent turn cap — see missile.js for the rationale.
+		// G_avail scales with (V/V_ref)² so a coasting AMRAAM in the
+		// terminal phase pulls a small fraction of its rated 40 G and is
+		// trivially out-turned by a 25°/s fighter pull. The design-Mach
+		// for AMRAAM-class missiles is ~Mach 2 (≈ 600 m/s); at and above
+		// that we cap at the rated maxTurnDegPerSec.
+		const maxG    = 40;
+		const vRef    = this.data.flight?.vManeuverRef ?? 600;
+		const gFloor  = this.data.flight?.gAvailFloor ?? 0.05;
+		const qFactor = Math.min(1, Math.max(gFloor, (this.speed * this.speed) / (vRef * vRef)));
+		const gAvail  = maxG * qFactor;
+		const turnRadPerS = (gAvail * 9.81) / Math.max(50, this.speed);
+		const turnDegPerS = Cesium.Math.toDegrees(turnRadPerS);
+		const ratedCap    = this.data.flight.maxTurnDegPerSec ?? 40;
+		const cap = Math.min(ratedCap, turnDegPerS) * dt;
+		const pn  = this.data.flight.pnGain ?? 4.0;
 		this.heading += THREE.MathUtils.clamp(dH * pn * dt, -cap, cap);
 		this.pitch   += THREE.MathUtils.clamp(dP * pn * dt, -cap, cap);
 		this.pitch   = THREE.MathUtils.clamp(this.pitch, -85, 85);
@@ -744,6 +787,13 @@ export class AIM120 extends Missile {
 	}
 
 	hitNPC(npc) {
+		pushKill({
+			shooter: this.launcher,
+			target:  npc,
+			weapon:  this.type || 'AIM-120',
+			at:      performance.now() * 0.001,
+			reason:  'kill',
+		});
 		npc.destroyed = true;
 		if (this.onKill) this.onKill(npc);
 		try {

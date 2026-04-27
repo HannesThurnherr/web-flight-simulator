@@ -85,10 +85,11 @@ export function buildScenarioFromJson(data) {
 			// to 0 (guns are always infinite and are left alone). Lets a
 			// scenario say "guns only" without touching the weapon registry.
 			if (data.playerLoadout && weaponSystem && Array.isArray(weaponSystem.weapons)) {
+				const norm = _normalizeLoadoutKeys(data.playerLoadout);
 				for (const w of weaponSystem.weapons) {
 					if (!w || w.ammo === Infinity) continue;
 					const key = w.type || w.id;
-					const n = data.playerLoadout[key] || 0;
+					const n = norm[key] || 0;
 					w.ammo = n;
 					w.maxAmmo = n;
 				}
@@ -154,18 +155,43 @@ export function buildScenarioFromJson(data) {
 	};
 }
 
+// Translate legacy scenario-loadout keys to current simTypes so older
+// JSONs (and externally-authored scenarios written before the AIM-9
+// → AIM-9M / AIM-9X split) keep working without touching their files.
+// `"AIM-9"` was the generic Sidewinder slot before Phase 2 distinguished
+// the reticle (AIM-9M) and imaging-IR (AIM-9X) variants. Modern fleet
+// default → map to AIM-9X.
+const LEGACY_LOADOUT_ALIASES = {
+	'AIM-9': 'AIM-9X',
+};
+function _normalizeLoadoutKeys(loadout) {
+	if (!loadout) return loadout;
+	let dirty = false;
+	for (const k of Object.keys(loadout)) {
+		if (LEGACY_LOADOUT_ALIASES[k]) { dirty = true; break; }
+	}
+	if (!dirty) return loadout;
+	const out = {};
+	for (const [k, v] of Object.entries(loadout)) {
+		const k2 = LEGACY_LOADOUT_ALIASES[k] || k;
+		out[k2] = (out[k2] || 0) + v;
+	}
+	return out;
+}
+
 // Apply a per-NPC loadout after spawn. Loadout is a map of simType →
-// ammo count (e.g. `{ "AIM-9": 4, "AIM-120": 0 }`). Any simType not
-// listed defaults to 0 — so `{ "AIM-9": 4 }` produces a WVR-only
+// ammo count (e.g. `{ "AIM-9X": 4, "AIM-120": 0 }`). Any simType not
+// listed defaults to 0 — so `{ "AIM-9X": 4 }` produces a WVR-only
 // wingman carrying 4 Sidewinders and no AMRAAMs. Leaves the gun alone
 // (it's always infinite).
 function applyNpcLoadout(npc, loadout) {
 	if (!npc || !loadout) return;
 	const ws = npc.pilot && npc.pilot.subsystems && npc.pilot.subsystems.weapons;
 	if (!ws || !Array.isArray(ws.weapons)) return;
+	const norm = _normalizeLoadoutKeys(loadout);
 	for (const w of ws.weapons) {
 		if (!w.type || w.ammo === Infinity) continue;
-		const n = loadout[w.type] || 0;
+		const n = norm[w.type] || 0;
 		w.ammo = n;
 		w.maxAmmo = n;
 	}

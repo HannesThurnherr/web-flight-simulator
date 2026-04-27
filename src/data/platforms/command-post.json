@@ -1,0 +1,13 @@
+{
+	"id": "command-post",
+	"name": "Forward Command Post",
+	"kind": "ground",
+	"model": "/assets/models/barracks.glb",
+	"modelRotation": { "x": 0, "y": 0, "z": 0 },
+	"modelScale": 0.008,
+	"signature": "command_post",
+	"groundOffsetM": 0,
+	"sensors": {},
+	"pilot": { "type": "static-target" },
+	"physicsOverrides": { "mass": 50000, "wingArea": 1 }
+}

@@ -3,9 +3,11 @@ import * as Cesium from 'cesium';
 import { movePosition } from '../utils/math';
 import { particles } from '../utils/particles';
 import { soundManager } from '../utils/soundManager';
-import { SIGNATURES } from '../systems/signatures';
+import { SIGNATURES, irAspectFactor, aspectAngleFromVectors } from '../systems/signatures';
+import { getActiveFlares } from './flare.js';
 import { airDensity, GRAVITY } from '../plane/aeroModel.js';
-import { cloneAim9Template } from './missileModels.js';
+import { cloneAim9Template, cloneMissileTemplate } from './missileModels.js';
+import { pushKill } from '../systems/eventLog.js';
 
 // Shared signature reference (not per-missile copy) — all live AIM-9s have
 // the same sensor profile. Subclasses (AIM-120) overwrite this in their ctor.
@@ -123,12 +125,15 @@ export class Missile {
 	initMesh() {
 		this.mesh = new THREE.Group();
 
-		// Prefer the real AIM-9 GLB model; fall back to the original
-		// procedural build if the async GLB fetch hasn't landed yet
-		// (first few missiles fired at boot time). Subclasses (AIM120)
-		// override the entire initMesh path and don't hit this branch.
-		const templated = cloneAim9Template();
-		const bodyLen = templated ? 3.02 : 2.6;
+		// Pick the GLB template: data.modelTemplate (e.g. 'agm-88',
+		// 'meteor') wins, AIM-9 fallback otherwise. The procedural body
+		// is the second-fall fallback for first-frame-after-boot shots
+		// before the GLB has downloaded.
+		const d = this.data || {};
+		const templated = d.modelTemplate
+			? cloneMissileTemplate(d.modelTemplate)
+			: cloneAim9Template();
+		const bodyLen = templated ? (d.realLengthM ?? 3.02) : 2.6;
 		if (templated) {
 			this.mesh.add(templated);
 		} else {
@@ -304,6 +309,15 @@ export class Missile {
 			this.pitch = Math.max(-85, Math.min(85, this.pitch));
 		}
 
+		// ---- IR seeker re-evaluation ---------------------------------------
+		// Real IR missiles continuously evaluate the brightest hot source
+		// in their cone. Flares can outshine an aircraft tailpipe by
+		// 10× — a reticle seeker (AIM-9M) usually breaks lock onto the
+		// flare; an imaging-IR seeker (AIM-9X) discriminates the
+		// aircraft silhouette and rides through. seekerType + the
+		// per-missile flareResistance drive that distinction.
+		this._irRecheck(npcs, dt);
+
 		// ---- Guidance -----------------------------------------------------
 		if (this.target && !this.target.destroyed && !this.lostLock) {
 			this._guide(dt);
@@ -348,7 +362,14 @@ export class Missile {
 		// target. Fires when range has stopped decreasing and we're inside
 		// the fuze envelope — catches the high-speed fly-by misses that the
 		// strict swept-segment check above rejects by a few metres.
-		if (this.target && !this.target.destroyed) {
+		//
+		// Don't trigger on a flare lock: a contact fuze doesn't fire on
+		// a magnesium ember, and an active fuze isn't expecting a
+		// pinpoint-hot point source. The missile flies through the
+		// flare bloom and either reacquires (handled in _irRecheck) or
+		// goes ballistic.
+		const isFlareLock = this.target?.signature?.unitClass === 'flare';
+		if (this.target && !this.target.destroyed && !isFlareLock) {
 			const dSq = this.calculateDistSqToNPC(this.target);
 			if (dSq < fuzeRadiusSq &&
 				this._prevTargetDistSq !== undefined &&
@@ -445,13 +466,28 @@ export class Missile {
 		while (dH >  180) dH -= 360;
 		const dP = desiredPitch - this.pitch;
 
-		// G-limited turn cap: ω_max = (G · g) / V. At 860 m/s this is ~27°/s
-		// (40 G head-on is hard!), dropping to ~75°/s at 300 m/s coast. This
-		// is what makes high-speed crossing shots difficult and tail-chase
-		// shots cheap — same asymmetry real BVR/WVR gunners feel.
-		const maxG = this.data.seeker?.maxG ?? 40;
-		const pnGain = this.data.flight?.pnGain ?? 4.0;
-		const maxTurnRadPerS = (maxG * 9.81) / Math.max(50, this.speed);
+		// G-limited turn cap with realistic dynamic-pressure scaling.
+		//
+		// Real lateral force: F_lat = ½·ρ·V²·S·CN_max → so the missile's
+		// *available* G scales with V². A bled-out missile can't pull its
+		// rated maxG; below ~Mach 1 the body simply can't generate enough
+		// lift. Above the design speed (V_ref) the airframe is structure-
+		// limited at maxG (anything over peaks the wings).
+		//
+		//   G_avail = maxG · clamp((V/V_ref)², gFloor, 1)
+		//   ω_max   = G_avail · g / max(V, 50)
+		//
+		// At V=600 (≈ Mach 2): G=40, ω≈37°/s. At V=200: G≈4.4, ω≈12°/s —
+		// trivially out-turned by a fighter pulling 25°/s. The "bled-out
+		// missile passes harmlessly" effect is now kinematic, not
+		// warhead-dependent.
+		const maxG    = this.data.seeker?.maxG  ?? 40;
+		const pnGain  = this.data.flight?.pnGain ?? 4.0;
+		const vRef    = this.data.flight?.vManeuverRef ?? 500;
+		const gFloor  = this.data.flight?.gAvailFloor ?? 0.05;
+		const qFactor = Math.min(1, Math.max(gFloor, (this.speed * this.speed) / (vRef * vRef)));
+		const gAvail  = maxG * qFactor;
+		const maxTurnRadPerS = (gAvail * 9.81) / Math.max(50, this.speed);
 		const capDeg         = Cesium.Math.toDegrees(maxTurnRadPerS) * dt;
 
 		this.heading += Math.max(-capDeg, Math.min(capDeg, dH * pnGain * dt));
@@ -620,7 +656,172 @@ export class Missile {
 		return dLon * dLon + dLat * dLat + dAlt * dAlt;
 	}
 
+	// Score an IR emitter (aircraft or flare) from this missile's frame.
+	// Returns 0 if the source is outside cone or range. Otherwise returns
+	// inverse-square-scaled signal: brighter / closer / better-aspect →
+	// higher score. Aspect coupling is on for aircraft (tailpipe much
+	// stronger than head-on) and off for flares (isotropic emitters).
+	_irScore(u, coneHalfRad, trackRange, aspectEnabled) {
+		if (!u) return 0;
+		const cosLat = Math.cos(this.lat * Math.PI / 180);
+		const dE = (u.lon - this.lon) * 111320 * cosLat;
+		const dN = (u.lat - this.lat) * 111320;
+		const dU = (u.alt - this.alt);
+		const range = Math.sqrt(dE * dE + dN * dN + dU * dU);
+		if (range < 1) return 0;
+		if (range > trackRange) return 0;
+
+		// Missile body-forward in ENU — same construction the rest of
+		// the guidance code uses.
+		const hRad = this.heading * Math.PI / 180;
+		const pRad = this.pitch   * Math.PI / 180;
+		const fwdE = Math.sin(hRad) * Math.cos(pRad);
+		const fwdN = Math.cos(hRad) * Math.cos(pRad);
+		const fwdU = Math.sin(pRad);
+		const losE = dE / range;
+		const losN = dN / range;
+		const losU = dU / range;
+		const cosAngle = fwdE * losE + fwdN * losN + fwdU * losU;
+		if (cosAngle < Math.cos(coneHalfRad)) return 0; // outside cone
+
+		// Raw IR signal. Flares update theirs each frame via getEffectiveIr.
+		let ir = 0;
+		if (typeof u.getEffectiveIr === 'function') ir = u.getEffectiveIr();
+		else if (u.signature) ir = u.signature.irEmission || 0;
+		if (ir <= 0) return 0;
+
+		// Aspect coupling: aircraft tailpipe is ~10× stronger than the
+		// head-on signature — rear-quarter shots are why an AIM-9 is
+		// such a deadly chase weapon. Flares emit isotropically so
+		// we skip aspect for them.
+		let aspectMul = 1.0;
+		if (aspectEnabled && u.signature && u.signature.unitClass !== 'flare') {
+			const tH = (u.heading || 0) * Math.PI / 180;
+			const tP = (u.pitch   || 0) * Math.PI / 180;
+			const tFwd = {
+				x: Math.sin(tH) * Math.cos(tP),
+				y: Math.cos(tH) * Math.cos(tP),
+				z: Math.sin(tP),
+			};
+			const aspect = aspectAngleFromVectors({ x: losE, y: losN, z: losU }, tFwd);
+			aspectMul = irAspectFactor(aspect);
+		}
+
+		return (ir * aspectMul) / (range * range);
+	}
+
+	// IR seeker re-evaluation tick. Throttled to 10 Hz so the per-tick
+	// transfer probability is well-defined. Compares the current target
+	// against the brightest live flare in cone+range; if a flare wins,
+	// dice-roll on `1 - flareResistance` to actually transfer lock.
+	//
+	// Per-tick transfer probability is `(1 - flareResistance) * 0.1`.
+	// Worked example for a 1-second flare burn (10 ticks):
+	//   AIM-9M (flareResistance 0.10) → P(no break) = 0.91^10 ≈ 0.39
+	//                                  → ~61% chance the flare decoys it
+	//   AIM-9X (flareResistance 0.92) → P(no break) = 0.992^10 ≈ 0.92
+	//                                  → ~8% chance, near-immune as advertised
+	//
+	// Also handles graceful fallback: if the current lock is a dead
+	// flare or a destroyed aircraft, re-scan the targets list for any
+	// hostile in cone+range and re-acquire to that.
+	_irRecheck(targets, dt) {
+		const seekerType = this.data.seekerType;
+		if (seekerType !== 'ir' && seekerType !== 'iir') return;
+		if (!this.active || this.lostLock) return;
+
+		this._irCheckTimer = (this._irCheckTimer || 0) + dt;
+		if (this._irCheckTimer < 0.1) return;
+		this._irCheckTimer = 0;
+
+		const seeker = this.data.seeker || {};
+		const coneHalfRad   = (seeker.coneHalfAngleDeg ?? 30) * Math.PI / 180;
+		const trackRange    =  seeker.trackRangeM       ?? 12000;
+		const aspectEnabled =  seeker.aspectIrEnabled   !== false;
+		const flareResist   =  seeker.flareResistance   ?? 0.3;
+
+		// Score current target if it's still alive and an aircraft.
+		// A dead-flare lock or destroyed aircraft scores 0 → we'll fall
+		// back to re-acquisition below.
+		const tgtAlive = this.target && !this.target.destroyed && this.target.active !== false;
+		const tgtIsFlare = this.target?.signature?.unitClass === 'flare';
+		let tgtScore = 0;
+		if (tgtAlive && !tgtIsFlare) {
+			tgtScore = this._irScore(this.target, coneHalfRad, trackRange, aspectEnabled);
+		} else if (tgtAlive && tgtIsFlare) {
+			// Already locked on a flare — keep tracking until it dies,
+			// then the fallback below will try to re-acquire.
+			return;
+		}
+
+		// Brightest flare in cone+range.
+		const flares = getActiveFlares();
+		let bestFlare = null;
+		let bestFlareScore = 0;
+		for (let i = 0; i < flares.length; i++) {
+			const f = flares[i];
+			if (!f || !f.active) continue;
+			const s = this._irScore(f, coneHalfRad, trackRange, false);
+			if (s > bestFlareScore) {
+				bestFlareScore = s;
+				bestFlare = f;
+			}
+		}
+
+		// Flare-vs-target showdown. Only roll the transfer if a flare
+		// actually outshines the current target — otherwise the seeker
+		// stays put.
+		if (bestFlare && bestFlareScore > tgtScore) {
+			const transferProb = (1 - flareResist) * 0.1;
+			if (Math.random() < transferProb) {
+				this.target = bestFlare;
+				this._prevTargetDistSq = undefined;
+				return;
+			}
+		}
+
+		// Fallback re-acquisition: current target is gone (player died
+		// of a previous flare-induced fly-by, or the previous flare lock
+		// has now expired). Scan targets for the brightest hostile in
+		// cone+range and snap to it.
+		if (!tgtAlive && targets) {
+			let bestU = null;
+			let bestUScore = 0;
+			for (const u of targets) {
+				if (!u || u === this.launcher) continue;
+				if (u.destroyed || u.active === false) continue;
+				if (u.team && this.team && u.team === this.team) continue;
+				if (!u.signature) continue;
+				if (u.signature.unitClass === 'missile') continue;
+				if (u.signature.unitClass === 'flare') continue;
+				const s = this._irScore(u, coneHalfRad, trackRange, aspectEnabled);
+				if (s > bestUScore) {
+					bestUScore = s;
+					bestU = u;
+				}
+			}
+			if (bestU) {
+				this.target = bestU;
+				this.lostLock = false;
+				this._prevTargetDistSq = undefined;
+			} else {
+				this.lostLock = true;
+			}
+		}
+	}
+
 	hitNPC(npc) {
+		// Log the kill before mutating state — captures shooter / target
+		// names while they're still well-formed. The post-merge
+		// `npc.destroyed = true` is what flips the unit out of every
+		// downstream loop.
+		pushKill({
+			shooter: this.launcher,
+			target:  npc,
+			weapon:  this.type || 'AIM-9',
+			at:      performance.now() * 0.001,
+			reason:  'kill',
+		});
 		npc.destroyed = true;
 		if (this.onKill) this.onKill(npc);
 		try {

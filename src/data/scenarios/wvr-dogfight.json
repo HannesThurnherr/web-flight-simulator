@@ -8,21 +8,21 @@
 			"type": "fighter",
 			"team": "friendly",
 			"origin": { "relTo": "player", "bearingDeg": 350, "rangeM": 500, "altOffsetM": -500 },
-			"loadout": { "AIM-9": 4 },
+			"loadout": { "AIM-9X": 4 },
 			"count": 1
 		},
 		{
 			"type": "fighter",
 			"team": "friendly",
 			"origin": { "relTo": "player", "bearingDeg":  10, "rangeM": 500, "altOffsetM": -500 },
-			"loadout": { "AIM-9": 4 },
+			"loadout": { "AIM-9X": 4 },
 			"count": 1
 		},
 		{
 			"type": "fighter",
 			"team": "hostile-red",
 			"origin": { "relTo": "player", "bearingDeg":  45, "rangeM": 12000, "altOffsetM": -500 },
-			"loadout": { "AIM-9": 4 },
+			"loadout": { "AIM-9X": 4 },
 			"count": 3,
 			"jitterM": 600
 		},
@@ -30,7 +30,7 @@
 			"type": "fighter",
 			"team": "hostile-blue",
 			"origin": { "relTo": "player", "bearingDeg": 315, "rangeM": 12000, "altOffsetM": -500 },
-			"loadout": { "AIM-9": 4 },
+			"loadout": { "AIM-9X": 4 },
 			"count": 3,
 			"jitterM": 600
 		}

@@ -103,6 +103,7 @@ export class PlaneController {
 			isDragging: false,
 			fire: false,
 			fireFlare: false,
+			forceStt: false,
 			weaponIndex: -1,
 			toggleWeapon: false,
 			// One-shot pulses (true only on the frame the key was pressed,
@@ -129,6 +130,13 @@ export class PlaneController {
 
 		this.input.fire = !!this.keys['enter'] || !!this.keys['f'] || !!this.mouseFireHeld;
 		this.input.fireFlare = !!this.keys['v'];
+		// Phase 3c — manual STT override. Forces the radar from TWS to
+		// STT while held, advertising hard to the bandit's RWR. Useful
+		// for the "spike them to bait a break-turn" play without
+		// actually firing a missile. Auto-mode in simLoop already flips
+		// to STT once a lock is held, so the average player never needs
+		// this key.
+		this.input.forceStt = !!this.keys['t'];
 
 		this.input.toggleWeapon = (!!this.keys['q'] && !this.prevKeys['q']);
 
@@ -140,10 +148,17 @@ export class PlaneController {
 		this.input.cycleTargetFwd  = tabDown && !shiftMod;
 		this.input.cycleTargetBack = tabDown &&  shiftMod;
 
+		// Number keys map to the Nth *carried* weapon (see
+		// weaponSystem.selectWeapon). The comments are the *typical*
+		// position when the loadout includes one of each; with a
+		// stripped or expanded loadout the indices auto-shift.
 		this.input.weaponIndex = -1;
 		if (this.keys['1']) this.input.weaponIndex = 0; // gun
-		if (this.keys['2']) this.input.weaponIndex = 1; // AIM-9
-		if (this.keys['3']) this.input.weaponIndex = 2; // AIM-120
+		if (this.keys['2']) this.input.weaponIndex = 1; // AIM-9M
+		if (this.keys['3']) this.input.weaponIndex = 2; // AIM-9X
+		if (this.keys['4']) this.input.weaponIndex = 3; // AIM-120D
+		if (this.keys['5']) this.input.weaponIndex = 4; // METEOR
+		if (this.keys['6']) this.input.weaponIndex = 5; // AGM-88 HARM
 
 		// Mouse steering is now middle-mouse-hold (see mousedown/mouseup
 		// handlers). M now belongs to the commander view. We still publish

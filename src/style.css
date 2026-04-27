@@ -1223,6 +1223,80 @@ html {
 	gap: 15px;
 }
 
+.pause-volume {
+	margin-top: 22px;
+	padding: 12px 14px;
+	background: rgba(0, 40, 0, 0.18);
+	border: 1px solid rgba(0, 255, 0, 0.25);
+	color: #0f0;
+}
+.pause-volume-row {
+	display: flex;
+	align-items: center;
+	gap: 10px;
+	margin-bottom: 8px;
+}
+.pause-volume-label {
+	font-size: 11px;
+	letter-spacing: 2px;
+	flex: 1;
+	color: rgba(0, 255, 0, 0.7);
+}
+.pause-volume-value {
+	font-family: 'IBM Plex Mono', 'Courier New', monospace;
+	font-size: 11px;
+	color: rgba(0, 255, 0, 0.85);
+	min-width: 36px;
+	text-align: right;
+}
+.pause-mute-btn {
+	background: rgba(0, 60, 0, 0.25);
+	border: 1px solid rgba(0, 255, 0, 0.4);
+	color: #0f0;
+	padding: 4px 10px;
+	cursor: pointer;
+	font-size: 14px;
+	line-height: 1;
+}
+.pause-mute-btn:hover {
+	background: rgba(0, 80, 0, 0.4);
+	border-color: rgba(0, 255, 0, 0.7);
+}
+.pause-mute-btn.muted {
+	color: #ff5050;
+	border-color: rgba(255, 80, 80, 0.6);
+	background: rgba(60, 0, 0, 0.25);
+}
+.pause-volume-slider {
+	width: 100%;
+	-webkit-appearance: none;
+	appearance: none;
+	height: 4px;
+	background: rgba(0, 255, 0, 0.25);
+	outline: none;
+	cursor: pointer;
+}
+.pause-volume-slider::-webkit-slider-thumb {
+	-webkit-appearance: none;
+	appearance: none;
+	width: 14px; height: 14px;
+	background: #0f0;
+	border: 1px solid rgba(0, 255, 0, 0.9);
+	box-shadow: 0 0 6px rgba(0, 255, 0, 0.5);
+	cursor: pointer;
+}
+.pause-volume-slider::-moz-range-thumb {
+	width: 14px; height: 14px;
+	background: #0f0;
+	border: 1px solid rgba(0, 255, 0, 0.9);
+	cursor: pointer;
+}
+.pause-volume.muted .pause-volume-slider::-webkit-slider-thumb {
+	background: #ff5050;
+	border-color: rgba(255, 80, 80, 0.9);
+	box-shadow: 0 0 6px rgba(255, 80, 80, 0.5);
+}
+
 .pause-btn {
 	background: rgba(0, 60, 0, 0.2);
 	border: 1px solid rgba(0, 255, 0, 0.4);
@@ -1270,16 +1344,94 @@ html {
 	flex: 1;
 	display: flex;
 	padding: 40px;
+	gap: 20px;
 	background: radial-gradient(circle at center, rgba(0, 40, 0, 0.1) 0%, transparent 70%);
 }
 
 .pause-map-wrapper {
-	flex: 1;
+	flex: 2;
 	display: flex;
 	flex-direction: column;
 	border: 1px solid rgba(0, 255, 0, 0.2);
 	background: rgba(0, 0, 0, 0.4);
 	position: relative;
+	min-width: 0;
+}
+
+.pause-killlog-wrapper {
+	flex: 1;
+	display: flex;
+	flex-direction: column;
+	border: 1px solid rgba(0, 255, 0, 0.2);
+	background: rgba(0, 0, 0, 0.4);
+	min-width: 240px;
+}
+
+.pause-killlog {
+	flex: 1;
+	overflow-y: auto;
+	padding: 8px 12px;
+	font-family: 'IBM Plex Mono', 'Courier New', monospace;
+	font-size: 11px;
+	color: rgba(0, 255, 0, 0.7);
+	line-height: 1.55;
+}
+
+.pause-killlog::-webkit-scrollbar { width: 6px; }
+.pause-killlog::-webkit-scrollbar-track { background: rgba(0, 30, 0, 0.3); }
+.pause-killlog::-webkit-scrollbar-thumb { background: rgba(0, 255, 0, 0.3); }
+
+.pause-killlog .killlog-row {
+	display: grid;
+	grid-template-columns: 56px 1fr;
+	gap: 8px;
+	padding: 3px 0;
+	border-bottom: 1px solid rgba(0, 255, 0, 0.07);
+}
+.pause-killlog .killlog-row:last-child { border-bottom: none; }
+
+.pause-killlog .killlog-time {
+	color: rgba(0, 255, 0, 0.45);
+	letter-spacing: 1px;
+}
+
+.pause-killlog .killlog-shooter,
+.pause-killlog .killlog-target {
+	font-weight: 600;
+	letter-spacing: 0.5px;
+}
+
+.pause-killlog .killlog-arrow {
+	color: rgba(0, 255, 0, 0.55);
+	margin: 0 4px;
+}
+
+.pause-killlog .killlog-weapon {
+	color: rgba(0, 255, 0, 0.5);
+	font-size: 10px;
+	letter-spacing: 1px;
+	margin-left: 6px;
+}
+
+.pause-killlog .killlog-row.crash .killlog-shooter,
+.pause-killlog .killlog-row.crash .killlog-arrow,
+.pause-killlog .killlog-row.crash .killlog-weapon {
+	color: rgba(255, 200, 80, 0.75);
+}
+
+.pause-killlog .killlog-row.player-killer .killlog-shooter { color: #00eaff; }
+.pause-killlog .killlog-row.player-victim .killlog-target  { color: #ff4040; }
+
+.pause-killlog .killlog-row.team-hostile-red    .killlog-shooter,
+.pause-killlog .killlog-row.team-hostile-red    .killlog-target  { color: rgba(255, 100, 100, 0.85); }
+.pause-killlog .killlog-row.team-hostile-blue   .killlog-shooter,
+.pause-killlog .killlog-row.team-hostile-blue   .killlog-target  { color: rgba(255, 170, 90, 0.85); }
+
+.pause-killlog .killlog-empty {
+	padding: 16px 0;
+	text-align: center;
+	color: rgba(0, 255, 0, 0.35);
+	font-style: italic;
 }
 
 .map-header {

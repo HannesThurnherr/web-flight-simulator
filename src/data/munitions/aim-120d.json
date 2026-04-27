@@ -21,7 +21,9 @@
 		"pnGain": 4.0,
 		"dragRef": 8,
 		"dragRefSpeed": 1000,
-		"dragRefAltitude": 10000
+		"dragRefAltitude": 10000,
+		"vManeuverRef": 600,
+		"gAvailFloor": 0.05
 	},
 	"warhead": {
 		"killRadiusM": 15,
@@ -39,9 +41,12 @@
 		"nominalDetectRangeM": 25000,
 		"referenceRcs": 5,
 		"notchThresholdAcquire": 30,
-		"notchThresholdTrack": 15,
-		"lockDropTimeoutS": 1.5,
+		"notchThresholdTrack": 25,
+		"lockDropTimeoutS": 2.5,
 		"reacquireIntervalS": 0.25,
+		"reacquireBackoffMul": 2.0,
+		"reacquireMaxIntervalS": 4.0,
+		"reacquireMaxAttempts": 5,
 		"datalink": true
 	}
 }

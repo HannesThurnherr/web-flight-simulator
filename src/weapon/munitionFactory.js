@@ -14,7 +14,11 @@
 //
 // Current mapping:
 //   "active_radar" → AIM120 class (active radar seeker + datalink + pitbull)
-//   "ir"           → Missile class (IR fire-and-forget seeker)
+//   "ir"           → Missile class (legacy reticle / rosette IR seeker)
+//   "iir"          → Missile class (focal-plane-array imaging IR seeker —
+//                     same guidance pipeline as 'ir'; the per-munition
+//                     `seeker.flareResistance` is what makes the IIR
+//                     variant flare-resistant in Missile._irRecheck)
 //
 // Future:
 //   "anti_radiation" → HARMSeeker class (passive emitter homing)
@@ -47,6 +51,7 @@ export function createMunition(
 		// Production seekers — fully-implemented, driven by data.
 		case 'active_radar':   return new AIM120(...args);
 		case 'ir':             return new Missile(...args);
+		case 'iir':            return new Missile(...args);
 		// Placeholder seekers — stub classes in src/weapon/seekers/*.
 		// They fly ballistic for now and log a warning on construction.
 		// Replace with real guidance logic per each file's TODO block.

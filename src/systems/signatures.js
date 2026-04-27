@@ -98,6 +98,38 @@ export const SIGNATURES = {
 		visualSize: 5,
 		unitClass: 'missile',
 	},
+	// Early-warning radar — large rotating dish on a fixed mount, big
+	// radar return because of the antenna structure itself. Modest IR
+	// (electronics + diesel generator), large visual signature. The
+	// big number that matters is `rcs`: HARM seekers and ARH AAMs both
+	// see it from a long way out.
+	ewr: {
+		rcs: 25,
+		irEmission: 80,
+		visualSize: 15,
+		unitClass: 'ewr',
+	},
+	// SHORAD launcher — tracked vehicle with a pop-out radar mast and
+	// short-range vertically-launched SAMs (SA-15 Tor class). RCS is
+	// modest when the radar mast is stowed; we don't model that here
+	// (the radar config drives whether it's emitting), so the value is
+	// the "mast-up" signature that SEAD aircraft would actually engage.
+	shorad: {
+		rcs: 4,
+		irEmission: 30,
+		visualSize: 7,
+		unitClass: 'sam_site',
+	},
+	// Command post — tents, antennas, parked vehicles. No radar, no
+	// weapons; bombable high-value target. Smaller RCS than a SAM site
+	// because there's no big antenna structure, but the visual size is
+	// substantial (~tent + comms vehicles cluster).
+	command_post: {
+		rcs: 6,
+		irEmission: 40,
+		visualSize: 12,
+		unitClass: 'building',
+	},
 };
 
 // ============================================================================

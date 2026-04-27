@@ -933,8 +933,19 @@ export class CommanderView {
 		const sample = (id, u, color) => {
 			if (!u) return;
 			let rec = this._trails.get(id);
-			if (!rec) { rec = { samples: [], entity: null, color }; this._trails.set(id, rec); }
-			rec.samples.push({ lon: u.lon, lat: u.lat, alt: u.alt, t: now });
+			if (!rec) {
+				rec = { samples: [], entity: null, color, dirty: true };
+				this._trails.set(id, rec);
+			}
+			// Cache the Cartesian3 once at sample time. Hot loop in
+			// _syncTrails used to call Cesium.Cartesian3.fromDegrees for
+			// every sample × every fade chunk × every trail × every
+			// frame — measurable stutter source after complex fights.
+			rec.samples.push({
+				lon: u.lon, lat: u.lat, alt: u.alt, t: now,
+				cart: Cesium.Cartesian3.fromDegrees(u.lon, u.lat, u.alt),
+			});
+			rec.dirty = true;
 			while (rec.samples.length > TRAIL_MAX_POINTS) rec.samples.shift();
 			while (rec.samples.length > 0 && (now - rec.samples[0].t) > TRAIL_DURATION) {
 				rec.samples.shift();
@@ -956,6 +967,25 @@ export class CommanderView {
 				sample(`m-${m.id}`, m, trailColor);
 			}
 		}
+
+		// Age out dead trails. A unit (NPC or missile) that's no longer
+		// in the live list won't get new samples, so the existing
+		// samples drift past TRAIL_DURATION. Once the rec is empty,
+		// drop the whole record + its 6 polyline entities — otherwise
+		// every BVR session leaves dozens of stale recs being walked
+		// every frame in _syncTrails.
+		for (const [id, rec] of this._trails) {
+			while (rec.samples.length > 0 && (now - rec.samples[0].t) > TRAIL_DURATION) {
+				rec.samples.shift();
+				rec.dirty = true;
+			}
+			if (rec.samples.length === 0) {
+				if (rec.entities) {
+					for (const e of rec.entities) this.viewer.entities.remove(e);
+				}
+				this._trails.delete(id);
+			}
+		}
 	}
 
 	_syncTrails() {
@@ -967,26 +997,39 @@ export class CommanderView {
 				continue;
 			}
 
-			// Partition the (oldest → newest) sample list into
-			// TRAIL_FADE_CHUNKS contiguous slices. Each slice is rendered
-			// as its own polyline entity with a different alpha; chunk 0 is
-			// oldest (most faded), chunk N-1 is newest (fully opaque).
-			// Adjacent slices share a boundary vertex so the visible line
-			// stays continuous even at step boundaries.
-			const n = rec.samples.length;
-			const bucketCaches = new Array(TRAIL_FADE_CHUNKS);
-			for (let b = 0; b < TRAIL_FADE_CHUNKS; b++) {
-				const startIdx = Math.floor((b * n) / TRAIL_FADE_CHUNKS);
-				const endIdx   = Math.floor(((b + 1) * n) / TRAIL_FADE_CHUNKS);
-				// Include one extra point at the end to bridge to the next
-				// chunk — without this we'd see thin gaps at every step.
-				const stop = Math.min(n, endIdx + 1);
-				const slice = rec.samples.slice(startIdx, stop);
-				bucketCaches[b] = slice.map(p =>
-					Cesium.Cartesian3.fromDegrees(p.lon, p.lat, p.alt),
-				);
+			// Skip the bucket rebuild when nothing has changed since the
+			// last sync. Trails sample at 4 Hz but render at 60 Hz —
+			// without this short-circuit we'd rebuild ~15× more often
+			// than needed. The CallbackProperty below still hands the
+			// same array reference to Cesium each frame, which keeps
+			// the polyline tessellation cached.
+			if (rec.dirty) {
+				// Partition the (oldest → newest) sample list into
+				// TRAIL_FADE_CHUNKS contiguous slices. Each slice renders
+				// as its own polyline entity with a different alpha;
+				// chunk 0 is oldest (most faded), chunk N-1 is newest
+				// (fully opaque). Adjacent slices share a boundary
+				// vertex so the visible line stays continuous at the
+				// step boundaries.
+				//
+				// We pull the pre-computed Cartesian3 directly from each
+				// sample (cached in _sampleTrails) — no fromDegrees in
+				// the hot path.
+				const n = rec.samples.length;
+				const bucketCaches = new Array(TRAIL_FADE_CHUNKS);
+				for (let b = 0; b < TRAIL_FADE_CHUNKS; b++) {
+					const startIdx = Math.floor((b * n) / TRAIL_FADE_CHUNKS);
+					const endIdx   = Math.floor(((b + 1) * n) / TRAIL_FADE_CHUNKS);
+					const stop = Math.min(n, endIdx + 1);
+					const out = new Array(stop - startIdx);
+					for (let i = startIdx, k = 0; i < stop; i++, k++) {
+						out[k] = rec.samples[i].cart;
+					}
+					bucketCaches[b] = out;
+				}
+				rec.positionsCache = bucketCaches;
+				rec.dirty = false;
 			}
-			rec.positionsCache = bucketCaches;
 
 			// Build the per-chunk entities once, then just show them.
 			// Cesium's CallbackProperty re-reads positions every frame so

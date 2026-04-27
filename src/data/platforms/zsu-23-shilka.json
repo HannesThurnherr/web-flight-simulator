@@ -1,0 +1,35 @@
+{
+	"id": "zsu-23-shilka",
+	"name": "ZSU-23-4 Shilka",
+	"kind": "ground",
+	"model": "/assets/models/zsu-23-shilka.glb",
+	"modelRotation": { "x": 0, "y": 0, "z": 0 },
+	"modelScale": 1.0,
+	"signature": "shorad",
+	"groundOffsetM": 0,
+	"sensors": {
+		"radar": {
+			"enabled": true,
+			"active": true,
+			"mode": "search",
+			"nominalRange": 6000,
+			"referenceRcs": 5,
+			"fovHalfHDeg": 180,
+			"fovHalfVDeg": 80,
+			"notchThreshold": 30
+		}
+	},
+	"pilot": {
+		"type": "static-aaa",
+		"defaultParams": {
+			"magazine": 2000,
+			"fireRate": 0.05,
+			"minRangeM": 200,
+			"maxRangeM": 3500,
+			"burstS": 0.8,
+			"burstGapS": 1.2,
+			"muzzleVelMps": 1500
+		}
+	},
+	"physicsOverrides": { "mass": 19000, "wingArea": 1 }
+}

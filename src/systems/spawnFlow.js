@@ -37,6 +37,7 @@ import { getViewer, setControlsEnabled, setRenderOptimization } from '../world/c
 import { reverseGeocode } from '../world/regions';
 import { soundManager } from '../utils/soundManager';
 import { stopAllFlyingSounds } from '../utils/gameplaySounds';
+import { clearEvents } from './eventLog';
 import { gameSettings, saveSettings } from '../ui/settings';
 
 // Module-private state — only this file reads or writes either.
@@ -72,6 +73,11 @@ export function quickRespawn(ctx) {
 	state.roll  = 0;
 	state.speed = 100;
 	state.destroyed = false;
+
+	// Wipe the kill log so each fresh sortie starts with a clean
+	// recap. Carrying it across deaths would be defensible too;
+	// we go with the same fresh-slate semantics the rest of spawn uses.
+	clearEvents();
 
 	// Fresh physics, re-applied per-plane overrides.
 	const physics = new PlanePhysics();
@@ -402,6 +408,7 @@ export function setupConfirmSpawn(ctx) {
 			// Respawn clears the dead flag so TargetManager can re-
 			// acquire us.
 			state.destroyed = false;
+			clearEvents();
 
 			// Hand off initial world population to the active scenario.
 			// For the default 3-way BVR fight this just seeds one NPC

@@ -2,7 +2,7 @@
 	"id": "nasams-sam",
 	"name": "NASAMS SAM Site",
 	"kind": "ground",
-	"model": "/assets/models/mim-104-patriot.glb",
+	"model": "/assets/models/nasams-battery.glb",
 	"modelRotation": { "x": 0, "y": 0, "z": 0 },
 	"modelScale": 1.0,
 	"signature": "sam_site",

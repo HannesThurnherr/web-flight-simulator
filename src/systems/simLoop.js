@@ -82,6 +82,7 @@ export function update(dt, ctx) {
 			input.boost = false;
 			input.fire  = false;
 			input.fireFlare    = false;
+			input.forceStt     = false;
 			input.toggleWeapon = false;
 			input.weaponIndex  = -1;
 			input.cycleTargetFwd  = false;
@@ -114,6 +115,7 @@ export function update(dt, ctx) {
 		state.sideslip   = physicsResult.beta       || 0;
 		state.loadFactor = physicsResult.loadFactor || 0;
 		state.gLimiterActive = !!physicsResult.gLimiterActive;
+		state.tvDeflection = physicsResult.tvDeflection || { pitch: 0, yaw: 0 };
 
 		state.mouseSteering = !!input.mouseSteering;
 		state.cursorX = input.cursorX;
@@ -158,7 +160,47 @@ export function update(dt, ctx) {
 	const playerProjectiles = (weaponSystem && weaponSystem.projectiles) || [];
 	const npcProjectiles    = (npcSystem && npcSystem.projectiles)       || [];
 	const allProjectiles = playerProjectiles.concat(npcProjectiles).filter(p => p && p.active);
+
+	// Phase 3c — player radar mode. Auto: STT when we have any AESA
+	// track LOCKED (i.e. we're committed to a fire solution); TWS
+	// otherwise. Manual override (input.forceStt = T-key while held)
+	// forces STT even without a lock — useful for the "spike them
+	// to read their break-turn" play. The mode flag drives the
+	// `lockType` written into bandit RWR records by sensorSystem,
+	// which is what makes their evasion fire on time.
+	if (state.sensors && state.sensors.radar) {
+		const hasLock = weaponSystem && weaponSystem.lockStatus === 'LOCKED';
+		const forceStt = !!(input && input.forceStt);
+		state.sensors.radar.mode = (hasLock || forceStt) ? 'track' : 'search';
+	}
+
 	updateSensors([state, ...npcList, ...allProjectiles], simTime, dt);
+
+	// Phase 3c — player RWR audio for being painted. After updateSensors,
+	// state.rwr carries one entry per emitter painting us, each tagged
+	// with `lockType` ('search' = TWS scan, 'track' = STT spike). We
+	// surface STT only — TWS is visual-on-scope only, since it's the
+	// ambient-threat condition during BVR. Edge-trigger a one-shot ping
+	// the moment a new spike fires; loop the steady spike tone while
+	// any STT lock persists.
+	{
+		let anyStt = false;
+		if (state.rwr) {
+			for (const [, c] of state.rwr) {
+				if (c && c.lockType === 'track') { anyStt = true; break; }
+			}
+		}
+		const wasStt = !!ctx._wasStt;
+		try {
+			if (anyStt && !soundManager.isPlaying('rwr-spike')) {
+				soundManager.play('rwr-spike');
+			} else if (!anyStt && soundManager.isPlaying('rwr-spike')) {
+				soundManager.stop('rwr-spike');
+			}
+			if (anyStt && !wasStt) soundManager.play('rwr-spike-ping');
+		} catch (e) { /* sound stack timing-of-init quirks — non-fatal */ }
+		ctx._wasStt = anyStt;
+	}
 
 	// Mirror the friendly team datalink into state.datalinkContacts so
 	// the HUD / cockpit targeting can show team-fused tracks alongside
@@ -490,8 +532,24 @@ export function update(dt, ctx) {
 
 		const clock = ctx.clock;
 		if (jetFlames.length > 0) {
+			// TV nozzle deflection: rotate the flame group so the plume
+			// visibly tilts when the F-22's nozzles vector. Smoothed so the
+			// flame doesn't snap on stick reversals — real nozzles have
+			// ~5 Hz actuator bandwidth.
+			const tv = state.tvDeflection || { pitch: 0, yaw: 0 };
 			jetFlames.forEach(flame => {
 				flame.update(state.throttle, state.isBoosting, clock.getElapsedTime(), dt);
+				// Sign convention: pitch-up command should tilt the plume
+				// downward at the exit (reaction force pitches nose up).
+				// Body axes here match the planeModel: +X right, +Y forward,
+				// +Z up. Flame extends rearward along -Y. Rotation about
+				// +X tilts the rearward end up/down. Negative-X rotation =
+				// exit moves down = pitches nose up.
+				const targetPitch = -tv.pitch;
+				const targetYaw   =  tv.yaw;
+				const k = Math.min(1, dt * 12); // ~5 Hz first-order lag
+				flame.group.rotation.x += (targetPitch - flame.group.rotation.x) * k;
+				flame.group.rotation.z += (targetYaw   - flame.group.rotation.z) * k;
 			});
 		}
 	}

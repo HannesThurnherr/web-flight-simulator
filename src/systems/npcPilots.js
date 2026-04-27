@@ -22,6 +22,12 @@ export function makePilot(type, lon, lat, alt, params) {
 			return makeOrbitPilot(lon, lat, params.altitudeM ?? alt, params.radiusM ?? 40000);
 		case 'static-sam':
 			return makeStaticSamPilot(params);
+		case 'static-aaa':
+			return makeStaticAaaPilot(params);
+		case 'ewr':
+			return makeEwrPilot();
+		case 'static-target':
+			return makeStaticTargetPilot();
 		// Future:
 		//   case 'patrol':   return makePatrolPilot(params.waypoints);
 		//   case 'fighter':  return createFighterPilot(/* unit filled by caller */);
@@ -107,6 +113,32 @@ export function makeStaticSamPilot(params) {
 	const minRange    = params.minRangeM ?? 1500;
 	const maxRange    = params.maxRangeM ?? 25000;
 
+	// Emissions discipline. When `emcon` is true, the SAM keeps its
+	// own radar OFF until cued by the team datalink (e.g. an EWR has
+	// painted an air target inside `cueRangeM`), then briefly powers
+	// up to engage. Once the engagement resolves and no other cued
+	// threats remain, radar drops back to silent. This is what lets
+	// players use the "force them to radiate, then HARM them" tactic
+	// — and it's why a real IADS leans on EWRs to do the looking
+	// while the SAMs stay quiet.
+	const emcon       = !!params.emcon;
+	const cueRangeM   = params.cueRangeM ?? (maxRange * 1.4);
+	// Hold radar on for a few seconds after the last cue drops, so we
+	// don't strobe the antenna on/off every frame as a target sails
+	// across the cue boundary.
+	const emconHoldS  = params.emconHoldS ?? 3.0;
+	// HARM-evade. When the SAM's own radar sees an inbound missile-
+	// class contact within `harmEvadeDetectM`, it kills the radar for
+	// `harmEvadeDurationS` regardless of cue state. Real anti-HARM
+	// doctrine: the SAM has no way to know which missiles are AR vs
+	// active-radar from passive observation, so the conservative
+	// response is "any missile inbound → go quiet." The HARM seeker's
+	// memory window (typically ~10 s) is shorter than the wait, so a
+	// SAM that shuts down promptly tends to survive while still being
+	// a threat to subsequent passes.
+	const harmEvadeDetectM    = params.harmEvadeDetectM    ?? 35000;
+	const harmEvadeDurationS  = params.harmEvadeDurationS  ?? 12;
+
 	const weapons = new WeaponSubsystem({
 		weapons: [{
 			type: missileType,
@@ -144,7 +176,79 @@ export function makeStaticSamPilot(params) {
 		lastAmmoSeen: magazine,
 		currentEngagement: null,       // { target, plannedShots, shotsFired }
 		engagementCooldown: new Map(), // target → sim-time of last engagement
+		// Emcon bookkeeping. `emconRadarOnUntil` is the sim-time the
+		// hold timer expires; while we're past it AND there's no fresh
+		// cue, the radar drops back to silent.
+		emconRadarOnUntil: -Infinity,
+		// HARM-evade. While `harmEvadeUntil` is in the future, the
+		// radar is hard-suppressed regardless of cue state.
+		harmEvadeUntil: -Infinity,
 	};
+
+	// Detect any inbound missile-class contact via the unit's own
+	// radar (or its team datalink). If one is closing inside the
+	// HARM-evade trigger range, returns true — the caller will
+	// suppress radar emissions for several seconds.
+	function harmEvadeTriggered(unit, ctx, now) {
+		// Only trigger if the radar's actually on right now — once
+		// it's already off the missile is going to memory mode and
+		// re-shutting-down doesn't help.
+		if (!unit.sensors?.radar?.active) return false;
+		const cosLat = Math.cos((unit.lat || 0) * Math.PI / 180);
+		const r2 = harmEvadeDetectM * harmEvadeDetectM;
+		// Iterate own-radar contacts (the SAM sees the inbound HARM
+		// like any other missile if it's not notched). Ground-launched
+		// SAMs aren't air units, so they don't have RWR — pure radar.
+		if (unit.contacts) {
+			for (const [target, c] of unit.contacts) {
+				if (!target || target.destroyed) continue;
+				if (target.team && unit.team && target.team === unit.team) continue;
+				const sig = target.signature;
+				if (!sig || (sig.unitClass !== 'missile' && sig.unitClass !== 'cruise_missile')) continue;
+				if (!c.radar) continue;
+				const dE = (target.lon - unit.lon) * 111320 * cosLat;
+				const dN = (target.lat - unit.lat) * 111320;
+				const dU = (target.alt - unit.alt);
+				const d2 = dE * dE + dN * dN + dU * dU;
+				if (d2 < r2) return true;
+			}
+		}
+		return false;
+	}
+
+	// Decide whether the radar should be radiating right now. Returns
+	// true when:
+	//   - we have an in-flight engagement (need our own track for
+	//     midcourse / fuze)
+	//   - the team datalink has a hostile air contact within cueRangeM
+	//   - the hold timer hasn't expired yet (post-cue cooldown)
+	function shouldRadarBeOn(unit, ctx, now) {
+		if (pilotState.currentEngagement) return true;
+		if (now < pilotState.emconRadarOnUntil) return true;
+		const dl = ctx && ctx.teamDatalink;
+		if (!dl) return false;
+		const cosLat = Math.cos((unit.lat || 0) * Math.PI / 180);
+		// Air targets only — SAMs don't engage missiles in flight,
+		// other SAMs, ground units, or buildings. The set of signatures
+		// we cue on:
+		//   fighter, stealth_fighter, awacs, cargo
+		// (cruise_missile too — small but still fair game for SHORAD.)
+		const ENGAGEABLE = new Set([
+			'fighter', 'stealth_fighter', 'awacs', 'cargo', 'cruise_missile',
+		]);
+		for (const [target] of dl.allContacts()) {
+			if (!target || target.destroyed || target.active === false) continue;
+			if (target.team && unit.team && target.team === unit.team) continue;
+			const sig = target.signature;
+			if (!sig || !ENGAGEABLE.has(sig.unitClass)) continue;
+			const dE = (target.lon - unit.lon) * 111320 * cosLat;
+			const dN = (target.lat - unit.lat) * 111320;
+			const dU = (target.alt - unit.alt);
+			const range = Math.sqrt(dE * dE + dN * dN + dU * dU);
+			if (range <= cueRangeM) return true;
+		}
+		return false;
+	}
 
 	function pickTarget(unit, weapon) {
 		if (!unit.contacts) return null;
@@ -186,6 +290,37 @@ export function makeStaticSamPilot(params) {
 			command.fireWeapon   = false;
 			command.weaponType   = null;
 			command.weaponTarget = null;
+
+			// ---- HARM-evade: hard-shutdown if a missile is inbound -----
+			// Runs even on always-on (non-emcon) batteries. Real-world
+			// SAM doctrine treats inbound missiles as anti-radiation
+			// until proven otherwise; the cost of being wrong is the
+			// whole battery. So: any closing missile within the
+			// trigger range → radar off, hold off for harmEvadeDurationS,
+			// then resume. This survives most HARM passes (HARM
+			// memory window is shorter) while leaving the battery to
+			// re-engage subsequent passes.
+			if (unit.sensors && unit.sensors.radar) {
+				if (harmEvadeTriggered(unit, context, now)) {
+					pilotState.harmEvadeUntil = now + harmEvadeDurationS;
+				}
+			}
+			const inHarmEvade = now < pilotState.harmEvadeUntil;
+
+			// ---- Emcon: power radar on/off based on cueing + evade ----
+			if (unit.sensors && unit.sensors.radar) {
+				if (inHarmEvade) {
+					unit.sensors.radar.active = false;
+				} else if (emcon) {
+					const wantOn = shouldRadarBeOn(unit, context, now);
+					if (wantOn) {
+						unit.sensors.radar.active = true;
+						pilotState.emconRadarOnUntil = now + emconHoldS;
+					} else {
+						unit.sensors.radar.active = false;
+					}
+				}
+			}
 
 			// Detect shots fired since last tick by watching the ammo
 			// delta. The actual spawn happens in npcSystem.update()'s
@@ -271,6 +406,290 @@ export function makeStaticSamPilot(params) {
 			command.fireWeapon   = true;
 			command.weaponType   = weapon.type;
 			command.weaponTarget = best.target;
+		},
+	};
+}
+
+// ============================================================================
+// EWR (Early-Warning Radar) pilot.
+//
+// A fixed long-range radar with no weapons — its only job is to radiate
+// and feed the team datalink. Every air contact it picks up gets fused
+// into the team picture, which lets emcon-mode SAMs stay silent until
+// the EWR cues them onto a target. Killing the EWR is the canonical
+// SEAD opening move: it tears the IADS' eyes out without alerting the
+// SAMs (which don't radiate while idle).
+//
+// No subsystems — sensorSystem.scanRadar reads `unit.sensors.radar`
+// directly, the contacts populate `unit.contacts`, and teamDatalink.tick
+// fuses them into the shared picture.
+// ============================================================================
+export function makeEwrPilot() {
+	const command = {
+		targetHeading: 0,
+		targetPitch:   0,
+		throttle:      0,
+		targetSpeed:   0,
+		boost:         false,
+		fireFlare:     false,
+		fireWeapon:    false,
+		activeBehaviorName: 'EWR',
+	};
+	return {
+		command,
+		subsystems: {},
+		update(/* context, dt */) {
+			// Static, no weapons, no behaviour. Radar config in the
+			// platform JSON is what makes this unit functionally
+			// useful — it just needs to BE there with `radar.active`.
+		},
+	};
+}
+
+// ============================================================================
+// Static target pilot.
+//
+// For non-radiating, non-shooting structures (command posts, supply
+// depots, fuel tanks). The unit just exists to be hit; everything
+// interesting happens in the platform's signature config (RCS,
+// IR, visual size — used by attacker sensor pipelines and warhead PK)
+// and in scenario objectives that reference it by tag.
+// ============================================================================
+export function makeStaticTargetPilot() {
+	const command = {
+		targetHeading: 0,
+		targetPitch:   0,
+		throttle:      0,
+		targetSpeed:   0,
+		boost:         false,
+		fireFlare:     false,
+		fireWeapon:    false,
+		activeBehaviorName: 'StaticTarget',
+	};
+	return {
+		command,
+		subsystems: {},
+		update(/* context, dt */) { /* nothing to do */ },
+	};
+}
+
+// ============================================================================
+// Static AAA pilot — radar-directed gun emplacement (ZSU-23 / Gepard /
+// Pantsir gun mount class).
+//
+// Reuses the player gun mechanics: spawns Bullet entities through
+// spawnNpcBullet at the same per-round cadence as the M61 (default
+// fireRate 0.05 s). The chassis stays put; the "turret" pivots
+// implicitly via cmd.gunHeading / gunPitch which override the bullet
+// launch direction in npcUpdate. So the model doesn't twist — only
+// the tracers fan out toward the lead solution.
+//
+// Burst pattern: real ZSU fires 0.5–1.5 s pulses with cooldown gaps.
+// Modeled here with `burstS` (active burst length) + `burstGapS`
+// (between bursts). During a gap, `cmd.fireWeapon` is suppressed so
+// even though a target is in envelope, no rounds spawn — gives the
+// AAA a recognizable rat-tat-tat-pause-tat rhythm.
+//
+// Lead solution borrows the same iterative bullet-flight-time loop
+// the fighter EngageBehavior uses for tail-chase guns. Two passes
+// converges at this range (effective AAA range ≤ 3 km, bullet
+// flight-time < 2 s).
+//
+// Config (params):
+//   magazine        total ammo count (default 2000 — typical Shilka load)
+//   fireRate        seconds per round (default 0.05 — ~1200 rd/min sustained
+//                   per barrel, 4 barrels)
+//   minRangeM       lower envelope (default 200)
+//   maxRangeM       upper envelope (default 3500 — combat-effective gun range)
+//   burstS          active-fire burst length (default 0.8)
+//   burstGapS       cooldown between bursts (default 1.0)
+//   muzzleVelMps    bullet muzzle velocity over ground (default 1500;
+//                   matches Bullet class default)
+//   emcon           if true, radar follows the same on/off cueing as
+//                   static-sam — silent until cued, then radiates while
+//                   tracking. Defaults FALSE for AAA: the Gun Dish on
+//                   a Shilka is short-range and continuously on in
+//                   most doctrines.
+//   cueRangeM       cue-on range when emcon=true (default = maxRangeM × 2)
+//   emconHoldS      seconds after cue drop to keep radiating (default 3)
+// ============================================================================
+export function makeStaticAaaPilot(params = {}) {
+	const magazine    = params.magazine    ?? 2000;
+	const fireRate    = params.fireRate    ?? 0.05;
+	const minRange    = params.minRangeM   ?? 200;
+	const maxRange    = params.maxRangeM   ?? 3500;
+	const burstS      = params.burstS      ?? 0.8;
+	const burstGapS   = params.burstGapS   ?? 1.0;
+	const muzzleVel   = params.muzzleVelMps ?? 1500;
+	const emcon       = !!params.emcon;
+	const cueRangeM   = params.cueRangeM   ?? (maxRange * 2);
+	const emconHoldS  = params.emconHoldS  ?? 3.0;
+
+	const weapons = new WeaponSubsystem({
+		weapons: [{
+			type: 'gun',
+			ammo: magazine, maxAmmo: magazine,
+			fireRate,
+			lastFire: -Infinity,
+			minRange, maxRange,
+		}],
+	});
+
+	const command = {
+		targetHeading: 0,
+		targetPitch:   0,
+		throttle:      0,
+		targetSpeed:   0,
+		boost:         false,
+		fireFlare:     false,
+		fireWeapon:    false,
+		weaponType:    null,
+		weaponTarget:  null,
+		gunHeading:    null,
+		gunPitch:      null,
+		activeBehaviorName: 'StaticAAA',
+	};
+
+	const pilotState = {
+		burstStartedAt: -Infinity,
+		burstActive: false,
+		emconRadarOnUntil: -Infinity,
+	};
+
+	function pickTarget(unit) {
+		if (!unit.contacts) return null;
+		let best = null;
+		let bestRange = Infinity;
+		for (const [target, c] of unit.contacts) {
+			if (!target || target.destroyed || target.active === false) continue;
+			if (target.team && unit.team && target.team === unit.team) continue;
+			const sig = target.signature;
+			if (!sig) continue;
+			// Air-only (don't shoot SAMs / buildings / ground).
+			if (sig.unitClass === 'missile' || sig.unitClass === 'cruise_missile') continue;
+			if (sig.unitClass === 'sam_site' || sig.unitClass === 'building' ||
+				sig.unitClass === 'ground'   || sig.unitClass === 'ewr') continue;
+			if (!c.radar) continue;
+			const range = c.radar.range;
+			if (range < minRange || range > maxRange) continue;
+			if (range < bestRange) { best = target; bestRange = range; }
+		}
+		return best ? { target: best, range: bestRange } : null;
+	}
+
+	// Lead solution for a stationary shooter aiming at a moving target.
+	// Returns {heading, pitch} (degrees) — the direction the turret
+	// should point so a bullet at muzzleVel + 0 (shooter is static)
+	// intersects the target's projected position.
+	function computeLead(unit, target) {
+		const cosLat = Math.cos(unit.lat * Math.PI / 180);
+		const dE0 = (target.lon - unit.lon) * 111320 * cosLat;
+		const dN0 = (target.lat - unit.lat) * 111320;
+		const dU0 = (target.alt - unit.alt);
+		// Target velocity in ENU (target carries heading/pitch/speed).
+		const tH = (target.heading || 0) * Math.PI / 180;
+		const tP = (target.pitch   || 0) * Math.PI / 180;
+		const tS = target.speed || 0;
+		const tvE = Math.sin(tH) * Math.cos(tP) * tS;
+		const tvN = Math.cos(tH) * Math.cos(tP) * tS;
+		const tvU = Math.sin(tP) * tS;
+		// Bullets exit at muzzleVel (shooter is stationary so no own-speed
+		// boost). Iterate flight-time → projected position twice.
+		let tof = Math.sqrt(dE0*dE0 + dN0*dN0 + dU0*dU0) / muzzleVel;
+		for (let i = 0; i < 2; i++) {
+			const lE = dE0 + tvE * tof;
+			const lN = dN0 + tvN * tof;
+			const lU = dU0 + tvU * tof;
+			tof = Math.sqrt(lE*lE + lN*lN + lU*lU) / muzzleVel;
+		}
+		const leadE = dE0 + tvE * tof;
+		const leadN = dN0 + tvN * tof;
+		const leadU = dU0 + tvU * tof;
+		const horiz = Math.sqrt(leadE * leadE + leadN * leadN);
+		const heading = (Math.atan2(leadE, leadN) * 180 / Math.PI + 360) % 360;
+		const pitch   = Math.atan2(leadU, horiz) * 180 / Math.PI;
+		return { heading, pitch };
+	}
+
+	// Optional emcon: same logic as static-sam but with the AAA's own
+	// cueRangeM. Inlined rather than extracted so the two pilots stay
+	// independently configurable.
+	function shouldRadarBeOn(unit, ctx, now) {
+		if (now < pilotState.emconRadarOnUntil) return true;
+		const dl = ctx && ctx.teamDatalink;
+		if (!dl) return false;
+		const cosLat = Math.cos((unit.lat || 0) * Math.PI / 180);
+		const ENG = new Set(['fighter', 'stealth_fighter', 'awacs', 'cargo', 'cruise_missile']);
+		for (const [target] of dl.allContacts()) {
+			if (!target || target.destroyed || target.active === false) continue;
+			if (target.team && unit.team && target.team === unit.team) continue;
+			const sig = target.signature;
+			if (!sig || !ENG.has(sig.unitClass)) continue;
+			const dE = (target.lon - unit.lon) * 111320 * cosLat;
+			const dN = (target.lat - unit.lat) * 111320;
+			const dU = (target.alt - unit.alt);
+			const range = Math.sqrt(dE * dE + dN * dN + dU * dU);
+			if (range <= cueRangeM) return true;
+		}
+		return false;
+	}
+
+	return {
+		command,
+		subsystems: { weapons },
+		update(context /*, dt */) {
+			const unit = context.unit;
+			const now  = context.now;
+			const weapon = weapons.weapons[0];
+
+			command.fireWeapon  = false;
+			command.weaponType  = null;
+			command.weaponTarget = null;
+			command.gunHeading  = null;
+			command.gunPitch    = null;
+
+			// Emcon (off by default — most AAA radars stay on).
+			if (emcon && unit.sensors && unit.sensors.radar) {
+				const wantOn = shouldRadarBeOn(unit, context, now);
+				if (wantOn) {
+					unit.sensors.radar.active = true;
+					pilotState.emconRadarOnUntil = now + emconHoldS;
+				} else {
+					unit.sensors.radar.active = false;
+				}
+			}
+
+			if (weapon.ammo <= 0) return;
+
+			const pick = pickTarget(unit);
+			if (!pick) {
+				// No target — break out of any active burst.
+				pilotState.burstActive = false;
+				return;
+			}
+
+			// Burst-fire pattern: switch between active and gap states
+			// based on burstS / burstGapS. While in gap state, suppress
+			// fire even though a target is in envelope.
+			if (!pilotState.burstActive) {
+				if (now - pilotState.burstStartedAt >= burstS + burstGapS) {
+					pilotState.burstActive = true;
+					pilotState.burstStartedAt = now;
+				} else {
+					return;
+				}
+			} else if (now - pilotState.burstStartedAt > burstS) {
+				pilotState.burstActive = false;
+				return;
+			}
+
+			// Lead solution.
+			const lead = computeLead(unit, pick.target);
+			command.fireWeapon  = true;
+			command.weaponType  = 'gun';
+			command.weaponTarget = pick.target;
+			command.gunHeading  = lead.heading;
+			command.gunPitch    = lead.pitch;
 		},
 	};
 }

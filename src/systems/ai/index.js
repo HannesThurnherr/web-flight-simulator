@@ -6,7 +6,9 @@ import { Pilot } from './pilot.js';
 import {
 	CruiseBehavior,
 	TerrainAvoidBehavior,
+	ForwardTerrainAvoidBehavior,
 	MissileEvasionBehavior,
+	CrankBehavior,
 	EngageBehavior,
 } from './behaviors.js';
 import {
@@ -31,7 +33,15 @@ export function createFighterPilot(unit, opts = {}) {
 		weapons: opts.weapons, // undefined → subsystem default loadout
 	}));
 	// Priority order: first isActive wins.
+	// ForwardTerrainAvoid sits at the top — predicted ridge ahead
+	// trumps even the missile-evasion beam, briefly, until the path
+	// is clear again. Crank slots between MissileEvasion and Engage so
+	// post-launch BVR support overrides re-engagement attempts (we don't
+	// want to keep nose-on after firing a Fox-3) but yields to actual
+	// inbound-missile defence.
+	p.addBehavior(new ForwardTerrainAvoidBehavior());
 	p.addBehavior(new MissileEvasionBehavior());
+	p.addBehavior(new CrankBehavior());
 	p.addBehavior(new TerrainAvoidBehavior());
 	p.addBehavior(new EngageBehavior());
 	p.addBehavior(new CruiseBehavior({
