@@ -46,6 +46,9 @@ import {
 	stopLase,
 	returnToSlew,
 } from '../systems/designation.js';
+import { releaseEnvelope, isStrikeWeapon } from '../systems/strikeEnvelope.js';
+import { MUNITIONS } from '../weapon/munitions.js';
+import { munitionIdForSimType } from '../weapon/munitionFactory.js';
 
 // ---- Module state ----------------------------------------------------------
 let _container = null;
@@ -483,12 +486,34 @@ export function updateTgp(playerState, weaponSystem, mainViewer) {
 	const maskedTag = _gimbalMasked
 		? `<span style="float:right; color:#f80; font-weight:bold;">MASKED</span>`
 		: '';
+
+	// RNG line. When a strike weapon (GBU/JDAM) is active, show
+	// "RNG curr / Rmax km" with the colour cued off releaseEnvelope —
+	// gives the player an at-a-glance "is this point in the drop
+	// envelope" without having to do range / altitude math themselves.
+	// Falls back to the plain single-value display for AAMs etc.
+	let rngHtml = `<div>RNG  ${(slantRange / 1000).toFixed(1)} km</div>`;
+	const curWeapon = weaponSystem && weaponSystem.getCurrentWeapon && weaponSystem.getCurrentWeapon();
+	if (curWeapon && curWeapon.type) {
+		const munId = munitionIdForSimType(curWeapon.type);
+		const data  = munId ? MUNITIONS[munId] : null;
+		if (isStrikeWeapon(data)) {
+			const env = releaseEnvelope(playerState, playerDesignation, data);
+			if (env) {
+				const col = env.status === 'IN'   ? '#40ff40'
+				          : env.status === 'NEAR' ? '#ffcc00'
+				          :                         '#ff4040';
+				rngHtml = `<div style="color:${col}">RNG  ${(env.currentRange / 1000).toFixed(1)} / ${(env.rMax / 1000).toFixed(1)} km</div>`;
+			}
+		}
+	}
+
 	_statusEl.innerHTML =
 		`<div>MODE <span style="font-weight:bold;color:${_modeColor()}">${playerDesignation.mode}</span>` +
 		`<span style="float:right; opacity:0.8">FOV ${_tgpFovDeg.toFixed(1)}°</span></div>` +
 		`<div>AZ   ${_gimbalAz.toFixed(0)}°   <span style="margin-left:8px">EL ${_gimbalEl.toFixed(0)}°</span>${maskedTag}</div>` +
 		`<div>SPOT ${playerDesignation.lat.toFixed(4)}°, ${playerDesignation.lon.toFixed(4)}°</div>` +
-		`<div>RNG  ${(slantRange / 1000).toFixed(1)} km</div>` +
+		rngHtml +
 		targetTxt;
 
 	// Repaint mode button colour.

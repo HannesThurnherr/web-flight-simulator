@@ -1,6 +1,10 @@
 import { setMinimapCamera, getMiniViewer, getViewer, setPauseMinimapCamera, getPauseMiniViewer } from '../world/cesiumWorld';
 import { calculateDistance } from '../world/regions';
 import * as Cesium from 'cesium';
+import { releaseEnvelope, isStrikeWeapon } from '../systems/strikeEnvelope.js';
+import { MUNITIONS } from '../weapon/munitions.js';
+import { munitionIdForSimType } from '../weapon/munitionFactory.js';
+import { playerDesignation } from '../systems/designation.js';
 
 // Team → HUD accent color. Shared across the on-screen diamond, minimap
 // icons, and (in future) the radar scope. Friendlies get the familiar
@@ -1957,7 +1961,7 @@ export class HUD {
 		this.updateRwrScope(state);
 
 		if (state.weaponSystem) {
-			this.updateWeapons(state.weaponSystem);
+			this.updateWeapons(state.weaponSystem, state);
 		}
 
 		let compassHeading = this.smoothedHeading;
@@ -2593,6 +2597,7 @@ export class HUD {
 		row.innerHTML =
 			'<div class="weapon-progress"></div>' +
 			'<span class="weapon-name"></span>' +
+			'<span class="weapon-status" style="font-weight:bold; margin-right:6px;"></span>' +
 			'<span class="weapon-ammo">--</span>';
 		this.weaponList.appendChild(row);
 		this.weaponRows.set(key, row);
@@ -2606,14 +2611,15 @@ export class HUD {
 	// the in-list index shown as a small "1." / "2." prefix on the
 	// row — matches the player's number-key bind for this weapon.
 	_updateWeaponRow(row, weapon, isActive, isOverheated, isEmptyWarning,
-	                 slotNumberOrNull, progressPct, weaponSystem) {
+	                 slotNumberOrNull, progressPct, weaponSystem, playerState) {
 		row.style.display = '';
 		row.classList.toggle('active', !!isActive);
 		row.classList.toggle('overheated', !!(isOverheated || isEmptyWarning));
 
-		const nameElem = row.querySelector('.weapon-name');
-		const ammoElem = row.querySelector('.weapon-ammo');
-		const progElem = row.querySelector('.weapon-progress');
+		const nameElem   = row.querySelector('.weapon-name');
+		const ammoElem   = row.querySelector('.weapon-ammo');
+		const progElem   = row.querySelector('.weapon-progress');
+		const statusElem = row.querySelector('.weapon-status');
 
 		if (nameElem) {
 			const prefix = (slotNumberOrNull != null) ? `${slotNumberOrNull}. ` : '';
@@ -2625,10 +2631,34 @@ export class HUD {
 			else ammoElem.textContent = String(weapon.ammo).padStart(2, '0');
 		}
 		if (progElem) progElem.style.width = `${progressPct}%`;
+
+		// Strike-weapon release-envelope tag. Only the active row gets
+		// it (multiple in-zone tags would be visual noise) and only
+		// when the player has actually designated a point. Hides on
+		// SLEW or non-strike weapons.
+		if (statusElem) {
+			let tag = '';
+			let col = '';
+			if (isActive && weapon.type && playerState) {
+				const munId = munitionIdForSimType(weapon.type);
+				const data  = munId ? MUNITIONS[munId] : null;
+				if (isStrikeWeapon(data)) {
+					const env = releaseEnvelope(playerState, playerDesignation, data);
+					if (env) {
+						if (env.status === 'IN')        { tag = 'IN ZONE'; col = '#40ff40'; }
+						else if (env.status === 'NEAR') { tag = 'NEAR';    col = '#ffcc00'; }
+						else                            { tag = 'OUT';     col = '#ff4040'; }
+					}
+				}
+			}
+			statusElem.textContent = tag;
+			statusElem.style.color = col;
+		}
 	}
 
-	updateWeapons(weaponSystem) {
+	updateWeapons(weaponSystem, playerState) {
 		const currentWeapon = weaponSystem.getCurrentWeapon();
+		this._updateWeaponsPlayerState = playerState || null;
 		const now = performance.now() * 0.001;
 
 		// Show the missile-crosshair overlay whenever a guided weapon
@@ -2671,6 +2701,7 @@ export class HUD {
 			this._updateWeaponRow(
 				row, weapon, isActive, isOverheated, isEmptyWarning,
 				idx + 1, progressPct, weaponSystem,
+				this._updateWeaponsPlayerState,
 			);
 		});
 
@@ -2690,6 +2721,7 @@ export class HUD {
 			this._updateWeaponRow(
 				row, flare, isFlareActiveBlink, false, isEmptyWarning,
 				null, progressPct, weaponSystem,
+				this._updateWeaponsPlayerState,
 			);
 			// Fade out when the magazine is dry — visual cue distinct
 			// from "active" / "overheated".
