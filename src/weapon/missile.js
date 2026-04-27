@@ -328,12 +328,13 @@ export class Missile {
 		this._irRecheck(npcs, dt);
 
 		// ---- Guidance -----------------------------------------------------
-		// Laser-guided seekers (GBU-12 etc.) intentionally have no
-		// `target` — they home on the player's lased ground spot, which
-		// the seeker reads from playerDesignation each frame. Skipping
-		// _guide for them would leave the bomb falling ballistic.
-		const isLaser = this.data && this.data.seekerType === 'laser';
-		if (!this.lostLock && (isLaser || (this.target && !this.target.destroyed))) {
+		// Coord-homing seekers (LaserSeeker → GBU-12, GPSSeeker → JDAMs)
+		// guide off a geographic point rather than a unit reference, so
+		// `this.target` is intentionally null/non-NPC. Skipping _guide
+		// for them would leave the bomb falling ballistic.
+		const seekerType = this.data && this.data.seekerType;
+		const isCoordHomer = seekerType === 'laser' || seekerType === 'gps';
+		if (!this.lostLock && (isCoordHomer || (this.target && !this.target.destroyed))) {
 			this._guide(dt);
 		}
 
