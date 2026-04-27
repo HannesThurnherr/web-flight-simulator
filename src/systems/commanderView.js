@@ -365,6 +365,12 @@ export class CommanderView {
 
 	setActive(active, initialCenter = null) {
 		if (active === this.active) return;
+		// Mutual exclusion with the strike planner — only one alternate
+		// camera mode runs at a time. The hook is set externally by
+		// simLoop's lazy-init so neither view imports the other.
+		if (active && typeof this._closeStrikePlanner === 'function') {
+			this._closeStrikePlanner();
+		}
 		this.active = active;
 
 		if (active) {

@@ -86,6 +86,15 @@ export function startAnimateLoop(ctx) {
 						ctx.npcSystem ? ctx.npcSystem.npcs : [],
 						projectiles);
 				}
+				// Same paused-update for the strike planner — its panel
+				// + designation marker stay live while the sim is frozen.
+				if (ctx.strikePlannerView && ctx.strikePlannerView.active) {
+					const projectiles = ((ctx.weaponSystem && ctx.weaponSystem.projectiles) || [])
+						.concat((ctx.npcSystem && ctx.npcSystem.projectiles) || []);
+					ctx.strikePlannerView.update(0, state,
+						ctx.npcSystem ? ctx.npcSystem.npcs : [],
+						projectiles);
+				}
 			}
 
 			if (ctx.mixer) ctx.mixer.update(dt);

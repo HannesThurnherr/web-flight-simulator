@@ -8,6 +8,7 @@ import { advanceLonLatAlt } from './plane/aeroModel';
 import { calculateDistance, reverseGeocode } from './world/regions';
 import { HUD } from './ui/hud';
 import { CommanderView } from './systems/commanderView';
+import { StrikePlannerView } from './systems/strikePlanner';
 import { SIGNATURES } from './systems/signatures';
 import {
 	updateSensors, setSensorScene,
@@ -164,6 +165,11 @@ import('./ui/tgp.js').then(m => m.setupTgp());
 // it just-in-time in update() the first time we need it — keeping init order
 // simple avoids fighting with the existing async Cesium bring-up.
 let commanderView = null;
+// Strike-planner top-down map. Same lazy-init pattern as commanderView.
+// Mutually exclusive with commanderView at the camera level (only one
+// alternate-camera mode can be active at a time); enforced in their
+// respective `setActive` callers in menus / view-toggle handlers.
+let strikePlannerView = null;
 
 // Monotonic sim-time used for sensor contact ageing. Advances only while
 // update(dt) actually ticks, so pauses don't retroactively expire contacts —
@@ -242,6 +248,8 @@ const ctx = {
 	setMixer: m =>          { mixer = m; },
 	jetFlames,
 	get commanderView()     { return commanderView; },
+	get strikePlannerView() { return strikePlannerView; },
+	setStrikePlannerView:    v => { strikePlannerView = v; },
 	get spectatorTarget()   { return spectatorTarget; },
 	setSpectatorTarget: t => { spectatorTarget = t; },
 	setBoostRoll:            v => { boostRoll = v; },

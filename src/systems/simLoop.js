@@ -38,6 +38,7 @@ import { updateSensors, setSensorScene } from './sensorSystem';
 import { getTeamDatalink } from './teamDatalink';
 import { getActiveScenario } from './scenarios';
 import { CommanderView } from './commanderView';
+import { StrikePlannerView } from './strikePlanner';
 import { soundManager } from '../utils/soundManager';
 import { checkCrash, checkGPWS } from './crashDetection';
 import { updateTgp } from '../ui/tgp.js';
@@ -76,7 +77,9 @@ export function update(dt, ctx) {
 		// stick, weapons safed, AB cut, mouse-steering off. The user
 		// can look around (mouse drag) while the aircraft tracks
 		// straight.
-		if ((ctx.commanderView && ctx.commanderView.active) || ctx.spectatorTarget) {
+		const altCamActive = (ctx.commanderView && ctx.commanderView.active)
+			|| (ctx.strikePlannerView && ctx.strikePlannerView.active);
+		if (altCamActive || ctx.spectatorTarget) {
 			input.pitch = 0;
 			input.roll  = 0;
 			input.yaw   = 0;
@@ -318,6 +321,23 @@ export function update(dt, ctx) {
 			setSensorScene(viewer.scene);
 		}
 	}
+	// Lazy-create the strike planner the same way. Mutually exclusive
+	// with commanderView at the camera level — only one alternate
+	// camera mode is active at a time (handled in their key bindings).
+	if (!ctx.strikePlannerView) {
+		const viewer = getViewer();
+		if (viewer) {
+			const sp = new StrikePlannerView(viewer);
+			// Wire mutual exclusion with commander view. Either side
+			// closes the other on activation. Functions are set after
+			// both views exist so neither needs to import the other.
+			if (ctx.commanderView) {
+				sp.closeOther = () => ctx.commanderView.setActive(false);
+				ctx.commanderView._closeStrikePlanner = () => sp.setActive(false);
+			}
+			ctx.setStrikePlannerView(sp);
+		}
+	}
 
 	// Spectator auto-clear: if the unit we're following dies between
 	// frames, fall back to the normal pilot camera rather than
@@ -356,6 +376,8 @@ export function update(dt, ctx) {
 	// CRASHED freezes the camera on last-known pose (no branch fires).
 	if (ctx.commanderView && ctx.commanderView.active) {
 		// Commander owns the camera.
+	} else if (ctx.strikePlannerView && ctx.strikePlannerView.active) {
+		// Strike planner owns the camera.
 	} else if (ctx.spectatorTarget) {
 		// Chase cam behind the clicked unit. Uses the same mouse
 		// orbit values the pilot camera reads, so dragging the mouse
@@ -423,15 +445,24 @@ export function update(dt, ctx) {
 		const allProjs    = projectiles.concat(npcProjs);
 		const units = npcSystem ? npcSystem.npcs : [];
 		cv.update(dt, state, units, allProjs);
+		// Strike planner runs in lockstep with commander view — same
+		// inputs, sibling surface. Update unconditionally so its
+		// _lastPlayerState stays fresh (used to recenter the camera
+		// when the panel opens). Update body early-returns when
+		// inactive, so this is essentially free off-screen.
+		if (ctx.strikePlannerView) {
+			ctx.strikePlannerView.update(dt, state, units, allProjs);
+		}
 
 		// Pilot overlays follow commander state. The cockpit plane
 		// model is drawn in camera space — hide it when the god-eye
 		// view owns the camera. UI likewise fades out.
 		const cmdActive = cv.active;
+		const planActive = !!(ctx.strikePlannerView && ctx.strikePlannerView.active);
 		// Cockpit model + pilot UI are only visible while the pilot
-		// camera is driving. Both the commander god-eye view AND the
-		// spectator chase-cam take over the camera, so both hide them.
-		const pilotCamOwns = !cmdActive && !ctx.spectatorTarget;
+		// camera is driving. Commander god-eye, strike planner, and
+		// spectator chase-cam each take over the camera and hide them.
+		const pilotCamOwns = !cmdActive && !planActive && !ctx.spectatorTarget;
 		const planeModel = ctx.planeModel;
 		if (planeModel) planeModel.visible = pilotCamOwns && isFlying;
 		const uiContainer = document.getElementById('uiContainer');
@@ -445,7 +476,7 @@ export function update(dt, ctx) {
 		// markers there to avoid double rendering. Visible otherwise
 		// (pilot OR spectator).
 		const npcLayer = document.getElementById('npc-markers-layer');
-		if (npcLayer) npcLayer.style.display = cmdActive ? 'none' : '';
+		if (npcLayer) npcLayer.style.display = (cmdActive || planActive) ? 'none' : '';
 
 		// While the player is dead, toggling into the map hides the
 		// crash screen so the whole view is the battlefield.
