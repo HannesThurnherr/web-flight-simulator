@@ -43,10 +43,16 @@ export class PlaneController {
 				return;
 			}
 
-			// Left mouse: FIRE. Held or clicked while in cockpit view —
-			// same as pressing F / Enter. Commander view lets the
-			// built-in left-click-pan through.
-			if (e.button === 0 && !commanderActive) {
+			// Left mouse: FIRE — but only while mouse-steering is
+			// engaged. Otherwise the cursor is freed for clicking HUD
+			// elements (TGP buttons, minimap +/-, etc.) and we don't
+			// want every UI click to trip the trigger. Mouse-steering
+			// is the explicit "I am flying with the cursor" mode, so
+			// gating the left-button trigger on it keeps the two
+			// roles cleanly separated. Keyboard fire (F / Enter) is
+			// always live regardless. Commander view lets the
+			// built-in left-click-pan through unchanged.
+			if (e.button === 0 && !commanderActive && this.mouseSteering) {
 				this.mouseFireHeld = true;
 			}
 			// Right mouse: orbit-camera drag. Was left-drag previously;

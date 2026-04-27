@@ -189,7 +189,16 @@ function _makeButton(label, onClick) {
 		letter-spacing: 1px;
 		cursor: pointer;
 	`;
-	b.onclick = (ev) => { ev.stopPropagation(); onClick(); };
+	// Swallow mousedown / mouseup as well as click — planeController
+	// wires the LMB fire trigger to mousedown at window level, and
+	// mousedown fires before click. Even though the controller now
+	// gates LMB-fire on mouseSteering, swallowing here means the
+	// button never relies on that gate. Same pattern as the minimap
+	// zoom buttons.
+	const swallow = (ev) => { ev.stopPropagation(); ev.preventDefault(); };
+	b.addEventListener('mousedown', swallow);
+	b.addEventListener('mouseup',   swallow);
+	b.addEventListener('click', (ev) => { swallow(ev); onClick(); });
 	return b;
 }
 
