@@ -381,10 +381,12 @@ export function updateTgp(playerState, weaponSystem, mainViewer) {
 	if (!fv) return;
 
 	// In TRACK / LASE: auto-aim the gimbal at the snapped world
-	// point so the spot stays centered as the plane moves. Drag
-	// is suppressed in those modes (gimbal authority belongs to
-	// the tracking logic).
-	if (playerDesignation.mode === 'TRACK' || playerDesignation.mode === 'LASE') {
+	// point so the spot stays centered as the plane moves — UNLESS
+	// the player is actively dragging, in which case they're slewing
+	// the lock to a new point. Dragging breaks the unit-snap (the
+	// player is clearly retargeting) and the next-frame raycast
+	// below adopts the new ground point as the lock.
+	if ((playerDesignation.mode === 'TRACK' || playerDesignation.mode === 'LASE') && !_dragging) {
 		// Follow ground-unit targets if the snap was on one.
 		const t = playerDesignation.target;
 		if (t && !t.destroyed && t.active !== false) {
@@ -395,9 +397,16 @@ export function updateTgp(playerState, weaponSystem, mainViewer) {
 		const aim = _gimbalToward(playerState, playerDesignation);
 		_gimbalAz = Math.max(-GIMBAL_AZ_LIMIT, Math.min(GIMBAL_AZ_LIMIT, aim.az));
 		_gimbalEl = Math.max(GIMBAL_EL_MIN,    Math.min(GIMBAL_EL_MAX,    aim.el));
-		if (playerDesignation.mode === 'LASE') {
-			playerDesignation.lastLaseAt = performance.now() * 0.001;
-		}
+	}
+	if (playerDesignation.mode === 'LASE') {
+		// Keep the lase-fresh stamp current regardless of drag, so the
+		// LaserSeeker doesn't time out the spot during a slew.
+		playerDesignation.lastLaseAt = performance.now() * 0.001;
+	}
+	if (_dragging && (playerDesignation.mode === 'TRACK' || playerDesignation.mode === 'LASE')) {
+		// Player is slewing the lock — drop any unit-snap so the new
+		// spot is taken from the ground raycast below.
+		playerDesignation.target = null;
 	}
 
 	// Place the TGP camera at the player, oriented at heading +
@@ -435,9 +444,17 @@ export function updateTgp(playerState, weaponSystem, mainViewer) {
 		};
 		if (playerDesignation.mode === 'SLEW') {
 			setSlewSpot(spot.lon, spot.lat, spot.alt);
+		} else if (_dragging) {
+			// TRACK / LASE while dragging: adopt the raycast spot as
+			// the new lock. The seeker reads playerDesignation each
+			// frame, so writing here is enough — no need to call
+			// snapTrack (which would reset the mode and timestamp).
+			playerDesignation.lon = spot.lon;
+			playerDesignation.lat = spot.lat;
+			playerDesignation.alt = spot.alt;
 		}
-		// TRACK / LASE don't update from the ray — they hold the
-		// snapped point. Reverse-aim is done above.
+		// TRACK / LASE without drag: hold the snapped point. Reverse-
+		// aim is done above.
 	}
 
 	// Status text.
