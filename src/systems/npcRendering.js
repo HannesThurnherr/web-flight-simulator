@@ -31,11 +31,35 @@ import { createMunition, munitionIdForSimType } from '../weapon/munitionFactory.
 // the viewMatrix used here MUST match the one Cesium renders the
 // earth with this frame, or the mesh and globe will drift apart
 // visually (the shake symptom when following a moving unit).
+// Hide NPC meshes beyond this distance from the camera. Trace-driven
+// number: at 30 km a fighter sprite is ~1-2 px, so the visual cost of
+// hiding it is near zero, but the GPU savings from skipping a 3-30 MB
+// glTF's draw calls are large. Commander view + map markers are not
+// affected — they live on Cesium entities, not Three.js meshes.
+const DISTANCE_CULL_M = 30000;
+
 export function applyNpcMeshMatrix(npcSys, npc, viewMatrix) {
 	if (!npc || !npc.mesh) return;
 	const pos = Cesium.Cartesian3.fromDegrees(
 		npc.lon, npc.lat, npc.alt, undefined, npcSys._scratchCartesian,
 	);
+
+	// Distance cull. The camera world position is what matters for
+	// rendering (works correctly in pilot, spectator, and commander
+	// views). Setting `mesh.visible = false` on a Group propagates to
+	// every descendant, so the renderer skips the entire NPC sub-tree
+	// without us having to traverse it.
+	const camPos = npcSys.viewer && npcSys.viewer.camera && npcSys.viewer.camera.positionWC;
+	if (camPos) {
+		const distSq = Cesium.Cartesian3.distanceSquared(pos, camPos);
+		if (distSq > DISTANCE_CULL_M * DISTANCE_CULL_M) {
+			npc.mesh.visible = false;
+			return;
+		}
+		// Else fall through; mesh stays visible and we re-bake the
+		// matrix below.
+		if (!npc.mesh.visible) npc.mesh.visible = true;
+	}
 
 	npcSys._scratchHPR.heading = Cesium.Math.toRadians(npc.heading);
 	npcSys._scratchHPR.pitch   = Cesium.Math.toRadians(npc.roll);
