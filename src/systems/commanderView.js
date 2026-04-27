@@ -1,5 +1,6 @@
 import * as Cesium from 'cesium';
 import { allDatalinks } from './teamDatalink.js';
+import { isRadiating } from './sensorSystem.js';
 
 // ============================================================================
 // Commander ("god's eye") view.
@@ -1479,7 +1480,7 @@ export class CommanderView {
 			if (!obs || obs.destroyed || obs.active === false) continue;
 			if (hasFilter && !selected.has(obs)) continue;
 			const r = obs.sensors && obs.sensors.radar;
-			if (!r || !r.enabled || !r.active) continue;
+			if (!isRadiating(obs)) continue;
 
 			this._drawRadarCone(obs, r, coneColorFor(obs));
 			diag.cones++;

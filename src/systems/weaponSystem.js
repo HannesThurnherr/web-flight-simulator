@@ -5,6 +5,7 @@ import { Bullet } from '../weapon/bullet';
 import { Flare } from '../weapon/flare';
 import { soundManager } from '../utils/soundManager';
 import { movePosition } from '../utils/math';
+import { isRadiating } from './sensorSystem.js';
 
 export class WeaponSystem {
 	constructor(viewer, scene, playerModel) {
@@ -302,11 +303,12 @@ export class WeaponSystem {
 			// thing radiating).
 			let target;
 			if (weapon.id === 'agm') {
-				const e = this.designatedEmitter;
-				const stillValid = e && !e.destroyed && e.active !== false
-					&& e.sensors && e.sensors.radar
-					&& e.sensors.radar.active && e.sensors.radar.mode !== 'off';
-				target = stillValid ? e : null;
+				// Use the shared isRadiating() helper so designation
+				// validity matches exactly what the seeker, the RWR
+				// scope, and the commander debug overlay see.
+				target = isRadiating(this.designatedEmitter)
+					? this.designatedEmitter
+					: null;
 			} else {
 				target = this.target;
 			}
@@ -661,10 +663,7 @@ export class WeaponSystem {
 		// expires them on its own clock), so re-validate here.
 		const emitters = [];
 		for (const [src] of rwr) {
-			if (!src || src.destroyed || src.active === false) continue;
-			const r = src.sensors && src.sensors.radar;
-			if (!r || !r.active || r.mode === 'off') continue;
-			emitters.push(src);
+			if (isRadiating(src)) emitters.push(src);
 		}
 		if (emitters.length === 0) {
 			this.designatedEmitter = null;

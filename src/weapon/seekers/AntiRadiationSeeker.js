@@ -36,6 +36,7 @@
 
 import * as Cesium from 'cesium';
 import { Missile } from '../missile.js';
+import { isRadiating } from '../../systems/sensorSystem.js';
 
 export class AntiRadiationSeeker extends Missile {
 	constructor(scene, viewer, startPos, heading, pitch, speed,
@@ -108,8 +109,8 @@ export class AntiRadiationSeeker extends Missile {
 		if (!u || u.destroyed || u.active === false) return 0;
 		if (u === this.launcher) return 0;
 		if (u.team && this.team && u.team === this.team) return 0;
-		const r = u.sensors && u.sensors.radar;
-		if (!r || !r.enabled || !r.active || r.mode === 'off') return 0;
+		if (!isRadiating(u)) return 0;
+		const r = u.sensors.radar;
 		// FOV check (simple cosine — narrower than the wide ±90° an
 		// active-radar AAM uses).
 		const cosLat = Math.cos((this.lat || 0) * Math.PI / 180);
@@ -158,13 +159,7 @@ export class AntiRadiationSeeker extends Missile {
 	_guide(dt) {
 		if (this.lostLock) return;
 
-		const radarLive = this.target
-			&& !this.target.destroyed
-			&& this.target.active !== false
-			&& this.target.sensors
-			&& this.target.sensors.radar
-			&& this.target.sensors.radar.active
-			&& this.target.sensors.radar.mode !== 'off';
+		const radarLive = isRadiating(this.target);
 
 		if (radarLive) {
 			this._refreshLkp(this.target);

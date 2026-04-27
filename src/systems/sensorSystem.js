@@ -354,8 +354,42 @@ export const NOTCH_ENABLED = true;
 // Returns a detection descriptor, or null if any stage rejects the target.
 // The descriptor carries all the intermediate geometry so callers can
 // populate contact/RWR records without redoing the LOS math.
+// Single source of truth for "is this unit's radar emitting right now?".
+// All callers — the sensor scan, the commander's debug overlay, the HARM
+// seeker's emitter scoring, and the player's HARM-designation cycle —
+// must agree on this answer. Otherwise the player sees a Tor's cone in
+// the debug view but their HARM can't lock it (or vice versa), which is
+// exactly the kind of bug that makes SEAD feel broken.
+//
+// Conditions:
+//   - radar object exists
+//   - radar.enabled !== false (absent = enabled, matches existing data)
+//   - radar.active === true (emcon flips this; static SAMs default false)
+//   - radar.mode !== 'off' (player TWS/STT toggle uses 'off' to silence)
+//
+// Pass the unit (preferred) or just the radar block; caller-friendly.
+export function isRadiating(unitOrRadar) {
+	if (!unitOrRadar) return false;
+	// If passed a unit, dead units can't radiate regardless of what
+	// their radar block says. Sensor unit-active check is on `active`
+	// (the alive/destroyed flag), distinct from `radar.active` (the
+	// emissions on/off flag).
+	if (unitOrRadar.sensors !== undefined) {
+		if (unitOrRadar.destroyed) return false;
+		if (unitOrRadar.active === false) return false;
+	}
+	const r = unitOrRadar.sensors && unitOrRadar.sensors.radar
+		? unitOrRadar.sensors.radar
+		: unitOrRadar; // caller passed the radar block directly
+	if (!r) return false;
+	if (r.enabled === false) return false;
+	if (!r.active) return false;
+	if (r.mode === 'off') return false;
+	return true;
+}
+
 export function detectRadar(observer, target, radar) {
-	if (!radar || !radar.enabled || !radar.active) return null;
+	if (!isRadiating(radar)) return null;
 	const sig = target && target.signature;
 	if (!sig) return null;
 
