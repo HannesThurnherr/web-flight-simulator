@@ -87,6 +87,25 @@ export function returnToSlew() {
 	playerDesignation.target = null;
 }
 
+// Map-mode designator: a click on the strike-planner map sets the
+// designated point directly, bypassing the TGP-state machine. Forces
+// mode to TRACK (so JDAM fire-checks pass and the bomb has something
+// to home on) but leaves lasing off (a map click can't lase). Clears
+// any unit-snap — map clicks designate ground points, not vehicles.
+//
+// If the player later opens the TGP, it will show this point as a
+// TRACK-locked spot, which is the natural read: "the strike planner
+// committed a target; the TGP is now holding it." Cycling MODE on
+// the TGP from there continues the normal SLEW/TRACK/LASE flow.
+export function setDesignationFromMap(lon, lat, alt) {
+	playerDesignation.mode = 'TRACK';
+	playerDesignation.lasing = false;
+	playerDesignation.lon = lon;
+	playerDesignation.lat = lat;
+	playerDesignation.alt = alt;
+	playerDesignation.target = null;
+}
+
 // Each tick: if we're tracking a unit, slide the spot to follow it.
 // Called from the TGP system update.
 export function tickTrack(now) {
