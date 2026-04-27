@@ -294,60 +294,51 @@ export class StrikePlannerView {
 			}
 		});
 
-		// Pointer events on the Cesium canvas. Capture phase so we
-		// beat any other handler the page may have installed.
-		const canvas = this.viewer.scene.canvas;
-		if (!canvas) return;
-
-		canvas.addEventListener('pointerdown', (e) => {
+		// Pointer events on `window` in CAPTURE phase. Why: the Cesium
+		// canvas sits at z-index 1, but `#threeContainer` (z=5) overlays
+		// it and intercepts every pointer event in normal bubbling. The
+		// HUD `#uiContainer` (z=10) is `pointer-events:none` by default
+		// so it doesn't matter; threeContainer is the actual culprit.
+		// Capture-phase listeners on `window` see every event before
+		// the topmost element gets a chance to consume it. Commander
+		// view uses the same pattern for the same reason.
+		window.addEventListener('pointerdown', (e) => {
 			if (!this.active) return;
 			if (e.button !== 0) return;
 			this._panning  = true;
 			this._panLastX = e.clientX;
 			this._panLastY = e.clientY;
 			this._clickBudget = this._clickBudgetPx;
-			canvas.style.cursor = 'grabbing';
-			try { canvas.setPointerCapture(e.pointerId); } catch (_) {}
-		});
+		}, true);
 
-		canvas.addEventListener('pointermove', (e) => {
+		window.addEventListener('pointermove', (e) => {
 			if (!this.active || !this._panning) return;
 			const dx = e.clientX - this._panLastX;
 			const dy = e.clientY - this._panLastY;
 			this._panLastX = e.clientX;
 			this._panLastY = e.clientY;
-			// Track travelled distance for click vs drag classification.
 			this._clickBudget -= Math.abs(dx) + Math.abs(dy);
-			// Pan magnitude scales with view distance so the world feels
-			// roughly stationary under the cursor regardless of zoom.
 			const k = this.distance / 800;
-			// Rough lat-correction so panning east at high latitudes
-			// doesn't smear the map.
 			const cosLat = Math.cos(this.centerLat * Math.PI / 180) || 1;
 			this.centerLon -= dx * 0.0001 * k / cosLat;
 			this.centerLat += dy * 0.0001 * k;
-		});
+		}, true);
 
-		canvas.addEventListener('pointerup', (e) => {
+		window.addEventListener('pointerup', (e) => {
 			if (!this.active) return;
 			const wasPanning = this._panning;
 			this._panning = false;
-			canvas.style.cursor = '';
-			try { canvas.releasePointerCapture(e.pointerId); } catch (_) {}
-			// Treat a small-or-no-drag pointerup as a click → designate.
 			if (wasPanning && this._clickBudget > 0 && e.button === 0) {
 				this._handleClickAt(e.clientX, e.clientY);
 			}
-		});
+		}, true);
 
-		canvas.addEventListener('wheel', (e) => {
+		window.addEventListener('wheel', (e) => {
 			if (!this.active) return;
 			e.preventDefault();
-			// Multiplicative zoom feels right; bound so we don't get
-			// stuck at ground level or out at orbit.
 			const factor = Math.exp(e.deltaY * 0.0015);
 			this.distance = Math.max(2000, Math.min(2_000_000, this.distance * factor));
-		}, { passive: false });
+		}, { passive: false, capture: true });
 	}
 
 	_handleClickAt(x, y) {
