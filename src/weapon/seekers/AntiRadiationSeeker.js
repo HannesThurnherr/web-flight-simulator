@@ -54,18 +54,27 @@ export class AntiRadiationSeeker extends Missile {
 		this._lkp = null;
 		this._emissionLostAt = null; // sim-age when emission first dropped
 
-		// At-launch acquisition. Scan the launcher's known world for the
-		// best radiating hostile in our forward cone. The launcher
-		// passes its full unit array (npcs + self) through the firing
-		// path; HARM doesn't care which it is, only whether they're
-		// radiating + hostile + in cone.
+		// At-launch acquisition. Two modes:
+		//   1. Player-designated: the firing path passes a specific
+		//      emitter as `target`. Use it directly if it's still
+		//      radiating + in cone (the player picked it via Tab on
+		//      the RWR; honour their choice).
+		//   2. Auto-acquire: no `target` was passed, scan the
+		//      launcher's known world and lock the strongest emitter
+		//      in our forward cone.
 		const npcs = (launcher && launcher.npcs) ? launcher.npcs : [];
 		const candidates = [...npcs];
 		// Also consider the player as a target if launched by an NPC
 		// (HARMs aimed at AWACS / other emitting friendlies). The
 		// existing `team` filter handles that — the launcher itself
 		// is excluded.
-		this.target = this._scanForEmitter(candidates) || null;
+		let acquired = null;
+		if (target && this._emitterScore(target) > 0) {
+			acquired = target;
+		} else {
+			acquired = this._scanForEmitter(candidates) || null;
+		}
+		this.target = acquired;
 		if (this.target) {
 			this._refreshLkp(this.target);
 		} else {

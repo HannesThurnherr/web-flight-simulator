@@ -137,8 +137,18 @@ export function update(dt, ctx) {
 		if (isFlying) {
 			if (input.weaponIndex !== -1) weaponSystem.selectWeapon(input.weaponIndex);
 			if (input.toggleWeapon)       weaponSystem.toggleWeapon();
-			if (input.cycleTargetFwd)     weaponSystem.cycleDesignatedTarget( 1);
-			if (input.cycleTargetBack)    weaponSystem.cycleDesignatedTarget(-1);
+			// Tab is contextual: with a HARM active it cycles the RWR's
+			// designated emitter (so the player picks which SAM to hit),
+			// otherwise it cycles the AESA designated target as before.
+			if (input.cycleTargetFwd || input.cycleTargetBack) {
+				const dir = input.cycleTargetFwd ? 1 : -1;
+				const cur = weaponSystem.getCurrentWeapon && weaponSystem.getCurrentWeapon();
+				if (cur && cur.id === 'agm') {
+					weaponSystem.cycleDesignatedEmitter(state, dir);
+				} else {
+					weaponSystem.cycleDesignatedTarget(dir);
+				}
+			}
 			if (input.fire)               weaponSystem.fire(state);
 			if (input.fireFlare)          weaponSystem.fireFlare(state);
 		}

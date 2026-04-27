@@ -266,7 +266,9 @@ export class HUD {
 		if (!rwr || rwr.size === 0) return;
 
 		const NS = 'http://www.w3.org/2000/svg';
-		for (const [, c] of rwr) {
+		const designatedEmitter = state && state.weaponSystem
+			&& state.weaponSystem.designatedEmitter;
+		for (const [src, c] of rwr) {
 			// Bearing is in the aircraft's body frame (0 = nose, +right).
 			// SVG angle = bearing - π/2 so nose goes to top of scope.
 			const ang = (c.bearing || 0) - Math.PI / 2;
@@ -296,6 +298,31 @@ export class HUD {
 			chev.setAttribute('stroke', '#000');
 			chev.setAttribute('stroke-width', 0.8);
 			s.contactGroup.appendChild(chev);
+
+			// HARM designation reticle: brackets around the chevron
+			// for the emitter the player has Tab-cycled to. Drawn
+			// regardless of which weapon is selected so the player
+			// can confirm their pick before switching to HARM.
+			if (designatedEmitter && src === designatedEmitter) {
+				const ring = document.createElementNS(NS, 'circle');
+				ring.setAttribute('cx', x);
+				ring.setAttribute('cy', y);
+				ring.setAttribute('r', 12);
+				ring.setAttribute('fill', 'none');
+				ring.setAttribute('stroke', '#00eaff');
+				ring.setAttribute('stroke-width', 1.6);
+				ring.setAttribute('stroke-dasharray', '3 2');
+				s.contactGroup.appendChild(ring);
+				const tag = document.createElementNS(NS, 'text');
+				tag.setAttribute('x', x);
+				tag.setAttribute('y', y - 14);
+				tag.setAttribute('fill', '#00eaff');
+				tag.setAttribute('font-family', 'AceCombat, monospace');
+				tag.setAttribute('font-size', '9');
+				tag.setAttribute('text-anchor', 'middle');
+				tag.textContent = 'HARM';
+				s.contactGroup.appendChild(tag);
+			}
 
 			// Small label showing lock type.
 			if (c.lockType === 'track') {

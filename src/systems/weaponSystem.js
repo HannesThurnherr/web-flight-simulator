@@ -73,6 +73,18 @@ export class WeaponSystem {
 		// into `locks` (must have status === 'LOCKED' to fire). Cycled
 		// by Tab / Shift+Tab.
 		this.designatedTarget = null;
+
+		// ---- Anti-radiation designation (HARM) -----------------------
+		// The currently designated emitter for HARM shots. Independent
+		// of the AESA designated target — emitters come from the RWR
+		// (passive listening), not from the radar's track file. Cycled
+		// by Tab while a HARM is the active weapon. If null at fire
+		// time, the HARM auto-acquires the strongest emitter in its
+		// forward cone (legacy behaviour). If set, the seeker locks
+		// that specific unit at launch — the standard way real aircrews
+		// avoid every HARM piling onto the biggest emitter.
+		this.designatedEmitter = null;
+
 		// Back-compat alias used by fire() and legacy callers. Kept in
 		// sync with designatedTarget every update().
 		this.target = null;
@@ -283,10 +295,21 @@ export class WeaponSystem {
 
 			const launchPos = this.calculateWeaponPos(missileOffset) || startPos;
 			// AAMs hand the seeker the AESA-locked target. AGM-88 HARM
-			// (anti-radiation) ignores it entirely and auto-picks the
-			// strongest emitter at launch time from playerState.npcs;
-			// passing target=null keeps the behaviour explicit.
-			const target = (weapon.id === 'agm') ? null : this.target;
+			// (anti-radiation) gets the player's designated emitter if
+			// one is set on the RWR; otherwise null and the seeker
+			// auto-picks the strongest emitter in its forward cone at
+			// launch (legacy behaviour, fine when there's only one
+			// thing radiating).
+			let target;
+			if (weapon.id === 'agm') {
+				const e = this.designatedEmitter;
+				const stillValid = e && !e.destroyed && e.active !== false
+					&& e.sensors && e.sensors.radar
+					&& e.sensors.radar.active && e.sensors.radar.mode !== 'off';
+				target = stillValid ? e : null;
+			} else {
+				target = this.target;
+			}
 
 			// Factory dispatch on the weapon's simType. Returns the
 			// right seeker-class instance for whatever munition is
@@ -377,6 +400,15 @@ export class WeaponSystem {
 	update(dt, playerState, input = null) {
 		const prevLockStatus = this.lockStatus;
 		const currentWeapon = this.getCurrentWeapon();
+
+		// Drop the HARM-designated emitter if it's been killed or
+		// permanently disabled. Don't drop on radar shutdown alone —
+		// players designate-then-wait-for-emcon-cycle as a tactic.
+		if (this.designatedEmitter
+			&& (this.designatedEmitter.destroyed
+				|| this.designatedEmitter.active === false)) {
+			this.designatedEmitter = null;
+		}
 
 		try {
 			const isFiringGun = input && input.fire && currentWeapon.id === 'gun' && !this.isGunOverheated && currentWeapon.ammo > 0;
@@ -608,6 +640,46 @@ export class WeaponSystem {
 		// If designated wasn't in the list (idx === -1), `next` still
 		// resolves to a valid index in [0, locked.length).
 		this.designatedTarget = locked[idx < 0 ? 0 : next];
+		try { soundManager.play('weapon-switch'); } catch (e) {}
+	}
+
+	// Cycle the designated emitter through the set of currently-radiating
+	// hostiles on the player's RWR. Used by Tab while a HARM is the
+	// active weapon — the player picks which SAM the next HARM should
+	// hunt rather than letting every shot pile onto the strongest
+	// emitter (typically the EWR). `direction = +1` advances forward.
+	// `playerState` is the live player state object; we read its `rwr`
+	// Map (populated by sensorSystem each tick).
+	cycleDesignatedEmitter(playerState, direction = 1) {
+		const rwr = playerState && playerState.rwr;
+		if (!rwr || rwr.size === 0) {
+			this.designatedEmitter = null;
+			return;
+		}
+		// Filter to live, currently-radiating hostiles. RWR entries can
+		// linger briefly after an emitter shuts down (sensorSystem
+		// expires them on its own clock), so re-validate here.
+		const emitters = [];
+		for (const [src] of rwr) {
+			if (!src || src.destroyed || src.active === false) continue;
+			const r = src.sensors && src.sensors.radar;
+			if (!r || !r.active || r.mode === 'off') continue;
+			emitters.push(src);
+		}
+		if (emitters.length === 0) {
+			this.designatedEmitter = null;
+			return;
+		}
+		// Stable order by name so the cycle feels deterministic.
+		emitters.sort((a, b) => {
+			const na = (a.name || '').toString();
+			const nb = (b.name || '').toString();
+			return na.localeCompare(nb);
+		});
+		const idx = emitters.indexOf(this.designatedEmitter);
+		const step = direction > 0 ? 1 : -1;
+		const next = (idx + step + emitters.length) % emitters.length;
+		this.designatedEmitter = emitters[idx < 0 ? 0 : next];
 		try { soundManager.play('weapon-switch'); } catch (e) {}
 	}
 
