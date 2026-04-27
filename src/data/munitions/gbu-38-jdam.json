@@ -1,0 +1,39 @@
+{
+	"id": "gbu-38-jdam",
+	"name": "GBU-38 JDAM",
+	"shortName": "GBU-38",
+	"category": "GBU",
+	"tags": ["gbu", "gps-guided", "500lb"],
+	"massKg": 240,
+	"rcsContributionM2": 0.04,
+	"description": "500 lb GPS-guided bomb. Same all-weather precision as the GBU-31, lighter warhead and tighter kill radius — better for collateral-sensitive targets or when the loadout needs more shots per pylon. Effective up to ~24 km from medium-altitude release.",
+	"simType": "GBU-38",
+	"signature": "missile_radar",
+	"seekerType": "gps",
+	"modelTemplate": "jdam-38",
+	"realLengthM": 2.36,
+	"flight": {
+		"launchSpeedOffset": 0,
+		"boostDurationS": 0,
+		"boostAccel": 0,
+		"peakSpeed": 380,
+		"minSpeed": 80,
+		"maxLifeS": 120,
+		"maxTurnDegPerSec": 7,
+		"pnGain": 3.0,
+		"glideFactor": 1.1,
+		"dragRef": 1.4,
+		"dragRefSpeed": 280,
+		"dragRefAltitude": 3000,
+		"vManeuverRef": 250,
+		"gAvailFloor": 0.10
+	},
+	"warhead": {
+		"killRadiusM": 30,
+		"fuzeSenseRadiusM": 40,
+		"missAbortRadiusMul": 2
+	},
+	"seeker": {
+		"maxG": 5
+	}
+}

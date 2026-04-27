@@ -6,7 +6,34 @@
 	"tags": ["gbu", "gps-guided", "2000lb"],
 	"massKg": 907,
 	"rcsContributionM2": 0.08,
-	"description": "2000 lb GPS-guided bomb. Heavy strike, all-weather, precision via coords.",
+	"description": "2000 lb GPS-guided bomb. Heavy strike, all-weather, precision via coords. Drops on a frozen lat/lon/alt captured at release — the TGP can slew anywhere afterward without affecting the shot. Effective up to ~24 km from medium-altitude release, longer with toss.",
 	"simType": "GBU-31",
-	"seekerType": "gps"
+	"signature": "missile_radar",
+	"seekerType": "gps",
+	"modelTemplate": "jdam-31",
+	"realLengthM": 3.84,
+	"flight": {
+		"launchSpeedOffset": 0,
+		"boostDurationS": 0,
+		"boostAccel": 0,
+		"peakSpeed": 380,
+		"minSpeed": 80,
+		"maxLifeS": 120,
+		"maxTurnDegPerSec": 6,
+		"pnGain": 3.0,
+		"glideFactor": 1.1,
+		"dragRef": 1.6,
+		"dragRefSpeed": 280,
+		"dragRefAltitude": 3000,
+		"vManeuverRef": 250,
+		"gAvailFloor": 0.10
+	},
+	"warhead": {
+		"killRadiusM": 60,
+		"fuzeSenseRadiusM": 70,
+		"missAbortRadiusMul": 2
+	},
+	"seeker": {
+		"maxG": 5
+	}
 }
