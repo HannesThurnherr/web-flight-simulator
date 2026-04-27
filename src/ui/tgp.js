@@ -233,12 +233,25 @@ function _makeButton(label, onClick) {
 function _cycleMode() {
 	const now = performance.now() * 0.001;
 	if (playerDesignation.mode === 'SLEW') {
-		// Snap on whatever the spot currently is.
+		// Don't snap on a degenerate spot. If the SLEW raycast never
+		// produced a real ground hit (lat/lon still 0/0 = null
+		// island), the player obviously didn't mean to track that —
+		// stay in SLEW so they get another chance instead of
+		// pointing the gimbal at the equator.
+		const haveSpot = playerDesignation.lat !== 0 || playerDesignation.lon !== 0;
+		if (!haveSpot) return;
 		snapTrack(playerDesignation.lon, playerDesignation.lat, playerDesignation.alt, null);
 	} else if (playerDesignation.mode === 'TRACK') {
 		startLase(now);
 	} else if (playerDesignation.mode === 'LASE') {
 		returnToSlew();
+		// Reset the gimbal to the default forward-down attitude when
+		// returning to SLEW. Without this, if TRACK had clamped the
+		// gimbal at the limits to chase a far-away point, the player
+		// is stuck looking at that direction with no way to recover
+		// short of dragging back to forward.
+		_gimbalAz = 0;
+		_gimbalEl = -10;
 	}
 }
 
@@ -283,6 +296,28 @@ function _ensureFeedViewer() {
 		// gimbal control on top.
 		_tgpViewer.scene.screenSpaceCameraController.enableInputs = false;
 		try { _tgpViewer.cesiumWidget.creditContainer.style.display = 'none'; } catch (e) {}
+
+		// Attach mouse handlers DIRECTLY to the Cesium canvas. The vp
+		// listeners I had before relied on event bubbling, which
+		// doesn't always work cleanly through Cesium's widget DOM
+		// (the canvas can swallow events under some configurations).
+		// Going straight to the canvas is bulletproof.
+		const cv = _tgpViewer.canvas;
+		if (cv) {
+			cv.addEventListener('mousedown', (e) => {
+				if (e.button !== 0) return;
+				e.stopPropagation();
+				e.preventDefault();
+				_dragging = true;
+				if (_viewport) _viewport.style.cursor = 'grabbing';
+			});
+			cv.addEventListener('wheel', (e) => {
+				e.stopPropagation();
+				e.preventDefault();
+				const factor = Math.exp(e.deltaY * 0.001);
+				_tgpFovDeg = Math.max(FOV_MIN, Math.min(FOV_MAX, _tgpFovDeg * factor));
+			}, { passive: false });
+		}
 	} catch (e) {
 		console.warn('[tgp] failed to create feed viewer:', e);
 		_tgpViewer = null;
