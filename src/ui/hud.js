@@ -747,10 +747,13 @@ export class HUD {
 		if (document.getElementById('hud-thrust-indicator')) return;
 		const panel = document.createElement('div');
 		panel.id = 'hud-thrust-indicator';
+		// Sits just above the minimap (which occupies bottom 30–280,
+		// left 30–280), aligned with its left edge so the two read as
+		// one column.
 		panel.style.cssText = `
 			position: absolute;
-			bottom: 110px;
-			left: 16px;
+			bottom: 290px;
+			left: 30px;
 			padding: 6px 10px;
 			border: 1px solid rgba(0, 255, 0, 0.4);
 			background: rgba(0, 20, 0, 0.35);
@@ -875,31 +878,36 @@ export class HUD {
 	// pilot a buffer before lift actually drops. G and AoA change color as
 	// they approach their respective limits to communicate risk at a glance.
 	updateFlightData(state) {
-		if (!this.aoaElem) return;
-
+		// Per-element guards so this function still drives the thrust /
+		// AB / stall indicators when the full AOA panel has been
+		// retired. The AOA / G / VS / SLIP block only updates if its
+		// elements are still around (i.e. createFlightDataPanel was
+		// called). Stall, AB, and thrust all live in their own DOM
+		// nodes and are still on by default.
 		const alphaDeg = (state.alpha || 0) * 180 / Math.PI;
 		const betaDeg  = (state.sideslip || 0) * 180 / Math.PI;
 		const g        = state.loadFactor || 0;
-		const vsFpm    = Math.round((state.verticalSpeed || 0) * 196.85); // m/s → ft/min
+		const vsFpm    = Math.round((state.verticalSpeed || 0) * 196.85);
+		const aoaAbs   = Math.abs(alphaDeg);
 
-		this.aoaElem.innerText = `${alphaDeg.toFixed(1).padStart(6)}°`;
-		this.gElem.innerText   = `${g.toFixed(1).padStart(5)}`;
-		this.vsElem.innerText  = `${vsFpm >= 0 ? '+' : ''}${vsFpm.toString().padStart(5)}`;
-		this.betaElem.innerText = `${betaDeg.toFixed(1).padStart(6)}°`;
+		if (this.aoaElem) {
+			this.aoaElem.innerText = `${alphaDeg.toFixed(1).padStart(6)}°`;
+			this.gElem.innerText   = `${g.toFixed(1).padStart(5)}`;
+			this.vsElem.innerText  = `${vsFpm >= 0 ? '+' : ''}${vsFpm.toString().padStart(5)}`;
+			this.betaElem.innerText = `${betaDeg.toFixed(1).padStart(6)}°`;
 
-		// Color cues: amber when approaching limits, red when at/beyond.
-		const aoaAbs = Math.abs(alphaDeg);
-		let aoaColor = '#0f0';
-		if (aoaAbs > 16) aoaColor = '#ff4040';
-		else if (aoaAbs > 12) aoaColor = '#ffcc00';
-		this.aoaElem.style.color = aoaColor;
+			let aoaColor = '#0f0';
+			if (aoaAbs > 16) aoaColor = '#ff4040';
+			else if (aoaAbs > 12) aoaColor = '#ffcc00';
+			this.aoaElem.style.color = aoaColor;
 
-		const gAbs = Math.abs(g);
-		let gColor = '#0f0';
-		if (state.gLimiterActive) gColor = '#ff40ff'; // magenta = FBW limiter active
-		else if (gAbs > 9) gColor = '#ff4040';
-		else if (gAbs > 7) gColor = '#ffcc00';
-		this.gElem.style.color = gColor;
+			const gAbs = Math.abs(g);
+			let gColor = '#0f0';
+			if (state.gLimiterActive) gColor = '#ff40ff';
+			else if (gAbs > 9) gColor = '#ff4040';
+			else if (gAbs > 7) gColor = '#ffcc00';
+			this.gElem.style.color = gColor;
+		}
 
 		// Stall warning: 0.8 × stall α (≈ 14.4°) — same threshold a real
 		// stick-shaker would fire at.
@@ -1940,7 +1948,9 @@ export class HUD {
 		const speedKmh = Math.round((state.speed || 0) * 3.6);
 		this.speedElem.innerText = speedKmh.toString().padStart(4, '0');
 
-		// updateFlightData(state); — panel removed (see constructor)
+		// AOA panel is gone but updateFlightData still drives the
+		// thrust bar, AB tag, and stall warning (per-element guarded).
+		this.updateFlightData(state);
 		this.updateMissileDebugPanel(state);
 		this.updateMissileMarkers(state);
 		this.updateMouseSteeringOverlay(state);

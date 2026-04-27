@@ -47,21 +47,21 @@ export class LaserSeeker extends Missile {
 	_guide(dt) {
 		if (this.lostLock) return;
 
-		const lasing = playerDesignation && playerDesignation.lasing;
-		if (!lasing) {
-			// Not actively lased right now. Start the loss timer if it
-			// isn't already running; expire to dumb mode if the gap
-			// gets too long.
+		// Treat any locked spot (TRACK or LASE) as a homing target. Real
+		// LGBs need active illumination during terminal, but the
+		// UX cost of forcing the player into a LASE-or-miss state
+		// machine outweighs the realism. The TGP still has the LASE
+		// state for show; the bomb just needs *some* designated spot.
+		// Only a degenerate (no-spot) SLEW kicks the loss timer.
+		const hasSpot = playerDesignation && playerDesignation.mode !== 'SLEW' &&
+			(playerDesignation.lat !== 0 || playerDesignation.lon !== 0);
+		if (!hasSpot) {
 			if (this._lostSpotAt == null) this._lostSpotAt = this._age || 0;
 			const lostFor = (this._age || 0) - this._lostSpotAt;
 			if (lostFor > this._losBreakTimeoutS) {
 				this.lostLock = true;
 			}
-			// Coast ballistic in the meantime — return without steering.
-			this.debug = {
-				mode: 'COAST',
-				targetName: 'SPOT-LOST',
-			};
+			this.debug = { mode: 'COAST', targetName: 'NO-SPOT' };
 			return;
 		}
 		// Spot is live. Reset loss bookkeeping.
