@@ -60,9 +60,33 @@ export class PlanePreview {
 		this.currentRoot = null;       // THREE.Group wrapping the current model
 		this._running    = true;
 		this._lastTime   = performance.now();
+		// Visibility gating. Two PlanePreview instances live for the
+		// entire session (compact + detail in the airframe picker).
+		// Without this gate they kept ticking renderer.render() 60×/s
+		// long after the picker closed and the player was flying — a
+		// silent ~5% main-thread cost (top hot spot in the BVR perf
+		// trace) just for two off-screen canvases. IntersectionObserver
+		// flips _visible based on actual visibility; the rAF loop
+		// only re-schedules itself while visible.
+		this._visible = true;
 
 		// Bound for requestAnimationFrame.
 		this._animate = this._animate.bind(this);
+		this._io = new IntersectionObserver((entries) => {
+			for (const e of entries) {
+				if (e.target === canvas) {
+					const wasVisible = this._visible;
+					this._visible = e.isIntersecting;
+					// Resume the loop on re-show (kicks off a single
+					// rAF; subsequent ones self-schedule from _animate).
+					if (!wasVisible && this._visible && this._running) {
+						this._lastTime = performance.now();
+						requestAnimationFrame(this._animate);
+					}
+				}
+			}
+		});
+		this._io.observe(canvas);
 		requestAnimationFrame(this._animate);
 
 		// Respond to size changes (menu may re-layout on window resize).
@@ -151,6 +175,10 @@ export class PlanePreview {
 
 	_animate(now) {
 		if (!this._running) return;
+		// Skip render + don't reschedule while off-screen. The
+		// IntersectionObserver re-kicks the loop when the canvas
+		// becomes visible again.
+		if (!this._visible) return;
 		const dt = Math.min(0.1, Math.max(0, (now - this._lastTime) / 1000));
 		this._lastTime = now;
 		if (this.currentRoot) {
@@ -164,6 +192,7 @@ export class PlanePreview {
 		this._running = false;
 		this._disposeCurrent();
 		if (this._resizeObserver) this._resizeObserver.disconnect();
+		if (this._io) this._io.disconnect();
 		this.renderer.dispose();
 	}
 }
