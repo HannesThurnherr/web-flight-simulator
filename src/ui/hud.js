@@ -113,6 +113,7 @@ export class HUD {
 		// flight cues (afterburner, stall, throttle level) live in
 		// the existing right-side stack.
 		// this.createFlightDataPanel();
+		this.createThrustIndicator();
 		this.createStallWarning();
 		this.createAfterburnerIndicator();
 		this.createMissileDebugPanel();
@@ -734,6 +735,63 @@ export class HUD {
 		w.innerText = 'STALL';
 		this.uiContainer.appendChild(w);
 		this.stallElem = w;
+	}
+
+	// Standalone thrust indicator. The full flight-data panel was
+	// retired (AOA/G/VS/SLIP weren't being read), but throttle %
+	// is something the player actually needs at a glance — without
+	// it there's no quick visual confirmation of W/S throttle input
+	// or afterburner state aside from engine sound and the A/B tag.
+	// Sits just above the A/B indicator at the bottom-left.
+	createThrustIndicator() {
+		if (document.getElementById('hud-thrust-indicator')) return;
+		const panel = document.createElement('div');
+		panel.id = 'hud-thrust-indicator';
+		panel.style.cssText = `
+			position: absolute;
+			bottom: 110px;
+			left: 16px;
+			padding: 6px 10px;
+			border: 1px solid rgba(0, 255, 0, 0.4);
+			background: rgba(0, 20, 0, 0.35);
+			color: #0f0;
+			font-family: 'AceCombat', monospace;
+			font-size: 12px;
+			letter-spacing: 1px;
+			text-shadow: 0 0 6px rgba(0, 255, 0, 0.7);
+			pointer-events: none;
+			z-index: 10;
+			display: flex;
+			align-items: center;
+		`;
+		panel.innerHTML = `
+			<span style="opacity:0.75; margin-right:8px;">THR</span>
+			<div id="hud-thrust-bar" style="
+				position:relative;
+				width:110px; height:10px;
+				border:1px solid rgba(0,255,0,0.5);
+				background:rgba(0,20,0,0.5);
+			">
+				<div id="hud-thrust-fill" style="
+					position:absolute; top:0; left:0; height:100%;
+					background:#0f0; width:0%;
+				"></div>
+				<div id="hud-thrust-ab" style="
+					position:absolute; top:0; left:0; height:100%;
+					width:100%;
+					background:repeating-linear-gradient(
+						45deg, rgba(255,180,0,0.85), rgba(255,180,0,0.85) 4px,
+						rgba(255,120,0,0.6) 4px, rgba(255,120,0,0.6) 8px);
+					opacity:0;
+					transition:opacity 0.12s;
+				"></div>
+			</div>
+			<span id="hud-thrust-pct" style="margin-left:8px; min-width:34px; text-align:right;">  0%</span>
+		`;
+		this.uiContainer.appendChild(panel);
+		this.thrustFill    = document.getElementById('hud-thrust-fill');
+		this.thrustAB      = document.getElementById('hud-thrust-ab');
+		this.thrustPctElem = document.getElementById('hud-thrust-pct');
 	}
 
 	createAfterburnerIndicator() {
@@ -1463,8 +1521,8 @@ export class HUD {
 			this.pauseLonElem.innerText = `${Math.abs(state.lon).toFixed(4)}°${lonDir}`;
 		}
 		if (this.pauseAltElem) {
-			const altFeet = Math.max(0, Math.round(state.alt * 3.28084));
-			this.pauseAltElem.innerText = `${altFeet.toLocaleString()} FT`;
+			const altMeters = Math.max(0, Math.round(state.alt || 0));
+			this.pauseAltElem.innerText = `${altMeters.toLocaleString()} M`;
 		}
 
 		if (this.pauseTimeElem) {
@@ -1878,7 +1936,9 @@ export class HUD {
 			this.uiContainer.style.transform = `perspective(1000px) rotateX(${tiltX}deg) rotateY(${tiltY}deg) translate(${shiftX}px, ${shiftY}px) scale(${scale})`;
 		}
 
-		this.speedElem.innerText = Math.round(state.speed).toString().padStart(3, '0');
+		// state.speed is m/s; display in km/h.
+		const speedKmh = Math.round((state.speed || 0) * 3.6);
+		this.speedElem.innerText = speedKmh.toString().padStart(4, '0');
 
 		// updateFlightData(state); — panel removed (see constructor)
 		this.updateMissileDebugPanel(state);
@@ -1919,8 +1979,9 @@ export class HUD {
 			this.compassTape.style.transform = `translateX(${offset}px)`;
 		}
 
-		const altFeet = Math.max(0, Math.round(state.alt * 3.28084));
-		this.altElem.innerText = altFeet.toString().padStart(5, '0');
+		// state.alt is metres; show in metres directly.
+		const altMeters = Math.max(0, Math.round(state.alt || 0));
+		this.altElem.innerText = altMeters.toString().padStart(5, '0');
 
 		if (this.scoreElem) {
 			this.scoreElem.innerText = (state.score || 0).toString().padStart(6, '0');

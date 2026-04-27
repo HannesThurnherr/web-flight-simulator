@@ -10,7 +10,7 @@
 	"simType": "GBU-12",
 	"signature": "missile_radar",
 	"seekerType": "laser",
-	"modelTemplate": "agm-88",
+	"modelTemplate": "gbu-12",
 	"realLengthM": 3.27,
 	"flight": {
 		"launchSpeedOffset": 0,
