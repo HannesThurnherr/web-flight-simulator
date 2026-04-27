@@ -183,6 +183,15 @@ export function makeStaticSamPilot(params) {
 		// HARM-evade. While `harmEvadeUntil` is in the future, the
 		// radar is hard-suppressed regardless of cue state.
 		harmEvadeUntil: -Infinity,
+		// Throttle bookkeeping for the cue + HARM-detect checks. Both
+		// walk contact maps and would otherwise run 60×/s for every
+		// SAM in the scenario. 4 Hz is a tactically reasonable cadence
+		// (a real SAM antenna doesn't slew or spin up faster than
+		// that anyway) and keeps the per-frame cost out of the
+		// frame-rate budget.
+		lastModeCheckAt: -Infinity,
+		cachedWantOn: false,
+		cachedHarmEvade: false,
 	};
 
 	// Detect any inbound missile-class contact via the unit's own
@@ -291,29 +300,30 @@ export function makeStaticSamPilot(params) {
 			command.weaponType   = null;
 			command.weaponTarget = null;
 
-			// ---- HARM-evade: hard-shutdown if a missile is inbound -----
-			// Runs even on always-on (non-emcon) batteries. Real-world
-			// SAM doctrine treats inbound missiles as anti-radiation
-			// until proven otherwise; the cost of being wrong is the
-			// whole battery. So: any closing missile within the
-			// trigger range → radar off, hold off for harmEvadeDurationS,
-			// then resume. This survives most HARM passes (HARM
-			// memory window is shorter) while leaving the battery to
-			// re-engage subsequent passes.
+			// ---- Mode check (throttled): HARM-evade + emcon cue ------
+			// Both checks walk contact maps and previously ran every
+			// frame. With N SAMs in a scenario the per-frame walking
+			// added up to a measurable FPS cost. The decisions don't
+			// need 60 Hz freshness — a real SAM antenna can't slew or
+			// spin up at 60 Hz anyway — so cache the result and only
+			// recompute every 0.25 s.
+			const MODE_CHECK_INTERVAL = 0.25;
 			if (unit.sensors && unit.sensors.radar) {
-				if (harmEvadeTriggered(unit, context, now)) {
-					pilotState.harmEvadeUntil = now + harmEvadeDurationS;
+				if (now - pilotState.lastModeCheckAt >= MODE_CHECK_INTERVAL) {
+					pilotState.lastModeCheckAt = now;
+					pilotState.cachedHarmEvade = harmEvadeTriggered(unit, context, now);
+					if (pilotState.cachedHarmEvade) {
+						pilotState.harmEvadeUntil = now + harmEvadeDurationS;
+					}
+					if (emcon) {
+						pilotState.cachedWantOn = shouldRadarBeOn(unit, context, now);
+					}
 				}
-			}
-			const inHarmEvade = now < pilotState.harmEvadeUntil;
-
-			// ---- Emcon: power radar on/off based on cueing + evade ----
-			if (unit.sensors && unit.sensors.radar) {
+				const inHarmEvade = now < pilotState.harmEvadeUntil;
 				if (inHarmEvade) {
 					unit.sensors.radar.active = false;
 				} else if (emcon) {
-					const wantOn = shouldRadarBeOn(unit, context, now);
-					if (wantOn) {
+					if (pilotState.cachedWantOn) {
 						unit.sensors.radar.active = true;
 						pilotState.emconRadarOnUntil = now + emconHoldS;
 					} else {
@@ -554,6 +564,11 @@ export function makeStaticAaaPilot(params = {}) {
 		burstStartedAt: -Infinity,
 		burstActive: false,
 		emconRadarOnUntil: -Infinity,
+		// 4 Hz throttle for the cue check — AAA radars don't need 60 Hz
+		// emcon decisions and walking the team-datalink contact map
+		// every frame for every gun emplacement adds up.
+		lastEmconCheckAt: -Infinity,
+		cachedWantOn: false,
 	};
 
 	function pickTarget(unit) {
@@ -649,9 +664,13 @@ export function makeStaticAaaPilot(params = {}) {
 			command.gunPitch    = null;
 
 			// Emcon (off by default — most AAA radars stay on).
+			// Throttled to 4 Hz; cached `wantOn` reused across frames.
 			if (emcon && unit.sensors && unit.sensors.radar) {
-				const wantOn = shouldRadarBeOn(unit, context, now);
-				if (wantOn) {
+				if (now - pilotState.lastEmconCheckAt >= 0.25) {
+					pilotState.lastEmconCheckAt = now;
+					pilotState.cachedWantOn = shouldRadarBeOn(unit, context, now);
+				}
+				if (pilotState.cachedWantOn) {
 					unit.sensors.radar.active = true;
 					pilotState.emconRadarOnUntil = now + emconHoldS;
 				} else {
