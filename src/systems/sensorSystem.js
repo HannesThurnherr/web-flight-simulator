@@ -167,6 +167,33 @@ export function isTerrainBlocked(fromCart, toCart) {
 	return chordTerrainHit(fromCart, toCart) !== null;
 }
 
+// Per-(observer, target) cache for the terrain-LOS result. The
+// uncached check costs 6 globe.getHeight calls per pair per frame,
+// running across N×M sensor scans; in dense scenarios this added up
+// to a clear FPS regression. With a 250 ms TTL the cache cuts the
+// underlying call rate by ~15× while keeping the staleness below
+// 140 m of relative motion at Mach 2 — well below the scale at
+// which ridge-vs-altitude decisions actually flip.
+//
+// WeakMap-keyed on the unit references so destroyed units auto-evict
+// from the cache when the rest of the sim drops them.
+const _terrainCache = new WeakMap();
+const TERRAIN_CACHE_TTL_MS = 250;
+function isTerrainBlockedCachedPair(observer, target, fromCart, toCart) {
+	if (!observer || !target) return isTerrainBlocked(fromCart, toCart);
+	let perObs = _terrainCache.get(observer);
+	if (!perObs) {
+		perObs = new WeakMap();
+		_terrainCache.set(observer, perObs);
+	}
+	const nowMs = performance.now();
+	const hit = perObs.get(target);
+	if (hit && hit.validUntilMs > nowMs) return hit.blocked;
+	const blocked = isTerrainBlocked(fromCart, toCart);
+	perObs.set(target, { blocked, validUntilMs: nowMs + TERRAIN_CACHE_TTL_MS });
+	return blocked;
+}
+
 // Forward-look terrain check from a unit's current pose. Casts a chord
 // of length `lookAheadM` along the unit's heading + pitch; returns the
 // same {t, distance, terrainH, losAlt} shape as `chordTerrainHit`, or
@@ -349,8 +376,10 @@ export function detectRadar(observer, target, radar) {
 	const rangeLimit = radar.nominalRange * Math.pow(Math.max(1e-6, ratio), 0.25);
 	if (los.losLenMeters > rangeLimit) return null;
 
-	// 4) Terrain LOS — a ridge in the way kills the return.
-	if (isTerrainBlocked(los.obsECEF, los.tgtECEF)) return null;
+	// 4) Terrain LOS — a ridge in the way kills the return. Cached
+	//    per (observer, target) pair with a 250 ms TTL so dense
+	//    scenarios don't pay 6 getHeight calls per pair per frame.
+	if (isTerrainBlockedCachedPair(observer, target, los.obsECEF, los.tgtECEF)) return null;
 
 	// 5) Pulse-Doppler main-lobe clutter notch.
 	//
@@ -463,7 +492,7 @@ function scanIR(observer, target, now) {
 	const rangeLimit = s.nominalRange * Math.sqrt(Math.max(1e-6, ratio));
 	if (los.losLenMeters > rangeLimit) return false;
 
-	if (isTerrainBlocked(los.obsECEF, los.tgtECEF)) return false;
+	if (isTerrainBlockedCachedPair(observer, target, los.obsECEF, los.tgtECEF)) return false;
 
 	const signal = Math.min(1, Math.pow(rangeLimit / los.losLenMeters, 2) * 0.01);
 
@@ -503,7 +532,7 @@ function scanVisual(observer, target, now) {
 	const rangeLimit = s.nominalRange * Math.max(0, ratio);
 	if (los.losLenMeters > rangeLimit) return false;
 
-	if (isTerrainBlocked(los.obsECEF, los.tgtECEF)) return false;
+	if (isTerrainBlockedCachedPair(observer, target, los.obsECEF, los.tgtECEF)) return false;
 
 	const contact = touchContact(observer.contacts, target);
 	contact.visual = {
