@@ -56,23 +56,31 @@ export class AntiRadiationSeeker extends Missile {
 
 		// At-launch acquisition. Two modes:
 		//   1. Player-designated: the firing path passes a specific
-		//      emitter as `target`. Use it directly if it's still
-		//      radiating + in cone (the player picked it via Tab on
-		//      the RWR; honour their choice).
+		//      emitter as `target`. Trust it unconditionally — the
+		//      caller (weaponSystem.fire) has already validated it's
+		//      a live radiating hostile. Skip the FOV check on
+		//      purpose: real HARMs accept off-boresight launches and
+		//      turn to acquire as they fly. If we re-check FOV here a
+		//      slightly off-axis designation falls back to auto-scan
+		//      and the missile chases the wrong SAM, which is the
+		//      whole bug we're trying to avoid.
 		//   2. Auto-acquire: no `target` was passed, scan the
 		//      launcher's known world and lock the strongest emitter
 		//      in our forward cone.
 		const npcs = (launcher && launcher.npcs) ? launcher.npcs : [];
 		const candidates = [...npcs];
-		// Also consider the player as a target if launched by an NPC
-		// (HARMs aimed at AWACS / other emitting friendlies). The
-		// existing `team` filter handles that — the launcher itself
-		// is excluded.
 		let acquired = null;
-		if (target && this._emitterScore(target) > 0) {
+		if (target && !target.destroyed && target.active !== false) {
 			acquired = target;
+			// Lock the designation: in-flight re-scans must not switch
+			// to a different emitter. Player explicitly picked this
+			// SAM; if it shuts down we coast to LKP and let the
+			// `emissionLossMemoryS` window decide success or failure,
+			// rather than swapping onto whatever else is loud.
+			this._playerDesignated = true;
 		} else {
 			acquired = this._scanForEmitter(candidates) || null;
+			this._playerDesignated = false;
 		}
 		this.target = acquired;
 		if (this.target) {
@@ -168,14 +176,28 @@ export class AntiRadiationSeeker extends Missile {
 			const lostFor = this._age - this._emissionLostAt;
 
 			// Re-scan every 0.5 s during memory window.
+			//   - Auto-acquired shots: any radiating hostile is fair
+			//     game (handles "EWR died but a Tor came on").
+			//   - Player-designated shots: only re-acquire if the
+			//     ORIGINAL target comes back on (e.g. SA-15 finishes
+			//     its emcon cycle). Never switch to a different unit
+			//     — the player picked that specific SAM.
 			this._reacqTimer = (this._reacqTimer || 0) + dt;
 			if (this._reacqTimer >= 0.5) {
 				this._reacqTimer = 0;
-				const npcs = (this.launcher && this.launcher.npcs) ? this.launcher.npcs : [];
-				const newTarget = this._scanForEmitter(npcs);
-				if (newTarget) {
-					this.target = newTarget;
-					this._refreshLkp(newTarget);
+				if (this._playerDesignated) {
+					if (this._emitterScore(this.target) > 0) {
+						// Original target is radiating again and in
+						// cone — resume tracking it.
+						this._refreshLkp(this.target);
+					}
+				} else {
+					const npcs = (this.launcher && this.launcher.npcs) ? this.launcher.npcs : [];
+					const newTarget = this._scanForEmitter(npcs);
+					if (newTarget) {
+						this.target = newTarget;
+						this._refreshLkp(newTarget);
+					}
 				}
 			}
 
