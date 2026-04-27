@@ -36,7 +36,12 @@
 // ============================================================================
 
 import * as Cesium from 'cesium';
-import { setDesignationFromMap, playerDesignation } from './designation.js';
+import {
+	addDesignation,
+	refineDesignationAlt,
+	removeDesignationAt,
+	designationQueue,
+} from './designation.js';
 
 const COLOR_PLAYER       = Cesium.Color.fromCssColorString('#00eaff');
 const COLOR_FACTIONS = {
@@ -58,39 +63,32 @@ export class StrikePlannerView {
 		this.viewer = viewer;
 		this.active = false;
 
-		// Camera state. Top-down only — no tilt/rotation in 5g.1, the
-		// planner is a 2D-feeling map even though it's technically a
-		// constrained 3D camera.
-		this.centerLon = 0;
-		this.centerLat = 0;
-		this.distance  = 25000;
+		// Initial camera placement when the panel opens. After that
+		// Cesium's native controller owns pan/zoom — we just lock the
+		// orientation to top-down each frame so the user can't tilt.
+		this._initialDistance = 25000;
 
 		// Marker entities for units (player, NPCs, missiles), keyed by
 		// stable id. Same shape as commanderView's _markers — separate
 		// map so the two views don't trample each other's entity refs.
 		this._markers = new Map();
 
-		// One entity for the current designated target. Reused across
-		// clicks (position rewritten in place), shown only while there
-		// is an active designation.
-		this._targetMarker = null;
+		// One entity per queued designation. The head (queue index 0)
+		// gets a brighter marker + a numeric "1" label so it's
+		// obviously the next-up shot; following points are dimmer with
+		// 2, 3, … labels showing fire order.
+		this._targetMarkers = []; // index-aligned with designationQueue
 
 		// Used by the planner-toggle key to center on the player at
 		// open time. Set every frame's update().
 		this._lastPlayerState = null;
 
-		// Drag-to-pan bookkeeping. Pointer events on the canvas in
-		// capture phase so we beat Cesium's own controller (we leave
-		// Cesium's controller enabled so wheel-zoom still works; we
-		// intercept pan and click ourselves).
-		this._panning   = false;
-		this._panLastX  = 0;
-		this._panLastY  = 0;
-		// Click vs drag detection — pointerdown sets a small budget,
-		// pointermove eats it, pointerup with budget remaining counts
-		// as a click. Avoids clicks-being-eaten-by-tiny-drags.
+		// Click vs drag detection. Pointerdown stamps a position;
+		// pointerup compares — small Δ = click → designate, large = drag
+		// (which Cesium's controller will have already handled).
 		this._clickBudgetPx = 4;
-		this._clickBudget   = 0;
+		this._downX = 0;
+		this._downY = 0;
 
 		this._bindInputs();
 	}
@@ -109,25 +107,35 @@ export class StrikePlannerView {
 
 		this.active = active;
 
+		const ctrl = this.viewer.scene.screenSpaceCameraController;
 		if (active) {
-			// Center on the latest known player position so the first
-			// frame is useful.
-			if (this._lastPlayerState) {
-				this.centerLon = this._lastPlayerState.lon;
-				this.centerLat = this._lastPlayerState.lat;
+			// Snap once to a top-down view centered on the player.
+			// After this, Cesium's native controller owns pan + zoom
+			// (which gives grab-feel drag and zoom-to-cursor for
+			// free); we just clamp the orientation back to top-down
+			// each frame so the user can't tilt or rotate the view.
+			const ps = this._lastPlayerState;
+			if (ps) {
+				this.viewer.camera.setView({
+					destination: Cesium.Cartesian3.fromDegrees(ps.lon, ps.lat, this._initialDistance),
+					orientation: { heading: 0, pitch: -Math.PI / 2, roll: 0 },
+				});
 			}
-			// Disable Cesium's own input controller — we do all the
-			// drag/click handling ourselves and don't want the camera
-			// stuttering between our writes and Cesium's.
-			this.viewer.scene.screenSpaceCameraController.enableInputs = false;
+			// Lock out tilt + look so the planner stays purely top-down.
+			// Pan/zoom remain native: feel matches commander view's
+			// drag-to-pan + wheel-to-zoom-toward-cursor exactly.
+			this._savedTilt = ctrl.enableTilt;
+			this._savedLook = ctrl.enableLook;
+			ctrl.enableTilt = false;
+			ctrl.enableLook = false;
 		} else {
-			this.viewer.scene.screenSpaceCameraController.enableInputs = true;
+			// Restore whatever the rest of the app set.
+			if (this._savedTilt !== undefined) ctrl.enableTilt = this._savedTilt;
+			if (this._savedLook !== undefined) ctrl.enableLook = this._savedLook;
 		}
 
 		this._setAllMarkersVisible(active);
-		if (this._targetMarker) {
-			this._targetMarker.show = active && _hasDesignation();
-		}
+		for (const m of this._targetMarkers) m.show = active;
 		this.viewer.scene.requestRender();
 	}
 
@@ -136,26 +144,23 @@ export class StrikePlannerView {
 		this._lastPlayerState = playerState;
 		if (!this.active) return;
 
-		this._applyCamera();
 		this._syncMarkers(playerState, units, missiles);
-		this._syncTargetMarker();
+		this._syncTargetMarkers();
 		this.viewer.scene.requestRender();
 	}
 
 	// ---- Camera --------------------------------------------------------------
 
-	_applyCamera() {
-		// Pure top-down. No tilt control in 5g.1 — the whole point of
-		// this surface is "look straight down so the geometry of the
-		// strike plan reads cleanly."
-		const lookAt = Cesium.Cartesian3.fromDegrees(this.centerLon, this.centerLat, 0);
-		this.viewer.camera.setView({
-			destination: Cesium.Cartesian3.fromDegrees(this.centerLon, this.centerLat, this.distance),
-			orientation: {
-				heading: 0,
-				pitch:   -Math.PI / 2,
-				roll:    0,
-			},
+	_lockOrientation() {
+		// Cesium's native controller can drift heading slightly during
+		// drag-pan in 3D mode. Re-orient back to north-up + top-down
+		// each frame, preserving the camera's current position. Cheap
+		// — just a setView with the existing position.
+		const cam = this.viewer.camera;
+		const carto = Cesium.Cartographic.fromCartesian(cam.position);
+		cam.setView({
+			destination: cam.position,
+			orientation: { heading: 0, pitch: -Math.PI / 2, roll: 0 },
 		});
 	}
 
@@ -243,10 +248,13 @@ export class StrikePlannerView {
 
 	// ---- Designation marker --------------------------------------------------
 
-	_syncTargetMarker() {
-		const has = _hasDesignation();
-		if (!this._targetMarker) {
-			this._targetMarker = this.viewer.entities.add({
+	_syncTargetMarkers() {
+		// Bring marker count in sync with the queue. Add for new
+		// queue slots, remove for vanished ones (after a fire or a
+		// click-to-remove). Cesium entities support cheap reuse.
+		while (this._targetMarkers.length < designationQueue.length) {
+			const idx = this._targetMarkers.length;
+			const ent = this.viewer.entities.add({
 				position: Cesium.Cartesian3.fromDegrees(0, 0, 0),
 				point: {
 					pixelSize: 14,
@@ -256,7 +264,7 @@ export class StrikePlannerView {
 					disableDepthTestDistance: Number.POSITIVE_INFINITY,
 				},
 				label: {
-					text: 'TGT',
+					text: String(idx + 1),
 					font: 'bold 13px sans-serif',
 					fillColor: Cesium.Color.WHITE,
 					outlineColor: Cesium.Color.BLACK,
@@ -267,17 +275,34 @@ export class StrikePlannerView {
 					horizontalOrigin: Cesium.HorizontalOrigin.LEFT,
 					disableDepthTestDistance: Number.POSITIVE_INFINITY,
 				},
-				show: false,
+				show: this.active,
 			});
+			// Tag with the marker's queue index so click-pick knows
+			// which entry to remove. The index gets refreshed each
+			// frame to handle queue compaction after a consume.
+			ent.__strikeIndex = idx;
+			this._targetMarkers.push(ent);
 		}
-		if (has) {
-			this._targetMarker.position = Cesium.Cartesian3.fromDegrees(
-				playerDesignation.lon, playerDesignation.lat,
-				(playerDesignation.alt || 0) + 50,   // tiny lift so the marker isn't terrain-occluded
-			);
-			this._targetMarker.show = this.active;
-		} else {
-			this._targetMarker.show = false;
+		while (this._targetMarkers.length > designationQueue.length) {
+			const ent = this._targetMarkers.pop();
+			this.viewer.entities.remove(ent);
+		}
+		// Update each marker's position + label + visibility based on
+		// the current queue. Head (index 0) gets a brighter marker so
+		// the player sees which shot is next up.
+		for (let i = 0; i < designationQueue.length; i++) {
+			const d = designationQueue[i];
+			const ent = this._targetMarkers[i];
+			ent.position = Cesium.Cartesian3.fromDegrees(d.lon, d.lat, (d.alt || 0) + 50);
+			if (ent.label) ent.label.text = String(i + 1);
+			if (ent.point) {
+				ent.point.pixelSize = i === 0 ? 16 : 12;
+				ent.point.color = i === 0
+					? COLOR_TARGET
+					: COLOR_TARGET.withAlpha(0.7);
+			}
+			ent.__strikeIndex = i;
+			ent.show = this.active;
 		}
 	}
 
@@ -294,54 +319,49 @@ export class StrikePlannerView {
 			}
 		});
 
-		// Pointer events on `window` in CAPTURE phase. Why: the Cesium
-		// canvas sits at z-index 1, but `#threeContainer` (z=5) overlays
-		// it and intercepts every pointer event in normal bubbling. The
-		// HUD `#uiContainer` (z=10) is `pointer-events:none` by default
-		// so it doesn't matter; threeContainer is the actual culprit.
-		// Capture-phase listeners on `window` see every event before
-		// the topmost element gets a chance to consume it. Commander
-		// view uses the same pattern for the same reason.
+		// Pan + zoom are handled by Cesium's native screenSpaceCamera
+		// controller (left them enabled in setActive) — that gives
+		// grab-feel drag, zoom-toward-cursor, and inertia for free.
+		// We only need to detect a true click (pointerdown + pointerup
+		// at roughly the same position, no drag in between) to call
+		// _handleClickAt for designation.
+		//
+		// Window + capture so we beat #threeContainer (z=5), which
+		// overlays the Cesium canvas and would otherwise eat every
+		// pointer event before it could reach a canvas-level handler.
 		window.addEventListener('pointerdown', (e) => {
 			if (!this.active) return;
 			if (e.button !== 0) return;
-			this._panning  = true;
-			this._panLastX = e.clientX;
-			this._panLastY = e.clientY;
-			this._clickBudget = this._clickBudgetPx;
-		}, true);
-
-		window.addEventListener('pointermove', (e) => {
-			if (!this.active || !this._panning) return;
-			const dx = e.clientX - this._panLastX;
-			const dy = e.clientY - this._panLastY;
-			this._panLastX = e.clientX;
-			this._panLastY = e.clientY;
-			this._clickBudget -= Math.abs(dx) + Math.abs(dy);
-			const k = this.distance / 800;
-			const cosLat = Math.cos(this.centerLat * Math.PI / 180) || 1;
-			this.centerLon -= dx * 0.0001 * k / cosLat;
-			this.centerLat += dy * 0.0001 * k;
+			this._downX = e.clientX;
+			this._downY = e.clientY;
 		}, true);
 
 		window.addEventListener('pointerup', (e) => {
 			if (!this.active) return;
-			const wasPanning = this._panning;
-			this._panning = false;
-			if (wasPanning && this._clickBudget > 0 && e.button === 0) {
+			if (e.button !== 0) return;
+			const dx = e.clientX - this._downX;
+			const dy = e.clientY - this._downY;
+			if (Math.hypot(dx, dy) < this._clickBudgetPx) {
 				this._handleClickAt(e.clientX, e.clientY);
 			}
 		}, true);
-
-		window.addEventListener('wheel', (e) => {
-			if (!this.active) return;
-			e.preventDefault();
-			const factor = Math.exp(e.deltaY * 0.0015);
-			this.distance = Math.max(2000, Math.min(2_000_000, this.distance * factor));
-		}, { passive: false, capture: true });
 	}
 
 	_handleClickAt(x, y) {
+		// First check if the click landed on an existing target marker
+		// — Cesium scene.pick returns the entity under the cursor.
+		// Clicking an existing TGT removes it from the queue. (Lets
+		// the player un-queue without keyboard.)
+		const picked = this.viewer.scene.pick(new Cesium.Cartesian2(x, y));
+		if (picked && picked.id && typeof picked.id.__strikeIndex === 'number') {
+			removeDesignationAt(picked.id.__strikeIndex);
+			return;
+		}
+
+		// Otherwise treat as "add a new target". Globe-pick → terrain
+		// sample → addDesignation. Two-stage: rough alt immediately so
+		// the marker pops without latency, then a precise sample comes
+		// back asynchronously and refines the alt in place.
 		const ray = this.viewer.camera.getPickRay(new Cesium.Cartesian2(x, y));
 		if (!ray) return;
 		const cart = this.viewer.scene.globe.pick(ray, this.viewer.scene);
@@ -350,28 +370,13 @@ export class StrikePlannerView {
 		const carto = Cesium.Cartographic.fromCartesian(cart);
 		const lon = Cesium.Math.toDegrees(carto.longitude);
 		const lat = Cesium.Math.toDegrees(carto.latitude);
-		// Set immediately with the rough height; refine asynchronously.
-		// Same pattern setupSpawnPicker already uses — the player
-		// shouldn't see "designating..." latency on the click.
 		const roughAlt = Math.max(0, carto.height || 0);
-		setDesignationFromMap(lon, lat, roughAlt);
+		addDesignation(lon, lat, roughAlt);
 
 		Cesium.sampleTerrainMostDetailed(this.viewer.terrainProvider, [carto])
 			.then(([p]) => {
-				const preciseAlt = Math.max(0, p.height || 0);
-				// Only refine if the player hasn't picked a different
-				// point in the meantime — otherwise we'd stomp the
-				// newer designation with stale terrain data.
-				if (Math.abs(playerDesignation.lon - lon) < 1e-6 &&
-				    Math.abs(playerDesignation.lat - lat) < 1e-6) {
-					setDesignationFromMap(lon, lat, preciseAlt);
-				}
+				refineDesignationAlt(lon, lat, Math.max(0, p.height || 0));
 			})
 			.catch(() => {});
 	}
-}
-
-function _hasDesignation() {
-	return playerDesignation.mode !== 'SLEW' &&
-		(playerDesignation.lat !== 0 || playerDesignation.lon !== 0);
 }

@@ -4,7 +4,7 @@ import * as Cesium from 'cesium';
 import { releaseEnvelope, isStrikeWeapon } from '../systems/strikeEnvelope.js';
 import { MUNITIONS } from '../weapon/munitions.js';
 import { munitionIdForSimType } from '../weapon/munitionFactory.js';
-import { playerDesignation } from '../systems/designation.js';
+import { playerDesignation, designationQueue } from '../systems/designation.js';
 
 // Team → HUD accent color. Shared across the on-screen diamond, minimap
 // icons, and (in future) the radar scope. Friendlies get the familiar
@@ -470,6 +470,125 @@ export class HUD {
 		el.appendChild(label);
 		this.missileMarkerLayer.appendChild(el);
 		return { el, dot, label };
+	}
+
+	// Designation markers: little green diamonds on the cockpit HUD
+	// at the screen positions of the strike-planner queue. Lets the
+	// player see WHERE the JDAMs will go without leaving cockpit
+	// view. Off-screen designations get pinned to the screen edge in
+	// the direction of the spot, mirroring the NPC marker behavior.
+	updateDesignationMarkers(state) {
+		// Lazy DOM container — created on first call so it doesn't
+		// add a layer for the (common) case where the player never
+		// touches the strike planner.
+		if (!this._designationLayer) {
+			const layer = document.createElement('div');
+			layer.id = 'designation-markers-layer';
+			layer.style.cssText = `
+				position: fixed; inset: 0;
+				pointer-events: none;
+				z-index: 11;
+			`;
+			document.body.appendChild(layer);
+			this._designationLayer = layer;
+			this._designationEls = [];
+		}
+
+		const viewer = getViewer();
+		if (!viewer) return;
+		const scene = viewer.scene;
+		const camera = scene.camera;
+		const transformFunc = Cesium.SceneTransforms.worldToWindowCoordinates
+			|| Cesium.SceneTransforms.wgs84ToWindowCoordinates;
+		if (!transformFunc) return;
+
+		// Bring DOM-element pool in sync with queue length.
+		while (this._designationEls.length < designationQueue.length) {
+			const idx = this._designationEls.length;
+			const el = document.createElement('div');
+			el.style.cssText = `
+				position: absolute;
+				width: 22px; height: 22px;
+				margin-left: -11px; margin-top: -11px;
+				color: #40ff40;
+				font-family: 'AceCombat', monospace;
+				font-size: 11px;
+				font-weight: bold;
+				text-shadow: 0 0 6px rgba(0, 255, 0, 0.8);
+			`;
+			el.innerHTML = `
+				<div style="
+					position: absolute;
+					left: 50%; top: 50%;
+					width: 14px; height: 14px;
+					margin-left: -7px; margin-top: -7px;
+					transform: rotate(45deg);
+					border: 1.5px solid #40ff40;
+					box-shadow: 0 0 6px rgba(0, 255, 0, 0.6);
+				"></div>
+				<div class="designation-label" style="
+					position: absolute;
+					left: 16px; top: -2px;
+					white-space: nowrap;
+				">TGT ${idx + 1}</div>
+			`;
+			this._designationLayer.appendChild(el);
+			this._designationEls.push(el);
+		}
+		while (this._designationEls.length > designationQueue.length) {
+			const el = this._designationEls.pop();
+			el.remove();
+		}
+
+		for (let i = 0; i < designationQueue.length; i++) {
+			const d = designationQueue[i];
+			const worldPos = Cesium.Cartesian3.fromDegrees(d.lon, d.lat, d.alt || 0);
+			const windowPos = transformFunc(scene, worldPos);
+			const direction = Cesium.Cartesian3.subtract(worldPos, camera.position, new Cesium.Cartesian3());
+			const depth = Cesium.Cartesian3.dot(direction, camera.direction);
+
+			const el = this._designationEls[i];
+			const labelEl = el.querySelector('.designation-label');
+			if (labelEl) labelEl.textContent = `TGT ${i + 1}`;
+
+			const onScreen = windowPos && depth > 0
+				&& windowPos.x >= 0 && windowPos.x <= window.innerWidth
+				&& windowPos.y >= 0 && windowPos.y <= window.innerHeight;
+
+			if (onScreen) {
+				el.style.display = 'block';
+				el.style.left = `${windowPos.x}px`;
+				el.style.top  = `${windowPos.y}px`;
+				el.style.opacity = '1';
+			} else {
+				// Pin to the screen edge in the direction of the spot.
+				const dx = Cesium.Cartesian3.dot(direction, camera.right);
+				const dy = -Cesium.Cartesian3.dot(direction, camera.up);
+				const cx = window.innerWidth / 2;
+				const cy = window.innerHeight / 2;
+				// Behind the camera: pull to the bottom edge by flipping dy.
+				const eff_dy = depth > 0 ? dy : -dy;
+				const eff_dx = depth > 0 ? dx : -dx;
+				const ang = Math.atan2(eff_dy, eff_dx);
+				const margin = 32;
+				const rx = cx - margin;
+				const ry = cy - margin;
+				// Project onto bounding rect.
+				const tan = Math.tan(ang);
+				let x, y;
+				if (Math.abs(tan) <= ry / rx) {
+					x = eff_dx > 0 ? rx : -rx;
+					y = x * tan;
+				} else {
+					y = eff_dy > 0 ? ry : -ry;
+					x = y / tan;
+				}
+				el.style.display = 'block';
+				el.style.left = `${cx + x}px`;
+				el.style.top  = `${cy + y}px`;
+				el.style.opacity = '0.6';
+			}
+		}
 	}
 
 	updateMissileMarkers(state) {
@@ -1959,6 +2078,7 @@ export class HUD {
 		this.updateMissileMarkers(state);
 		this.updateMouseSteeringOverlay(state);
 		this.updateRwrScope(state);
+		this.updateDesignationMarkers(state);
 
 		if (state.weaponSystem) {
 			this.updateWeapons(state.weaponSystem, state);

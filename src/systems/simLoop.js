@@ -485,6 +485,11 @@ export function update(dt, ctx) {
 		// (pilot OR spectator).
 		const npcLayer = document.getElementById('npc-markers-layer');
 		if (npcLayer) npcLayer.style.display = (cmdActive || planActive) ? 'none' : '';
+		// Designation diamonds also hide in alt-camera modes — the
+		// strike planner draws its own world-space markers and the
+		// commander view doesn't care about player designations.
+		const desigLayer = document.getElementById('designation-markers-layer');
+		if (desigLayer) desigLayer.style.display = (cmdActive || planActive) ? 'none' : '';
 
 		// While the player is dead, toggling into the map hides the
 		// crash screen so the whole view is the battlefield.

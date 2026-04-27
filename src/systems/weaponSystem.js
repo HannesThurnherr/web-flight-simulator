@@ -7,7 +7,7 @@ import { Flare } from '../weapon/flare';
 import { soundManager } from '../utils/soundManager';
 import { movePosition } from '../utils/math';
 import { isRadiating } from './sensorSystem.js';
-import { playerDesignation } from './designation.js';
+import { playerDesignation, consumeDesignationHead } from './designation.js';
 
 export class WeaponSystem {
 	constructor(viewer, scene, playerModel) {
@@ -361,6 +361,12 @@ export class WeaponSystem {
 						lat: playerDesignation.lat,
 						alt: playerDesignation.alt,
 					};
+					// Consume the head of the strike-planner queue so
+					// the NEXT JDAM fired homes on the NEXT queued
+					// point. Single-target sessions just fall to SLEW
+					// after consume (queue empty); a salvo of N JDAMs
+					// against N queued points walks the queue down.
+					consumeDesignationHead();
 				} else {
 					// Laser (GBU-12) and any future seeker that reads
 					// the singleton directly: no target object needed.

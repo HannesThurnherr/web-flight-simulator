@@ -87,23 +87,99 @@ export function returnToSlew() {
 	playerDesignation.target = null;
 }
 
-// Map-mode designator: a click on the strike-planner map sets the
-// designated point directly, bypassing the TGP-state machine. Forces
-// mode to TRACK (so JDAM fire-checks pass and the bomb has something
-// to home on) but leaves lasing off (a map click can't lase). Clears
-// any unit-snap — map clicks designate ground points, not vehicles.
+// ---- Strike-planner queue --------------------------------------------------
 //
-// If the player later opens the TGP, it will show this point as a
-// TRACK-locked spot, which is the natural read: "the strike planner
-// committed a target; the TGP is now holding it." Cycling MODE on
-// the TGP from there continues the normal SLEW/TRACK/LASE flow.
-export function setDesignationFromMap(lon, lat, alt) {
+// The strike-planner map (5g.1+) lets the player queue multiple GPS
+// targets. The "current" designation (`playerDesignation.lon/lat/alt`)
+// is always the head of the queue — that's what the next JDAM fired
+// will home on. When the player drops a bomb the head is consumed
+// and the next queued point promotes to head. This lets a salvo of N
+// JDAMs hit N different targets in one pass.
+//
+// The queue contains all designated points INCLUDING the current
+// head. Index 0 is the head (mirrored into playerDesignation for the
+// existing seekers and HUD readouts that consume the singleton). The
+// strike-planner map iterates the full list to render markers.
+//
+// The TGP (laser path) doesn't use the queue — its lone designation
+// continues to flow through `playerDesignation` directly via
+// snapTrack / setSlewSpot. The two designators don't share state
+// beyond the head: opening the TGP after queueing JDAM points takes
+// the queue head as the active TGP spot, which is consistent with
+// "the planner committed a target; the TGP now holds it."
+export const designationQueue = [];
+
+function _syncHead() {
+	if (designationQueue.length === 0) {
+		// No queued targets — fall back to the SLEW state so the
+		// rest of the system (release-envelope, fire-gate) treats
+		// this as "no designation."
+		playerDesignation.mode = 'SLEW';
+		playerDesignation.lasing = false;
+		playerDesignation.lon = 0;
+		playerDesignation.lat = 0;
+		playerDesignation.alt = 0;
+		playerDesignation.target = null;
+		return;
+	}
+	const head = designationQueue[0];
 	playerDesignation.mode = 'TRACK';
 	playerDesignation.lasing = false;
-	playerDesignation.lon = lon;
-	playerDesignation.lat = lat;
-	playerDesignation.alt = alt;
+	playerDesignation.lon = head.lon;
+	playerDesignation.lat = head.lat;
+	playerDesignation.alt = head.alt;
 	playerDesignation.target = null;
+}
+
+// Add a new target to the back of the queue. The strike-planner map
+// calls this on click. If the queue was empty, the new point also
+// becomes the current designation (head sync).
+export function addDesignation(lon, lat, alt) {
+	designationQueue.push({ lon, lat, alt });
+	_syncHead();
+}
+
+// Remove a target by index (for "click on existing dot to remove").
+// If the head is removed the next target promotes.
+export function removeDesignationAt(index) {
+	if (index < 0 || index >= designationQueue.length) return;
+	designationQueue.splice(index, 1);
+	_syncHead();
+}
+
+// Pop the head of the queue. Called by the JDAM fire path after a
+// successful release so the next bomb targets the next queued point.
+export function consumeDesignationHead() {
+	if (designationQueue.length === 0) return;
+	designationQueue.shift();
+	_syncHead();
+}
+
+export function clearDesignationQueue() {
+	designationQueue.length = 0;
+	_syncHead();
+}
+
+// Refine the alt of an already-queued point (used after async terrain
+// sample lands; see strike planner click handler). Identifies the
+// point by exact lon/lat match.
+export function refineDesignationAlt(lon, lat, alt) {
+	for (const d of designationQueue) {
+		if (Math.abs(d.lon - lon) < 1e-6 && Math.abs(d.lat - lat) < 1e-6) {
+			d.alt = alt;
+			break;
+		}
+	}
+	_syncHead();
+}
+
+// Legacy single-point setter — keep for callers that want the
+// "replace whatever is there" semantic (none today, but kept as a
+// stable API). Equivalent to clear + add.
+export function setDesignationFromMap(lon, lat, alt) {
+	designationQueue.length = 0;
+	designationQueue.push({ lon, lat, alt });
+	_syncHead();
 }
 
 // Each tick: if we're tracking a unit, slide the spot to follow it.
