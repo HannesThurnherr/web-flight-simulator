@@ -30,41 +30,6 @@ import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 
 const _templates = { aim9: null, aim120: null, meteor: null, 'agm-88': null, 'gbu-12': null };
 
-// GBU-12 PAVEWAY II is bundled inside a multi-munition collection glb
-// (the same source contains JDAMs, Mavericks, Sidewinders, etc.).
-// Load the collection once and extract only the GBU-12 subtree by
-// node name; everything else gets discarded so we don't bloat the
-// scene graph. The extracted subtree feeds through the same
-// _normalizeMissileModel routine as the standalone GLBs so axis +
-// scale convert correctly.
-_loader.load('/assets/models/munition-collection.glb', (gltf) => {
-	let gbuNode = null;
-	gltf.scene.traverse((obj) => {
-		if (gbuNode) return;
-		if (obj.name && /GBU-12/i.test(obj.name)) gbuNode = obj;
-	});
-	if (!gbuNode) {
-		console.warn('[missileModels] GBU-12 node not found in collection');
-		return;
-	}
-	// Detach from parent and feed through the normalizer. Cloning
-	// first keeps the loaded gltf.scene untouched (in case we ever
-	// pull other munitions from the same file later).
-	const isolated = gbuNode.clone(true);
-	isolated.position.set(0, 0, 0);
-	isolated.rotation.set(0, 0, 0);
-	isolated.scale.set(1, 1, 1);
-	_templates['gbu-12'] = _normalizeMissileModel(isolated, 3.27);
-	_templates['gbu-12'].traverse((child) => {
-		if (child.isMesh) {
-			child.castShadow = true;
-			child.receiveShadow = true;
-		}
-	});
-}, undefined, (err) => {
-	console.warn('[missileModels] munition-collection.glb failed to load', err);
-});
-
 // Rotate + scale + centre the glTF scene so the missile's long axis lies
 // along +Y and the model measures exactly `realLengthM` along that axis.
 function _normalizeMissileModel(gltfScene, realLengthM) {
@@ -173,6 +138,40 @@ _loader.load('/assets/models/agm-88-harm.glb', (gltf) => {
 	});
 }, undefined, (err) => {
 	console.warn('[missileModels] agm-88 model failed to load', err);
+});
+
+// GBU-12 PAVEWAY II is bundled inside a multi-munition collection glb
+// (the same source contains JDAMs, Mavericks, Sidewinders, etc.).
+// Load the collection once, extract only the GBU-12 subtree by node
+// name, and feed it through the same normalizer so axis + scale
+// convert correctly. Everything else in the file is discarded.
+_loader.load('/assets/models/munition-collection.glb', (gltf) => {
+	let gbuNode = null;
+	gltf.scene.traverse((obj) => {
+		if (gbuNode) return;
+		if (obj.name && /GBU-12/i.test(obj.name)) gbuNode = obj;
+	});
+	if (!gbuNode) {
+		console.warn('[missileModels] GBU-12 node not found in collection');
+		return;
+	}
+	// Clone so we don't mutate the loaded scene graph (in case other
+	// munitions get pulled from the same file later). Reset transform
+	// because the node carries its parent-relative offset, which we
+	// don't want once it's standing alone.
+	const isolated = gbuNode.clone(true);
+	isolated.position.set(0, 0, 0);
+	isolated.rotation.set(0, 0, 0);
+	isolated.scale.set(1, 1, 1);
+	_templates['gbu-12'] = _normalizeMissileModel(isolated, 3.27);
+	_templates['gbu-12'].traverse((child) => {
+		if (child.isMesh) {
+			child.castShadow = true;
+			child.receiveShadow = true;
+		}
+	});
+}, undefined, (err) => {
+	console.warn('[missileModels] munition-collection.glb failed to load', err);
 });
 
 // Return a fresh clone of the aim-9 template, or null if the GLB hasn't
