@@ -406,11 +406,13 @@ export function updateTgp(playerState, weaponSystem, mainViewer) {
 			roll:    0,
 		},
 	});
-	// FOV. Cesium's frustum.fovy is the vertical FOV; convert from our
-	// horizontal-FOV field for an aspect-ratio-correct telescope feel.
-	const aspect = fv.canvas ? (fv.canvas.clientWidth / Math.max(1, fv.canvas.clientHeight)) : 1;
-	const fovYRad = 2 * Math.atan(Math.tan(_tgpFovDeg * Math.PI / 360) / Math.max(0.5, aspect));
-	if (fv.camera.frustum && 'fovy' in fv.camera.frustum) fv.camera.frustum.fovy = fovYRad;
+	// FOV. Cesium's PerspectiveFrustum exposes `fov` as the settable
+	// horizontal FOV (in radians); `fovy` is a getter-only computed
+	// vertical value — writing it throws and aborts the rest of this
+	// function (camera spot raycast, status update, button repaint).
+	if (fv.camera.frustum && 'fov' in fv.camera.frustum) {
+		fv.camera.frustum.fov = _tgpFovDeg * Math.PI / 180;
+	}
 	fv.scene.requestRender();
 
 	// Designation spot: cast forward ray from camera, hit the globe.
