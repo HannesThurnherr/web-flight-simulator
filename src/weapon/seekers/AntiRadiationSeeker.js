@@ -238,8 +238,15 @@ export class AntiRadiationSeeker extends Missile {
 		//     directly.
 		//   - Smooth blend across BLEND_RANGE_M so the missile rolls
 		//     into the dive instead of bunting.
-		const TERMINAL_RANGE_M = 700;
-		const BLEND_RANGE_M    = 800;  // dive ramps in over [TERMINAL, TERMINAL+BLEND]
+		// Velocity-scaled lookahead: a fast HARM covers ground so quickly
+		// that a fixed slant-range threshold leaves no time to arc down
+		// from cruise altitude before overflight. Scale the dive trigger
+		// with current speed (≈ k seconds of flight time before impact)
+		// while keeping a floor for low-speed end-game corrections.
+		const TERMINAL_DIVE_LEAD_S = 2.5;
+		const TERMINAL_RANGE_FLOOR = 700;
+		const TERMINAL_RANGE_M = Math.max(TERMINAL_RANGE_FLOOR, TERMINAL_DIVE_LEAD_S * this.speed);
+		const BLEND_RANGE_M    = TERMINAL_RANGE_M;        // dive ramps in over [TERMINAL, 2*TERMINAL]
 		const CRUISE_AGL_M     = 1500; // sit ~1.5 km above target's alt while transiting
 
 		// Target pitch in cruise mode: aim at (target.alt + cruiseAGL).

@@ -466,7 +466,15 @@ export function update(dt, ctx) {
 		const planeModel = ctx.planeModel;
 		if (planeModel) planeModel.visible = pilotCamOwns && isFlying;
 		const uiContainer = document.getElementById('uiContainer');
-		if (uiContainer) uiContainer.style.opacity = pilotCamOwns ? '' : '0';
+		if (uiContainer) {
+			uiContainer.style.opacity = pilotCamOwns ? '' : '0';
+			// While the strike planner owns the screen, the HUD must
+			// also stop intercepting pointer events — opacity:0 alone
+			// keeps it transparent but still hit-testable, and clicks
+			// + drags would fall on the invisible HUD instead of
+			// reaching the Cesium canvas underneath.
+			uiContainer.style.pointerEvents = planActive ? 'none' : '';
+		}
 
 		// NPC screen markers (diamonds + labels, the
 		// `npc-markers-layer` div) live OUTSIDE uiContainer so we can
