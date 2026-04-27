@@ -38,6 +38,65 @@ const TRIANGLE_BEARINGS = {
 };
 const GROUP_JITTER_M = 2500; // flight formation spread inside a vertex cluster
 
+// ----- Per-template low-quality NPC pass --------------------------------------
+//
+// Player's own GLB renders through loadPlayerPlane.js with full PBR
+// (MeshStandardMaterial + roughness/metalness/normal maps) — the
+// player sees their plane up close, every frame. NPCs on the other
+// hand are usually >1 km away and many pixels small even when
+// visible. Running PBR shaders for them is wasteful — fragment cost
+// can be 5-10× cheaper Lambert lighting at no perceivable quality
+// loss for a fighter at 5+ km range.
+//
+// Performance-trace evidence: the recent 60→20 fps regression sat in
+// Cesium's render path while main thread was 70 % idle (GPU-bound).
+// Converting NPC PBR materials to Lambert + dropping shadows reduces
+// the per-frame fragment-shader workload across every NPC mesh in
+// the scene without any visible-quality regression at typical
+// engagement distances.
+//
+// Applied once per loaded template; every cloned NPC inherits the
+// simplified material via Three.js's clone-by-reference behaviour.
+function _simplifyForNpc(scene) {
+	if (!scene) return;
+	scene.traverse((obj) => {
+		if (!obj.isMesh) return;
+		// We don't render shadows anywhere in the scene right now,
+		// but flagging castShadow/receiveShadow=false keeps the
+		// renderer's shadow-map pass cheap if we ever turn it on for
+		// the player but not NPCs.
+		obj.castShadow = false;
+		obj.receiveShadow = false;
+		const mat = obj.material;
+		if (Array.isArray(mat)) {
+			obj.material = mat.map(_lambertize);
+		} else {
+			obj.material = _lambertize(mat);
+		}
+	});
+}
+
+function _lambertize(m) {
+	if (!m || !m.isMeshStandardMaterial) return m;
+	// Preserve diffuse map + base color + transparency. Drop PBR
+	// extras (roughness/metalness/normal maps, env-map sampling,
+	// clear-coat, anisotropy) — those are the expensive parts of
+	// the standard shader and contribute ~nothing visually for a
+	// fighter that's a few pixels tall on screen.
+	const out = new THREE.MeshLambertMaterial({
+		color: m.color ? m.color.clone() : 0xffffff,
+		map: m.map || null,
+		transparent: m.transparent,
+		opacity: m.opacity,
+		side: m.side,
+		alphaTest: m.alphaTest,
+		emissive: m.emissive ? m.emissive.clone() : 0x000000,
+		emissiveMap: m.emissiveMap || null,
+	});
+	out.name = m.name + '/lamb';
+	return out;
+}
+
 
 export class NPCSystem {
 	constructor(viewer, scene, loader) {
@@ -89,12 +148,7 @@ export class NPCSystem {
 		this.loader.load('/assets/models/f-15-strike-eagle.glb', (gltf) => {
 			this.modelTemplate = gltf.scene;
 			this.animations = gltf.animations;
-			this.modelTemplate.traverse((child) => {
-				if (child.isMesh) {
-					child.castShadow = true;
-					child.receiveShadow = true;
-				}
-			});
+			_simplifyForNpc(this.modelTemplate);
 			this.loaded = true;
 		});
 		// Warm-preload the AWACS so a scenario starting with awacs-bvr
@@ -116,12 +170,7 @@ export class NPCSystem {
 		this.loader.load(path, (gltf) => {
 			slot.template   = gltf.scene;
 			slot.animations = gltf.animations;
-			slot.template.traverse((child) => {
-				if (child.isMesh) {
-					child.castShadow = true;
-					child.receiveShadow = true;
-				}
-			});
+			_simplifyForNpc(slot.template);
 			slot.loaded = true;
 			try {
 				const box  = new THREE.Box3().setFromObject(slot.template);
