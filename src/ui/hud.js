@@ -579,7 +579,9 @@ export class HUD {
 			pointer-events: none;
 			z-index: 10;
 			min-width: 260px;
-			max-width: 380px;
+			max-width: 460px;
+			overflow: hidden;
+			box-sizing: border-box;
 			display: none;
 		`;
 		this.uiContainer.appendChild(p);
@@ -598,12 +600,17 @@ export class HUD {
 		for (let i = 0; i < active.length; i++) {
 			const m = active[i];
 			const d = m.debug || {};
-			const typeTag = (m.type || 'MSL').padEnd(7);
-			const phase   = m.boostRemaining > 0 ? `BOOST ${m.boostRemaining.toFixed(1)}s` : 'COAST      ';
+			// Truncate every field to a fixed width so the row can't
+			// blow past the panel's max-width. padEnd alone doesn't
+			// truncate longer strings, hence the slice() pairs.
+			const typeTag = (m.type || 'MSL').slice(0, 7).padEnd(7);
+			const phase   = (m.boostRemaining > 0
+				? `BOOST ${m.boostRemaining.toFixed(1)}s`
+				: 'COAST      ').slice(0, 11).padEnd(11);
 			const rng     = typeof d.rangeToTarget === 'number'
 				? `${(d.rangeToTarget / 1000).toFixed(1)}km`.padStart(6)
 				: '  —  ';
-			const tgt     = (d.targetName || (m.target && m.target.name) || '—').slice(0, 14);
+			const tgt     = (d.targetName || (m.target && m.target.name) || '—').slice(0, 10);
 			const hdgErr  = typeof d.headingError === 'number' ? d.headingError : 0;
 			const errTxt  = `err ${hdgErr.toFixed(0)}°`;
 			const errCol  = Math.abs(hdgErr) > 20 ? '#ff4040'
@@ -612,10 +619,10 @@ export class HUD {
 			// ACT = pitbull active lock, MAD = maddog (no lock post-pitbull).
 			// Color cues: good (green) through degraded (amber/red).
 			const mode = d.mode || '—';
-			const modeCol = mode === 'ACT' ? '#40ff40'
-				: mode === 'DL'  ? '#40ff40'
-				: mode === 'DR'  ? '#ffcc00'
-				: mode === 'MAD' ? '#ff4040'
+			const modeCol = mode === 'ACT' || mode === 'DL' || mode === 'EMIT' ? '#40ff40'
+				: mode === 'DR' || mode === 'LKP' ? '#ffcc00'
+				: mode === 'MAD' || mode === 'LOST' ? '#ff4040'
+				: mode === 'SRCH' ? '#888'
 				: '#888';
 			rows.push(
 				`<div style="white-space:pre; font-family:monospace;">` +

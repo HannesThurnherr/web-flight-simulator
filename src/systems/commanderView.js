@@ -852,9 +852,18 @@ export class CommanderView {
 			// Fall back to the older 'LOST' / 'ACTIVE' labels for any legacy
 			// missile (Missile base class, IR AIM-9) that doesn't emit mode.
 			const dbg     = ref.debug || {};
-			const mode    = dbg.mode ||
-				(ref.lostLock ? 'LOST' :
-					(ref.pitbullFired || ref.seekerActive ? 'ACT' : 'DL'));
+			// Prefer the missile's self-reported mode (set per-frame
+			// by AIM-120 and HARM). Fall back to the legacy AAM-only
+			// flags for any seeker class that doesn't emit one — but
+			// only if it actually has those flags, else show '—' so
+			// HARMs and other non-AAM munitions don't get mislabeled
+			// as 'DL' midcourse.
+			let mode;
+			if (dbg.mode) mode = dbg.mode;
+			else if (ref.lostLock) mode = 'LOST';
+			else if (ref.pitbullFired || ref.seekerActive) mode = 'ACT';
+			else if (ref.type === 'AIM-120') mode = 'DL';
+			else mode = '—';
 			const rng     = typeof dbg.rangeToTarget === 'number'
 				? `${(dbg.rangeToTarget / 1000).toFixed(2)} km` : '—';
 			const tgt     = dbg.targetName || (ref.target && ref.target.name) || '—';

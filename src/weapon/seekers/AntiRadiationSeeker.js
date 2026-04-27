@@ -259,5 +259,18 @@ export class AntiRadiationSeeker extends Missile {
 		this.heading += Math.max(-capDeg, Math.min(capDeg, dH * pn * dt));
 		this.pitch   += Math.max(-capDeg, Math.min(capDeg, dP * pn * dt));
 		this.pitch   = Math.max(-85, Math.min(85, this.pitch));
+
+		// Debug data for HUD missile panel + commander tooltip. HARM
+		// modes are not the AAM modes:
+		//   EMIT = tracking a live emitter
+		//   LKP  = emitter shut down, dead-reckoning to last-known
+		//   SRCH = launched without acquiring an emitter, scanning
+		this.debug = {
+			rangeToTarget: range,
+			headingError: dH,
+			pitchError:   dP,
+			mode: radarLive ? 'EMIT' : (this._lkp ? 'LKP' : 'SRCH'),
+			targetName: (this.target && this.target.name) || 'EMITTER',
+		};
 	}
 }
