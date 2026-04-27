@@ -395,24 +395,12 @@ export class NPCSystem {
 			}
 		}
 
-		// Debug beacon for ground platforms. Tall, bright, always visible
-		// even if the GLB orientation is off or the model is buried. A
-		// 300 m pillar above the unit is small enough not to wreck the
-		// scene and large enough to spot from 30 km. Remove `debugBeacon`
-		// once the model render is verified to work for real. The beacon
-		// is added to the group so it inherits the same world matrix as
-		// the model.
-		if (platform.kind === 'ground') {
-			const beaconGeom = new THREE.CylinderGeometry(3, 3, 300, 8);
-			beaconGeom.translate(0, 0, 150);
-			const beaconMat = new THREE.MeshBasicMaterial({
-				color: 0xff4020, transparent: true, opacity: 0.55,
-				depthWrite: false,
-			});
-			const beacon = new THREE.Mesh(beaconGeom, beaconMat);
-			beacon.rotation.x = Math.PI / 2; // lay along +Z (world-up)
-			group.add(beacon);
-		}
+		// (Removed: 300 m red debug beacon that used to be added to
+		// every ground platform during the placeholder-model era.
+		// With proper GLBs rendering, the beacons were just a fill-
+		// rate sink — additive-blended transparent cylinders smear
+		// across the screen at oblique angles. Now that the actual
+		// units are visible the beacons aren't needed.)
 		group.matrixAutoUpdate = false;
 		this.scene.add(group);
 
