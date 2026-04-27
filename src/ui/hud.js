@@ -752,7 +752,7 @@ export class HUD {
 		// one column.
 		panel.style.cssText = `
 			position: absolute;
-			bottom: 290px;
+			bottom: 305px;
 			left: 30px;
 			padding: 6px 10px;
 			border: 1px solid rgba(0, 255, 0, 0.4);
