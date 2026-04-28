@@ -161,19 +161,21 @@ export function loadPlayerPlane(plane, ctx) {
 		// view frames the airframe consistently regardless of which
 		// GLB is loaded.
 		//
-		//   z = -1.3 × apparent_length →  plane sits 1.3 lengths
-		//       forward of the camera. At 75° FOV that fills ~45° of
-		//       the screen height, which reads as "clearly the plane
-		//       but with context around it".
-		//   y = -0.4 × apparent_height → the camera sits 40% of the
-		//       plane's height above the airframe centerline, giving
-		//       the usual slightly-above chase angle.
-		const apparentLength = size.z * cockpitScale; // nose-tail along rotated Z
-		const apparentHeight = size.y * cockpitScale;
+		//   z = -1.3 × apparent_max_extent → camera pulls back
+		//       proportionally to whichever airframe dimension is
+		//       largest. For fighters that's the length; for flying
+		//       wings (B-2) it's the wingspan. Using just `size.z`
+		//       (length axis) under-frames any plane wider than it is
+		//       long — the wings overflow the FOV and you see a
+		//       full-screen brown smear of underwing surface.
+		//   y = -0.4 × apparent_height → camera sits 40% above the
+		//       airframe centerline (slightly-above chase angle).
+		const apparentMaxExtent = COCKPIT_APPARENT_LENGTH_M; // = max(size.*) × cockpitScale
+		const apparentHeight    = size.y * cockpitScale;
 		BASE_PLANE_POS.set(
 			0,
 			-apparentHeight * 0.40,
-			-apparentLength * 1.30,
+			-apparentMaxExtent * 1.30,
 		);
 		visualOffset.copy(BASE_PLANE_POS);
 
