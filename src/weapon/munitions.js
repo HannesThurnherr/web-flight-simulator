@@ -21,8 +21,15 @@
 //                 just uses simType: "AIM-120".
 // ============================================================================
 
+import { validateMunitionSpec } from './munitionSpec.js';
+
 const _munitionModules = import.meta.glob('../data/munitions/*.json', { eager: true });
 
+// Build the registry AND validate every entry at module load. Any
+// JSON missing required fields throws here, before the player can
+// even fire a shot — so the failure surfaces at app start with a
+// stack trace pointing at this file, not silently mid-flight as
+// guidance NaN'ing out.
 export const MUNITIONS = (() => {
 	const out = {};
 	const entries = Object.entries(_munitionModules).sort((a, b) => a[0].localeCompare(b[0]));
@@ -31,6 +38,7 @@ export const MUNITIONS = (() => {
 		const fallbackId = path.match(/\/([^/]+)\.json$/)?.[1];
 		const id = raw.id || fallbackId;
 		if (!id) continue;
+		validateMunitionSpec(id, raw);
 		out[id] = raw;
 	}
 	return out;

@@ -8,6 +8,7 @@ import { getActiveFlares } from './flare.js';
 import { airDensity, GRAVITY } from '../plane/aeroModel.js';
 import { cloneAim9Template, cloneMissileTemplate } from './missileModels.js';
 import { pushKill } from '../systems/eventLog.js';
+import { validateMunitionSpec } from './munitionSpec.js';
 
 // Shared signature reference (not per-missile copy) — all live AIM-9s have
 // the same sensor profile. Subclasses (AIM-120) overwrite this in their ctor.
@@ -34,44 +35,21 @@ const MISSILE_IR_SIGNATURE = SIGNATURES.missile_ir;
 // _estimateTargetVelocityENU, _segmentMissDistSq) are usable from both.
 // ============================================================================
 
-// Hard-coded fallback defaults — used ONLY when the ctor is called
-// without a data object (legacy callers). All of these are now driven
-// per-munition from src/data/munitions/*.json via the data object.
-// Keeping the defaults here so this file stays functional standalone
-// (tests, experiments) without needing to scaffold the JSON loader.
-const DEFAULT_AIM9_DATA = {
-	flight: {
-		launchSpeedOffset: 40,
-		boostDurationS: 3.5,
-		boostAccel: 210,
-		peakSpeed: 860,
-		minSpeed: 60,
-		maxLifeS: 40,
-		maxTurnDegPerSec: 60,
-		pnGain: 4.0,
-		dragRef: 22,
-		dragRefSpeed: 700,
-		dragRefAltitude: 5000,
-	},
-	warhead: {
-		killRadiusM: 10,
-		fuzeSenseRadiusM: 20,
-	},
-	seeker: {
-		coneHalfAngleDeg: 90,
-		maxG: 40,
-	},
-	signature: 'missile_ir',
-	simType: 'AIM-9',
-};
-
 export class Missile {
 	constructor(scene, viewer, startPos, heading, pitch, speed, target = null, onKill = null, launcher = null, data = null) {
 		// Data-driven configuration. Every tunable parameter lives on
 		// the `data` object (loaded from src/data/munitions/*.json via
-		// munitionFactory). Default falls back to hardcoded AIM-9X so
-		// callers that don't pass data stay functional.
-		this.data = data || DEFAULT_AIM9_DATA;
+		// munitionFactory). The previous fallback to a hardcoded
+		// DEFAULT_AIM9_DATA masked callers that forgot to pass a JSON
+		// — they got an AIM-9-class fighter missile no matter what
+		// they meant to fire. Now: data is required, validated by
+		// validateMunitionSpec, and missing fields throw with the
+		// munition id named.
+		if (!data) {
+			throw new Error('[Missile] constructor requires a `data` object (munition JSON)');
+		}
+		validateMunitionSpec(data.id || data.simType || '<unknown>', data);
+		this.data = data;
 		const d = this.data;
 
 		this.scene = scene;
@@ -92,7 +70,7 @@ export class Missile {
 		this.pitch = pitch;
 		this.roll = 0;
 		// Launch-rail ejection bump; motor does the real work during boost.
-		this.speed = speed + (d.flight.launchSpeedOffset ?? 40);
+		this.speed = speed + d.flight.launchSpeedOffset;
 
 		this.maxLife = d.flight.maxLifeS;
 		this.life = this.maxLife;
@@ -129,11 +107,13 @@ export class Missile {
 		// 'meteor') wins, AIM-9 fallback otherwise. The procedural body
 		// is the second-fall fallback for first-frame-after-boot shots
 		// before the GLB has downloaded.
-		const d = this.data || {};
+		const d = this.data;
 		const templated = d.modelTemplate
 			? cloneMissileTemplate(d.modelTemplate)
 			: cloneAim9Template();
-		const bodyLen = templated ? (d.realLengthM ?? 3.02) : 2.6;
+		// realLengthM is optional in the JSON — used to scale the GLB
+		// to its true world size. Procedural fallback uses 2.6 m.
+		const bodyLen = templated ? (d.realLengthM || 3.02) : 2.6;
 		if (templated) {
 			this.mesh.add(templated);
 		} else {
@@ -151,7 +131,8 @@ export class Missile {
 		// orb on their tail looks ridiculous. The cleanest signal is
 		// boostDurationS === 0 (those entries have a zero burn time and
 		// zero boostAccel; everything else has a nonzero motor).
-		const hasMotor = !d.flight || (d.flight.boostDurationS ?? 0) > 0;
+		// Validated at construction → d.flight.boostDurationS exists.
+		const hasMotor = d.flight.boostDurationS > 0;
 		if (hasMotor) {
 			this._buildFlameEffects(bodyLen, 0.07, 1.0, 2.2);
 		}
@@ -445,7 +426,8 @@ export class Missile {
 		const noseZ = Math.sin(pRad);
 		const losLen = Math.max(1e-6, Cesium.Cartesian3.magnitude(losLocal));
 		const cosAng = (noseX * losLocal.x + noseY * losLocal.y + noseZ * losLocal.z) / losLen;
-		const coneDeg = this.data.seeker?.coneHalfAngleDeg ?? 90;
+		// Validated at ctor: IR / IIR seekers have coneHalfAngleDeg.
+		const coneDeg = this.data.seeker.coneHalfAngleDeg;
 		const cosMin  = Math.cos(coneDeg * Math.PI / 180);
 		if (cosAng < cosMin) {
 			this.lostLock = true;
@@ -496,10 +478,11 @@ export class Missile {
 		// trivially out-turned by a fighter pulling 25°/s. The "bled-out
 		// missile passes harmlessly" effect is now kinematic, not
 		// warhead-dependent.
-		const maxG    = this.data.seeker?.maxG  ?? 40;
-		const pnGain  = this.data.flight?.pnGain ?? 4.0;
-		const vRef    = this.data.flight?.vManeuverRef ?? 500;
-		const gFloor  = this.data.flight?.gAvailFloor ?? 0.05;
+		// All required and validated at construction time.
+		const maxG    = this.data.seeker.maxG;
+		const pnGain  = this.data.flight.pnGain;
+		const vRef    = this.data.flight.vManeuverRef;
+		const gFloor  = this.data.flight.gAvailFloor;
 		const qFactor = Math.min(1, Math.max(gFloor, (this.speed * this.speed) / (vRef * vRef)));
 		const gAvail  = maxG * qFactor;
 		const maxTurnRadPerS = (gAvail * 9.81) / Math.max(50, this.speed);
@@ -749,11 +732,13 @@ export class Missile {
 		if (this._irCheckTimer < 0.1) return;
 		this._irCheckTimer = 0;
 
-		const seeker = this.data.seeker || {};
-		const coneHalfRad   = (seeker.coneHalfAngleDeg ?? 30) * Math.PI / 180;
-		const trackRange    =  seeker.trackRangeM       ?? 12000;
-		const aspectEnabled =  seeker.aspectIrEnabled   !== false;
-		const flareResist   =  seeker.flareResistance   ?? 0.3;
+		// IR/IIR seekers — all required fields validated at construction.
+		// `aspectIrEnabled` is the only optional knob; defaults to true.
+		const seeker = this.data.seeker;
+		const coneHalfRad   = seeker.coneHalfAngleDeg * Math.PI / 180;
+		const trackRange    = seeker.trackRangeM;
+		const aspectEnabled = seeker.aspectIrEnabled !== false;
+		const flareResist   = seeker.flareResistance;
 
 		// Score current target if it's still alive and an aircraft.
 		// A dead-flare lock or destroyed aircraft scores 0 → we'll fall

@@ -43,9 +43,10 @@ export class AntiRadiationSeeker extends Missile {
 		target = null, onKill = null, launcher = null, data = null) {
 		super(scene, viewer, startPos, heading, pitch, speed, target, onKill, launcher, data);
 
-		const seeker = this.data && this.data.seeker || {};
-		this._fovHalfRad = ((seeker.fovHalfAngleDeg ?? 40) * Math.PI) / 180;
-		this._emissionLossMemoryS = seeker.emissionLossMemoryS ?? 10;
+		// anti_radiation seeker fields validated by validateMunitionSpec.
+		const seeker = this.data.seeker;
+		this._fovHalfRad = (seeker.fovHalfAngleDeg * Math.PI) / 180;
+		this._emissionLossMemoryS = seeker.emissionLossMemoryS;
 
 		// Last known emitter position. Updated every tick the lock is
 		// "live" (target still radiating). When the radar shuts down we
@@ -270,16 +271,15 @@ export class AntiRadiationSeeker extends Missile {
 
 		// Speed-dependent G availability — same formula the parent
 		// Missile uses, copied here because we override the whole guide.
+		// All fields validated at ctor.
 		const f = this.data.flight;
-		const maxG    = this.data.seeker?.maxG ?? 25;
-		const vRef    = f.vManeuverRef ?? 600;
-		const gFloor  = f.gAvailFloor   ?? 0.05;
-		const qFactor = Math.min(1, Math.max(gFloor, (this.speed * this.speed) / (vRef * vRef)));
+		const maxG    = this.data.seeker.maxG;
+		const qFactor = Math.min(1, Math.max(f.gAvailFloor, (this.speed * this.speed) / (f.vManeuverRef * f.vManeuverRef)));
 		const gAvail  = maxG * qFactor;
 		const maxTurnRad = (gAvail * 9.81) / Math.max(50, this.speed);
 		const capDeg     = (maxTurnRad * 180 / Math.PI) * dt;
 
-		const pn = f.pnGain ?? 4.0;
+		const pn = f.pnGain;
 		this.heading += Math.max(-capDeg, Math.min(capDeg, dH * pn * dt));
 		this.pitch   += Math.max(-capDeg, Math.min(capDeg, dP * pn * dt));
 		this.pitch   = Math.max(-85, Math.min(85, this.pitch));

@@ -39,16 +39,17 @@ export function steerTowardCoord(missile, targetLLH, dt) {
 	// Speed-dependent G availability: at low speed there's not enough
 	// dynamic pressure for the fins to bite. Same shape used by
 	// HARM/AAM/LGB so flying-too-slow consistently means flying-dumb.
-	const f = (missile.data && missile.data.flight) || {};
-	const maxG   = (missile.data.seeker && missile.data.seeker.maxG) || 9;
-	const vRef   = f.vManeuverRef ?? 250;
-	const gFloor = f.gAvailFloor   ?? 0.05;
-	const qFactor = Math.min(1, Math.max(gFloor, (missile.speed * missile.speed) / (vRef * vRef)));
-	const gAvail  = maxG * qFactor;
+	// All required fields are validated at Missile construction —
+	// missing values would have thrown there, so reads here are safe
+	// without `??` fallbacks.
+	const f = missile.data.flight;
+	const s = missile.data.seeker;
+	const qFactor = Math.min(1, Math.max(f.gAvailFloor, (missile.speed * missile.speed) / (f.vManeuverRef * f.vManeuverRef)));
+	const gAvail  = s.maxG * qFactor;
 	const maxTurnRad = (gAvail * 9.81) / Math.max(50, missile.speed);
 	const capDeg     = (maxTurnRad * 180 / Math.PI) * dt;
 
-	const pn = f.pnGain ?? 4.0;
+	const pn = f.pnGain;
 	missile.heading += Math.max(-capDeg, Math.min(capDeg, dH * pn * dt));
 	missile.pitch   += Math.max(-capDeg, Math.min(capDeg, dP * pn * dt));
 	missile.pitch   = Math.max(-89, Math.min(89, missile.pitch));

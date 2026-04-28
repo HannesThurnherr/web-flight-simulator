@@ -34,12 +34,9 @@ export class LaserSeeker extends Missile {
 		target = null, onKill = null, launcher = null, data = null) {
 		super(scene, viewer, startPos, heading, pitch, speed, target, onKill, launcher, data);
 
-		const seeker = (data && data.seeker) || {};
-		// How long the bomb tolerates the spot being absent before
-		// declaring the shot a lost cause and going dumb. Real LGBs
-		// have a few seconds of "memory" — the optics see the last
-		// reflection for a moment after lase stops — but not much.
-		this._losBreakTimeoutS = seeker.losBreakTimeoutS ?? 3.0;
+		// All laser-seeker JSON fields are validated by validateMunitionSpec
+		// at the parent's ctor, so reads here are guaranteed-safe.
+		this._losBreakTimeoutS = data.seeker.losBreakTimeoutS;
 		this._lostSpotAt = null;       // sim-age the spot first went away
 		this.lostLock = false;
 	}

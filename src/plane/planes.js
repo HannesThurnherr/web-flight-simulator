@@ -22,6 +22,8 @@
 // glob-import. Identical shape: one JSON per item, auto-discovery.
 // ============================================================================
 
+import { validatePlaneSpec } from './planeSpec.js';
+
 // Import every JSON in the planes data directory. `eager: true` makes
 // Vite bundle them directly (not async) so we can read them synchronously
 // here. The map key is the path, value is the parsed module.
@@ -72,6 +74,12 @@ export const PLANES = (() => {
 		const processed = postProcess(raw);
 		const id = processed.id || fallbackId;
 		if (!id) continue;
+		// Validate the physics spec at load time. A new plane JSON
+		// missing required fields (gSoftLimit, inertia.roll, etc.)
+		// throws here at app startup with the plane id named, instead
+		// of silently inheriting fighter defaults at construction
+		// (the B-2 bug we just spent the last hour on).
+		validatePlaneSpec(id, processed.physicsOverrides);
 		out[id] = processed;
 	}
 	return out;

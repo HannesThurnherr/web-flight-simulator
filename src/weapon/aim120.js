@@ -108,20 +108,21 @@ export class AIM120 extends Missile {
 	static SEEKER_RADAR_DEBUG = buildSeekerRadar(DEFAULT_AIM120_DATA);
 
 	constructor(scene, viewer, startPos, heading, pitch, speed, target = null, onKill = null, launcher = null, data = null) {
-		// Data-driven: fall back to DEFAULT_AIM120_DATA for any caller
-		// that doesn't pass explicit data. Pass the data through to
-		// Missile's ctor so the base class's flight / warhead / sig
-		// lookups also use it.
-		const d = data || DEFAULT_AIM120_DATA;
-		super(scene, viewer, startPos, heading, pitch, speed, target, onKill, launcher, d);
-		this.data = d;
+		// Data is REQUIRED — no default fallback. The Missile parent
+		// ctor calls validateMunitionSpec on whatever we pass, so
+		// missing fields throw with the munition id named.
+		if (!data) {
+			throw new Error('[AIM120] constructor requires a `data` object (munition JSON)');
+		}
+		super(scene, viewer, startPos, heading, pitch, speed, target, onKill, launcher, data);
+		const d = data;
 
 		// Override launch speed offset using THIS munition's value (the
 		// base class already applied its OWN offset; we've passed our d
 		// above so it uses the right one — but keep the speed-set here
 		// explicit in case a subclass variant needs a different
 		// behaviour).
-		this.speed = speed + (d.flight.launchSpeedOffset ?? 50);
+		this.speed = speed + d.flight.launchSpeedOffset;
 
 		this.maxLife = d.flight.maxLifeS;
 		this.life    = this.maxLife;
@@ -185,7 +186,7 @@ export class AIM120 extends Missile {
 		// on every fire of an AMRAAM-class missile, with the side-effect
 		// of having already decremented ammo: classic "fired one and
 		// the count went to zero" bug.)
-		const d = this.data || {};
+		const d = this.data;
 
 		// Prefer the real GLB model. Munition JSONs specifying a non-
 		// default shape (e.g. Meteor with its ramjet intakes) use
@@ -634,11 +635,12 @@ export class AIM120 extends Missile {
 		this._reacqTimer    = (this._reacqTimer    || 0) + dt;
 		this._reacqAttempt  = this._reacqAttempt   ?? 0;
 
+		// active_radar seeker fields validated at ctor.
 		const seeker     = this.data.seeker;
-		const baseIv     = seeker.reacquireIntervalS    ?? 0.25;
-		const backoffMul = seeker.reacquireBackoffMul   ?? 2.0;
-		const maxIv      = seeker.reacquireMaxIntervalS ?? 4.0;
-		const maxAttempts= seeker.reacquireMaxAttempts  ?? 5;
+		const baseIv     = seeker.reacquireIntervalS;
+		const backoffMul = seeker.reacquireBackoffMul;
+		const maxIv      = seeker.reacquireMaxIntervalS;
+		const maxAttempts= seeker.reacquireMaxAttempts;
 
 		const nextIv = Math.min(maxIv, baseIv * Math.pow(backoffMul, this._reacqAttempt));
 
@@ -743,15 +745,15 @@ export class AIM120 extends Missile {
 		// for AMRAAM-class missiles is ~Mach 2 (≈ 600 m/s); at and above
 		// that we cap at the rated maxTurnDegPerSec.
 		const maxG    = 40;
-		const vRef    = this.data.flight?.vManeuverRef ?? 600;
-		const gFloor  = this.data.flight?.gAvailFloor ?? 0.05;
+		const vRef    = this.data.flight.vManeuverRef;
+		const gFloor  = this.data.flight.gAvailFloor;
 		const qFactor = Math.min(1, Math.max(gFloor, (this.speed * this.speed) / (vRef * vRef)));
 		const gAvail  = maxG * qFactor;
 		const turnRadPerS = (gAvail * 9.81) / Math.max(50, this.speed);
 		const turnDegPerS = Cesium.Math.toDegrees(turnRadPerS);
-		const ratedCap    = this.data.flight.maxTurnDegPerSec ?? 40;
+		const ratedCap    = this.data.flight.maxTurnDegPerSec;
 		const cap = Math.min(ratedCap, turnDegPerS) * dt;
-		const pn  = this.data.flight.pnGain ?? 4.0;
+		const pn  = this.data.flight.pnGain;
 		this.heading += THREE.MathUtils.clamp(dH * pn * dt, -cap, cap);
 		this.pitch   += THREE.MathUtils.clamp(dP * pn * dt, -cap, cap);
 		this.pitch   = THREE.MathUtils.clamp(this.pitch, -85, 85);

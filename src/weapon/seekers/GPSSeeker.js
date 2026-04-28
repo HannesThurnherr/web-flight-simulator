@@ -73,17 +73,15 @@ export class GPSSeeker extends Missile {
 		while (dH >  180) dH -= 360;
 		const dP = desiredPitch - this.pitch;
 
-		// Speed-dependent G availability — same shape as HARM/AAM/LGB.
-		const f = this.data && this.data.flight ? this.data.flight : {};
-		const maxG    = (this.data.seeker && this.data.seeker.maxG) || 5;
-		const vRef    = f.vManeuverRef ?? 250;
-		const gFloor  = f.gAvailFloor   ?? 0.05;
-		const qFactor = Math.min(1, Math.max(gFloor, (this.speed * this.speed) / (vRef * vRef)));
-		const gAvail  = maxG * qFactor;
+		// All required fields validated at ctor.
+		const f = this.data.flight;
+		const maxG = this.data.seeker.maxG;
+		const qFactor = Math.min(1, Math.max(f.gAvailFloor, (this.speed * this.speed) / (f.vManeuverRef * f.vManeuverRef)));
+		const gAvail = maxG * qFactor;
 		const maxTurnRad = (gAvail * 9.81) / Math.max(50, this.speed);
-		const capDeg     = (maxTurnRad * 180 / Math.PI) * dt;
+		const capDeg = (maxTurnRad * 180 / Math.PI) * dt;
 
-		const pn = f.pnGain ?? 3.0;
+		const pn = f.pnGain;
 		this.heading += Math.max(-capDeg, Math.min(capDeg, dH * pn * dt));
 		this.pitch   += Math.max(-capDeg, Math.min(capDeg, dP * pn * dt));
 		this.pitch   = Math.max(-89, Math.min(89, this.pitch));
