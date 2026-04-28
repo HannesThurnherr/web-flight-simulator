@@ -104,16 +104,14 @@ export function loadPlayerPlane(plane, ctx) {
 		if (plane.irOverride) {
 			Object.assign(state.sensors.ir, plane.irOverride);
 		}
-		// Apply physics overrides (thrust / agility / G-limits) onto
-		// the shared physics instance.
-		const physics = ctx.physics;
-		if (typeof physics.applyOverrides === 'function') {
-			// First reset to baseline by reinstantiating, then apply
-			// overrides — simpler than tracking deltas.
-			const fresh = new PlanePhysics();
-			fresh.applyOverrides(plane.physicsOverrides || {});
-			ctx.setPhysics(fresh);
-		}
+		// Replace the shared physics instance with one constructed
+		// from this plane's spec. PlanePhysics is strict — the spec
+		// must declare every required field; validatePlaneSpec
+		// throws otherwise (no silent fighter-default inheritance).
+		ctx.setPhysics(new PlanePhysics({
+			...plane.physicsOverrides,
+			__id: plane.id,
+		}));
 
 		const planeModel = new THREE.Group();
 		planeModel.add(mesh);

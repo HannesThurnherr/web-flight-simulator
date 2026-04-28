@@ -2,6 +2,15 @@ import * as THREE from 'three';
 import * as Cesium from 'cesium';
 import { PlanePhysics } from '../plane/planePhysics.js';
 import { SIGNATURES } from './signatures.js';
+import f15Plane from '../data/planes/f-15.json';
+
+// NPC fighter physics spec. All hostile + friendly fighter NPCs use
+// the same baseline today (we don't yet model per-airframe NPCs);
+// when we do, this will become a per-NPC-type lookup. For now the
+// F-15 spec is the canonical "fighter" baseline and lives in one
+// place — the F-15 JSON. Importing it here keeps the spec in sync
+// with the player's F-15 automatically.
+const NPC_FIGHTER_SPEC = { ...f15Plane.physicsOverrides, __id: 'npc-fighter' };
 import {
 	FIGHTER_RADAR_DEFAULT,
 	FIGHTER_IRST_DEFAULT,
@@ -307,7 +316,7 @@ export class NPCSystem {
 			// drag penalty for hard turns) that the player's aircraft
 			// obeys.
 			physics: (() => {
-				const p = new PlanePhysics();
+				const p = new PlanePhysics(NPC_FIGHTER_SPEC);
 				p.reset(lon, lat, alt, heading, 0, 0);
 				return p;
 			})(),
@@ -481,11 +490,19 @@ export class NPCSystem {
 		const sigKey = platform.signature || 'fighter';
 		const signature = { ...(SIGNATURES[sigKey] || SIGNATURES.fighter) };
 
-		const physics = new PlanePhysics();
+		// Platform physics: ground SAMs / EWRs are static, but they
+		// still get a PlanePhysics instance so the position + sensor
+		// integration paths look like everything else. Use the
+		// platform's spec if provided; fall back to the NPC fighter
+		// spec for any platform that doesn't ship its own (the static
+		// ones don't actually fly so the spec only matters if a
+		// future platform becomes mobile).
+		const physics = new PlanePhysics(
+			platform.physicsOverrides
+				? { ...platform.physicsOverrides, __id: `platform-${platform.id || 'unknown'}` }
+				: NPC_FIGHTER_SPEC,
+		);
 		physics.reset(lon, lat, alt, 0, 0, 0);
-		if (platform.physicsOverrides && typeof physics.applyOverrides === 'function') {
-			physics.applyOverrides(platform.physicsOverrides);
-		}
 
 		// Ground platforms don't fly — flag `isStatic` so the main update
 		// loop skips physics integration and terrain-collision for them.

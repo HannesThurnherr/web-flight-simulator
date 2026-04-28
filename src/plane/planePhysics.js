@@ -5,6 +5,7 @@ import {
 	liftCoefficient, dragCoefficient, sideForceCoefficient,
 	quaternionFromHPR, hprFromQuaternion, integrateQuaternion,
 } from './aeroModel.js';
+import { validatePlaneSpec } from './planeSpec.js';
 
 // ============================================================================
 // PlanePhysics — Phase 1: rigid-body 6DOF with aerodynamic moments.
@@ -55,14 +56,26 @@ import {
 const FIXED_DT = 1 / 120; // internal physics tick
 
 export class PlanePhysics {
-	constructor() {
-		// ----- Physical parameters (F-15-ish; will be tuned in Phase 6) ------
-		this.mass = 20000; // kg
+	// REQUIRED constructor argument: a complete physics spec (the
+	// plane JSON's `physicsOverrides` block, validated by
+	// validatePlaneSpec). Every tunable below is read from the spec —
+	// there are NO silent fallbacks. Pass an incomplete spec and the
+	// validator throws with the exact missing field name.
+	constructor(spec) {
+		validatePlaneSpec((spec && spec.__id) || '<unknown>', spec);
+
+		// ----- Physical parameters (read directly from spec) ------------------
+		this.mass = spec.mass;
+
 		// Diagonal inertia tensor in body frame (kg·m²).
 		// Body +X = right wing → rotation about +X is pitch (nose+tail swing)
 		// Body +Y = nose       → rotation about +Y is roll  (wingtips, smaller)
 		// Body +Z = up         → rotation about +Z is yaw   (nose+tail, largest)
-		this.inertia = new THREE.Vector3(180000, 30000, 200000);
+		this.inertia = new THREE.Vector3(
+			spec.inertia.pitch,
+			spec.inertia.roll,
+			spec.inertia.yaw,
+		);
 
 		// Aerodynamic moment coefficients.
 		//
@@ -75,25 +88,15 @@ export class PlanePhysics {
 		//
 		// Steady-state rate for held stick: ω_ss = δ · (K_c/K_d) · V.
 		// Release-stick time constant:       τ   = I / (K_d · ρV).
-		//
-		// Tuned so at V=250 m/s, ρ=1 (≈ cruise) and full stick:
-		//   pitch:  45 °/s,  τ ≈ 0.24 s        (K_c/K_d = 0.0031)
-		//   roll:  215 °/s,  τ ≈ 0.20 s        (K_c/K_d = 0.015)
-		//   yaw:    13 °/s,  τ ≈ 0.32 s        (K_c/K_d = 0.00090)
-		// Roll/pitch ratio ≈ 4.8, matching fighter-class behavior. Pitch looks
-		// too authoritative here (90°/s at V=500), but Phase 3 static stability
-		// will introduce an AoA-based restoring moment that limits sustained
-		// pitch rate via the g-load geometry  (ω_pitch ≈ (n−1)·g / V), which is
-		// the right way for pitch to be limited.
 		this.controlCoef = new THREE.Vector3(
-			 8.0,  // pitch (elevator)
-			 9.0,  // roll  (ailerons)
-			 2.5,  // yaw   (rudder)
+			spec.controlCoef.pitch,
+			spec.controlCoef.roll,
+			spec.controlCoef.yaw,
 		);
 		this.dampingCoef = new THREE.Vector3(
-			2600, // pitch damping — heavier to slow sustained pitch rate
-			 600, // roll  damping — light, gives crisp high roll rate
-			2800, // yaw   damping — heaviest, strong directional stability
+			spec.dampingCoef.pitch,
+			spec.dampingCoef.roll,
+			spec.dampingCoef.yaw,
 		);
 
 		// Sign mapping from pilot stick (+1, −1) to moment on body axis.
@@ -104,17 +107,13 @@ export class PlanePhysics {
 		this.inputSign = new THREE.Vector3(+1, +1, -1);
 
 		// ---- Flight envelope protection (Phase 6) ----------------------------
-		// Fly-by-wire-style G-limiter. Real fighters have this wired into the
-		// flight control computer so the pilot can't over-stress the airframe
-		// at high dynamic pressure. Below softLimit the pilot has full pitch
-		// authority; between softLimit and hardLimit the commanded pull is
-		// attenuated toward zero; at and above hardLimit the pull input is
-		// fully suppressed and G decays back into the envelope on its own.
-		//
-		// Only pull-up input is limited. Negative G (push) is left alone — the
-		// airframe limit there (~−3G) is rarely approached in normal flying.
-		this.gSoftLimit = 8.0;
-		this.gHardLimit = 10.0;
+		// Fly-by-wire-style G-limiter. Below softLimit the pilot has full
+		// pitch authority; between softLimit and hardLimit the commanded
+		// pull is attenuated toward zero; at and above hardLimit the
+		// pull input is fully suppressed and G decays back into the
+		// envelope on its own. Only pull-up input is limited.
+		this.gSoftLimit = spec.gSoftLimit;
+		this.gHardLimit = spec.gHardLimit;
 		this.gLimiterActive = false;
 
 		// ---- Static stability (Phase 3) --------------------------------------
@@ -138,67 +137,62 @@ export class PlanePhysics {
 		this.yawStabilityCoef   = 0.5;         // effective |C_nβ| · b     (m)
 		this.alphaTrim = 2.0 * Math.PI / 180;  // zero-moment AoA ≈ 2°
 
-		// Thrust parameters (N). Reference values match the F-15's twin
-		// F100-PW-229: dry 158 kN, afterburner 258 kN. Previously set
-		// 18 % low (130 / 210) which made every airframe feel sluggish
-		// and prevented the F-15 from actually reaching its real-world
-		// top speed at altitude. Per-plane multipliers in the registry
-		// scale these (F-22 uses thrustDryMul for supercruise).
-		this.thrustDryMax = 158000;
-		this.thrustABMax  = 258000;
+		// Thrust parameters (N). Absolute values from spec — no
+		// multiplier path. F-15: dry 158 kN, AB 258 kN. F-22: dry
+		// 232 kN, AB 312 kN. B-2: dry 308 kN, AB 308 kN (no AB).
+		this.thrustDryMax = spec.thrustDryMax;
+		this.thrustABMax  = spec.thrustABMax;
 
 		// Wing reference area for all aerodynamic force calculations.
 		// Lift, drag, and sideforce scale with q̄ · S_ref · coefficient.
-		this.wingArea = 56; // m² (F-15 reference)
+		this.wingArea = spec.wingArea;
 
-		// Parasitic drag coefficient at zero AoA / zero sideslip. Baseline
-		// is F-15-class; stealth airframes with area-ruled fuselages
-		// override this lower via physicsOverrides.cdZero.
-		this.cdZero = 0.022;
+		// Parasitic drag coefficient at zero AoA / zero sideslip.
+		this.cdZero = spec.cdZero;
 
 		// ---- High-alpha aero parameters (Phase 7b) ---------------------------
 		// Per-airframe lift-curve shape — passed into liftCoefficient(). See
-		// aeroModel.js for the full model. F-15-ish defaults; F-22 / Su-class
-		// raise clMaxStall + postStallPlateau and stallBlendDeg to recover
-		// lift deep into post-stall.
-		this.alphaStallDeg     = 18;
-		this.clMaxStall        = 1.57;
-		this.postStallPlateau  = 1.0;
-		this.stallBlendDeg     = 5;
+		// aeroModel.js for the full model. F-22 / Su-class raise clMaxStall
+		// + postStallPlateau and stallBlendDeg to recover lift deep into
+		// post-stall.
+		this.alphaStallDeg     = spec.alphaStallDeg;
+		this.clMaxStall        = spec.clMaxStall;
+		this.postStallPlateau  = spec.postStallPlateau;
+		this.stallBlendDeg     = spec.stallBlendDeg;
 
 		// Departure susceptibility — how violently the airframe yaws when
-		// driven past critical α at low V. Real high-alpha behaviour: vortex
-		// shedding becomes asymmetric → wing rock + nose slice. TV airframes
-		// (F-22) damp this through nozzle authority; clean-wing classics
-		// (F-15) depart hard. Scales a smoothly-varying pseudo-noise yaw
-		// kick whose magnitude grows past α_stall and dies above ~250 m/s
-		// (where aero stability dominates anyway).
-		this.departureSusceptibility = 0.6;
+		// driven past critical α at low V. TV airframes (F-22) damp this
+		// through nozzle authority; clean-wing classics (F-15) depart hard.
+		this.departureSusceptibility = spec.departureSusceptibility;
 		this._departurePhase = Math.random() * Math.PI * 2;
 
 		// Control authority floor — small constant moment-per-stick term
 		// that does NOT scale with q̄. Real elevator/aileron retain a sliver
 		// of authority at near-zero airspeed via prop/jet wash and (in fly-
 		// by-wire jets) the FCS reflexively going to large deflections.
-		// Without this the aircraft is utterly uncontrollable below ~80 kts;
-		// with it the pilot can still nudge attitude while recovering from
-		// a botched high-alpha maneuver.
-		this.controlAuthorityFloor = { pitch: 1500, roll: 1200, yaw: 600 }; // N·m at full stick
+		this.controlAuthorityFloor = {
+			pitch: spec.controlAuthorityFloor.pitch,
+			roll:  spec.controlAuthorityFloor.roll,
+			yaw:   spec.controlAuthorityFloor.yaw,
+		};
 
-		// ---- Thrust vectoring (Phase 7a) -------------------------------------
+		// ---- Thrust vectoring (Phase 7a, optional) ---------------------------
 		// Adds a thrust-based moment that does NOT depend on dynamic pressure
-		// — survives at low V where aero controls have died. Off by default
-		// (null); set per-plane via physicsOverrides.tv.
+		// — survives at low V where aero controls have died. Off unless
+		// the spec includes a `tv` block.
 		//
 		//   axes      'pitch' | 'pitchYaw'   which axes get TV
 		//   authority effective moment arm × Cm_δ in metres. Moment is
 		//             M_tv = thrust · authority · stick.
 		//             Sample: F-22 ≈ 2.0 m (±20° nozzle, ~6 m moment arm).
-		//   vMax      airspeed (m/s) at which TV authority has fully faded
-		//             — above this aero surfaces dominate and the nozzles
-		//             return to neutral for thrust efficiency. Default 220.
-		//   fadeBand  m/s window over which fade goes from 1 → 0. Default 60.
-		this.tv = null;
+		//   vMax      airspeed (m/s) at which TV authority has fully faded.
+		//   fadeBand  m/s window over which fade goes from 1 → 0.
+		this.tv = spec.tv ? {
+			axes:      spec.tv.axes,
+			authority: spec.tv.authority,
+			vMax:      spec.tv.vMax,
+			fadeBand:  spec.tv.fadeBand,
+		} : null;
 
 		// ----- Runtime state
 		this.position = null; // managed by main.js via lon/lat/alt; kept null here
@@ -266,102 +260,9 @@ export class PlanePhysics {
 	// external callers don't break.
 	boost() {}
 
-	// Per-airframe tuning. Called by main.js after construction with
-	// the plane config's physicsOverrides. Multipliers scale the
-	// existing reference values; absolute values replace them.
-	//
-	// Engine / thrust:
-	//   thrustDryMul  — scale mil-thrust ceiling. > 1 raises sustainable
-	//                   cruise Mach (supercruise territory for F-22).
-	//   thrustABMul   — scale afterburner thrust ceiling.
-	//
-	// Mass / airframe:
-	//   mass          — absolute kg (replaces default 20 000).
-	//   wingArea      — absolute m² (replaces default 56).
-	//   cdZero        — absolute parasitic-drag coefficient at zero α.
-	//
-	// Control authority:
-	//   controlCoef   — {pitch, roll, yaw} absolute K_c values. Replaces
-	//                   agilityMul for finer per-axis control. F-22's
-	//                   thrust-vectoring → bump pitch more than roll.
-	//   agilityMul    — uniform scale across all three axes. Applied
-	//                   AFTER controlCoef so you can do either or both.
-	//
-	// Flight envelope:
-	//   gSoftLimit / gHardLimit — override the G-limiter.
-	applyOverrides(o = {}) {
-		if (typeof o.thrustDryMul === 'number') this.thrustDryMax *= o.thrustDryMul;
-		if (typeof o.thrustABMul  === 'number') this.thrustABMax  *= o.thrustABMul;
-		// Absolute-value thrust overrides for airframes whose engines
-		// are nothing like the F-15 default (B-2's four F118s, B-1B
-		// turbofans, future cruise-only platforms). Applied AFTER the
-		// multipliers so the multiplier path stays usable for fine
-		// fighter-class tweaks.
-		if (typeof o.thrustDryMax === 'number') this.thrustDryMax = o.thrustDryMax;
-		if (typeof o.thrustABMax  === 'number') this.thrustABMax  = o.thrustABMax;
-		if (typeof o.mass         === 'number') this.mass     = o.mass;
-		if (typeof o.wingArea     === 'number') this.wingArea = o.wingArea;
-		if (typeof o.cdZero       === 'number') this.cdZero   = o.cdZero;
-		if (o.controlCoef) {
-			if (typeof o.controlCoef.pitch === 'number') this.controlCoef.x = o.controlCoef.pitch;
-			if (typeof o.controlCoef.roll  === 'number') this.controlCoef.y = o.controlCoef.roll;
-			if (typeof o.controlCoef.yaw   === 'number') this.controlCoef.z = o.controlCoef.yaw;
-		}
-		if (typeof o.agilityMul   === 'number') {
-			this.controlCoef.x *= o.agilityMul;
-			this.controlCoef.y *= o.agilityMul;
-			this.controlCoef.z *= o.agilityMul;
-		}
-		if (typeof o.gSoftLimit === 'number') this.gSoftLimit = o.gSoftLimit;
-		if (typeof o.gHardLimit === 'number') this.gHardLimit = o.gHardLimit;
-
-		// High-alpha lift-curve shape (Phase 7b).
-		if (typeof o.alphaStallDeg    === 'number') this.alphaStallDeg    = o.alphaStallDeg;
-		if (typeof o.clMaxStall       === 'number') this.clMaxStall       = o.clMaxStall;
-		if (typeof o.postStallPlateau === 'number') this.postStallPlateau = o.postStallPlateau;
-		if (typeof o.stallBlendDeg    === 'number') this.stallBlendDeg    = o.stallBlendDeg;
-
-		if (typeof o.departureSusceptibility === 'number') {
-			this.departureSusceptibility = o.departureSusceptibility;
-		}
-		if (o.controlAuthorityFloor) {
-			const f = o.controlAuthorityFloor;
-			if (typeof f.pitch === 'number') this.controlAuthorityFloor.pitch = f.pitch;
-			if (typeof f.roll  === 'number') this.controlAuthorityFloor.roll  = f.roll;
-			if (typeof f.yaw   === 'number') this.controlAuthorityFloor.yaw   = f.yaw;
-		}
-		// Per-axis moment of inertia (kg·m²). Defaults are F-15-class
-		// (180k pitch, 30k roll, 200k yaw). A heavy bomber needs much
-		// higher values — pitch + yaw scale ~with mass × length²;
-		// roll explodes with wingspan² because mass is distributed
-		// out at the wingtips.
-		if (o.inertia) {
-			const I = o.inertia;
-			if (typeof I.pitch === 'number') this.inertia.x = I.pitch;
-			if (typeof I.roll  === 'number') this.inertia.y = I.roll;
-			if (typeof I.yaw   === 'number') this.inertia.z = I.yaw;
-		}
-		// Per-axis aerodynamic damping coefficient (N·m per (rho·V·ω)).
-		// Defaults again F-15-class. Heavy aircraft have larger
-		// stabilizers / control surfaces, so they damp faster relative
-		// to their inertia ratio is what gives them their stable feel.
-		if (o.dampingCoef) {
-			const D = o.dampingCoef;
-			if (typeof D.pitch === 'number') this.dampingCoef.x = D.pitch;
-			if (typeof D.roll  === 'number') this.dampingCoef.y = D.roll;
-			if (typeof D.yaw   === 'number') this.dampingCoef.z = D.yaw;
-		}
-
-		// Thrust vectoring (Phase 7a).
-		if (o.tv) {
-			this.tv = {
-				axes: o.tv.axes === 'pitchYaw' ? 'pitchYaw' : 'pitch',
-				authority: typeof o.tv.authority === 'number' ? o.tv.authority : 2.0,
-				vMax:      typeof o.tv.vMax      === 'number' ? o.tv.vMax      : 220,
-				fadeBand:  typeof o.tv.fadeBand  === 'number' ? o.tv.fadeBand  : 60,
-			};
-		}
-	}
+	// applyOverrides removed — the entire spec is now consumed by the
+	// constructor. Anything that needs a different airframe's physics
+	// constructs a fresh PlanePhysics(spec).
 
 	// Called by main.js when entering FLYING. Seeds the integrator with a
 	// sensible initial velocity (along nose) so the aircraft is already

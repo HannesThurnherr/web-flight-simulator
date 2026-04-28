@@ -155,7 +155,11 @@ let scene, camera, renderer;
 let planeModel;
 let jetFlames = [];
 let mixer, clock;
-let physics = new PlanePhysics();
+// Boot-time physics is constructed from the active plane's spec.
+// PlanePhysics is now strict about its spec (validates at construction;
+// throws on missing fields) so we can't use a defaults-only `new
+// PlanePhysics()` anymore.
+let physics = new PlanePhysics({ ...getActivePlane().physicsOverrides, __id: getActivePlane().id });
 let controller = new PlaneController();
 let hud = new HUD();
 // TGP panel — created once at boot, hidden by default. updateTgp() in
