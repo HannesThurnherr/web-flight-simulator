@@ -42,6 +42,7 @@ import {
 	removeDesignationAt,
 	designationQueue,
 } from './designation.js';
+import { getTeamDatalink } from './teamDatalink.js';
 
 const COLOR_PLAYER       = Cesium.Color.fromCssColorString('#00eaff');
 const COLOR_FACTIONS = {
@@ -208,11 +209,34 @@ export class StrikePlannerView {
 			this._ensureMarker('__player', COLOR_PLAYER, 'PLAYER');
 			updateOne('__player', playerState, COLOR_PLAYER);
 		}
-		// TODO 5g.4: filter `units` by player-team-knowledge (own
-		// sensors + datalink) instead of showing the god-eye list.
+
+		// Player-knowledge filter: only show units the player's team
+		// knows about. Sources are the union of:
+		//   1. Own sensor contacts (state.contacts) — anything radar/IR/
+		//      visual has painted in the last few seconds.
+		//   2. Friendly team datalink — wingman / AWACS / future ISR
+		//      tracks fused into the shared picture.
+		//   3. Friendlies — always shown (they're on our side and the
+		//      planner needs to see who's where to avoid blue-on-blue).
+		// Anything outside this set stays hidden, matching what the
+		// player sees on the cockpit HUD. Future 5g.4: stale-contact
+		// dead-reckoning + last-seen timestamp tooltips.
+		const ownContacts = (playerState && playerState.contacts) || null;
+		const playerTeam = (playerState && playerState.team) || 'friendly';
+		const teamDl = getTeamDatalink(playerTeam);
+		const dlContacts = teamDl ? teamDl.contacts : null;
+		const knownToPlayer = (u) => {
+			if (!u) return false;
+			if (u.team === playerTeam) return true; // friendlies
+			if (ownContacts && ownContacts.has(u)) return true;
+			if (dlContacts  && dlContacts.has(u))  return true;
+			return false;
+		};
+
 		if (units) {
 			for (const u of units) {
 				if (!u || u.destroyed) continue;
+				if (!knownToPlayer(u)) continue;
 				const id = `npc-${u.id || u.name}`;
 				const c  = _colorForUnit(u);
 				this._ensureMarker(id, c, u.name || 'BOGEY');

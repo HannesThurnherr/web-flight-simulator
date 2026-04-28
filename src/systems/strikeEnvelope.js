@@ -27,16 +27,17 @@ export function isStrikeWeapon(munitionData) {
 	return s === 'laser' || s === 'gps';
 }
 
-// Great-circle horizontal slant range, slightly off (uses a flat-Earth
-// approximation per-degree); within tens-of-km this is well under the
-// kill-radius noise of any of these munitions, so it's not worth the
-// extra trig.
-function _slantRangeMeters(a, b) {
+// Horizontal great-circle distance only — comparing `currentRange` to
+// `rMax` means comparing apples to apples. The bomb falls vertically
+// for free; only the horizontal throw is what the envelope has to
+// cover. Earlier this used slant (3D) distance, which over-counted
+// the altitude leg and falsely triggered OUT on high-altitude shots
+// well within the actual physics envelope.
+function _horizRangeMeters(a, b) {
 	const cosLat = Math.cos((a.lat || 0) * Math.PI / 180);
 	const dE = (b.lon - a.lon) * 111320 * cosLat;
 	const dN = (b.lat - a.lat) * 111320;
-	const dU = (b.alt - a.alt);
-	return Math.sqrt(dE * dE + dN * dN + dU * dU);
+	return Math.sqrt(dE * dE + dN * dN);
 }
 
 // Compute Rmin / Rmax / status for the given (player, designation,
@@ -68,7 +69,7 @@ export function releaseEnvelope(playerState, designation, munitionData) {
 	const altAGL = Math.max(50, (playerState.alt || 0) - (designation.alt || 0));
 	if ((playerState.alt || 0) - (designation.alt || 0) < 0) {
 		// Designation is above the player — no unpowered bomb reaches it.
-		return { rMin: 0, rMax: 0, currentRange: _slantRangeMeters(playerState, designation), status: 'OUT' };
+		return { rMin: 0, rMax: 0, currentRange: _horizRangeMeters(playerState, designation), status: 'OUT' };
 	}
 
 	// Pitch is stored on playerState in degrees per the existing
@@ -85,7 +86,7 @@ export function releaseEnvelope(playerState, designation, munitionData) {
 	const rMax = Math.max(0, Math.min(vH * t * glide, lifeBound));
 	const rMin = Math.max(300, 1.5 * speed);
 
-	const currentRange = _slantRangeMeters(playerState, designation);
+	const currentRange = _horizRangeMeters(playerState, designation);
 	let status;
 	if (currentRange > rMax)              status = 'OUT';
 	else if (currentRange < rMin)         status = 'OUT';

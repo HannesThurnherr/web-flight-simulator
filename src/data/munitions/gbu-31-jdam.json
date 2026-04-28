@@ -21,7 +21,7 @@
 		"maxLifeS": 120,
 		"maxTurnDegPerSec": 6,
 		"pnGain": 3.0,
-		"glideFactor": 1.1,
+		"glideFactor": 2.4,
 		"dragRef": 1.6,
 		"dragRefSpeed": 280,
 		"dragRefAltitude": 3000,
