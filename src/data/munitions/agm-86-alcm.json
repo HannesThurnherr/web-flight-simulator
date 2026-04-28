@@ -1,0 +1,45 @@
+{
+	"id": "agm-86-alcm",
+	"name": "AGM-86C CALCM",
+	"shortName": "ALCM",
+	"category": "AGM",
+	"tags": ["cruise", "gps-guided", "stealth-low-alt", "stand-off"],
+	"massKg": 1450,
+	"rcsContributionM2": 0.04,
+	"description": "Conventional Air-Launched Cruise Missile. Subsonic turbofan, terrain-following at ~100 m AGL during cruise; pop-up + dive on the GPS coord at terminal. Real-world range ~2500 km — capped at 400 km here so a single sortie doesn't carry the whole map. Fire-and-forget; no terminal sensor, no countermeasures defeat it short of GPS jamming.",
+	"simType": "AGM-86",
+	"signature": "cruise_missile",
+	"seekerType": "cruise",
+	"modelTemplate": "agm-86",
+	"realLengthM": 6.32,
+	"flight": {
+		"launchSpeedOffset": 20,
+		"boostDurationS": 3,
+		"boostAccel": 100,
+		"peakSpeed": 250,
+		"minSpeed": 150,
+		"maxLifeS": 1800,
+		"maxTurnDegPerSec": 8,
+		"pnGain": 3.0,
+		"dragRef": 0.6,
+		"dragRefSpeed": 240,
+		"dragRefAltitude": 100,
+		"vManeuverRef": 240,
+		"gAvailFloor": 0.3,
+		"cruiseAltM": 120,
+		"cruiseAltMode": "agl",
+		"cruiseTurnG": 1.5,
+		"climbAngleDeg": 8,
+		"terminalRangeM": 4000,
+		"popUpAltAGL": 600,
+		"diveAngleDeg": -45
+	},
+	"warhead": {
+		"killRadiusM": 80,
+		"fuzeSenseRadiusM": 100,
+		"missAbortRadiusMul": 2
+	},
+	"seeker": {
+		"maxG": 5
+	}
+}

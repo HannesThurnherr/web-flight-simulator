@@ -33,6 +33,7 @@ const _templates = {
 	'agm-88': null,
 	'gbu-12': null,
 	'jdam-31': null, 'jdam-38': null,
+	'agm-86': null, 'storm-shadow': null,
 };
 
 // Rotate + scale + centre the glTF scene so the missile's long axis lies
@@ -194,6 +195,39 @@ _loader.load('/assets/models/gbu-38-jdam.glb', (gltf) => {
 	});
 }, undefined, (err) => {
 	console.warn('[missileModels] gbu-31-jdam (reuse) failed to load', err);
+});
+
+// AGM-86 ALCM — Boeing air-launched cruise missile, ~6.3 m long,
+// turbofan-cruise + small wings. Source GLB has its long axis on
+// X with the asymmetric body extending toward -X; same nose-end
+// flip pattern as the JDAM.
+_loader.load('/assets/models/agm-86.glb', (gltf) => {
+	_templates['agm-86'] = _normalizeMissileModel(gltf.scene, 6.32);
+	_templates['agm-86'].rotation.z = Math.PI;
+	_templates['agm-86'].traverse((child) => {
+		if (child.isMesh) {
+			child.castShadow = true;
+			child.receiveShadow = true;
+		}
+	});
+}, undefined, (err) => {
+	console.warn('[missileModels] agm-86 model failed to load', err);
+});
+
+// Storm Shadow / SCALP-EG — JASSM-class stealth cruise missile,
+// ~5.1 m long. Source bbox is symmetric on the long axis so we
+// can't tell nose-end from bbox alone; default normalize first
+// and revisit the rotation if it flies tail-first in-game.
+_loader.load('/assets/models/storm-shadow.glb', (gltf) => {
+	_templates['storm-shadow'] = _normalizeMissileModel(gltf.scene, 5.10);
+	_templates['storm-shadow'].traverse((child) => {
+		if (child.isMesh) {
+			child.castShadow = true;
+			child.receiveShadow = true;
+		}
+	});
+}, undefined, (err) => {
+	console.warn('[missileModels] storm-shadow model failed to load', err);
 });
 
 // Return a fresh clone of the aim-9 template, or null if the GLB hasn't
