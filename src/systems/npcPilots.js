@@ -262,15 +262,22 @@ export function makeStaticSamPilot(params) {
 	function pickTarget(unit, weapon) {
 		if (!unit.contacts) return null;
 		let best = null;
-		let bestRange = Infinity;
+		let bestScore = Infinity;   // lower wins (range × class-priority)
 		for (const [target, c] of unit.contacts) {
 			if (!target || target.destroyed || target.active === false) continue;
 			if (target.team && unit.team && target.team === unit.team) continue;
 			const sig = target.signature;
 			if (!sig) continue;
-			// Air-defence doctrine: SAMs don't shoot other SAMs, don't
-			// engage live missiles, and don't engage ground targets.
-			if (sig.unitClass === 'missile' || sig.unitClass === 'cruise_missile') continue;
+			// Air-defence doctrine. SAMs DO engage incoming cruise
+			// missiles (Tor / NASAMS / Patriot are explicitly designed
+			// for it — point + area defence vs PGMs is the whole
+			// point). They do NOT engage:
+			//   - live AAMs (`missile` unit class) — too small + too
+			//     fast for ground SAMs to bother
+			//   - other SAMs (`sam_site`) — friendly fire
+			//   - ground / building / EWR class — not in their air
+			//     picture
+			if (sig.unitClass === 'missile') continue;
 			if (sig.unitClass === 'sam_site') continue;
 			// Need a radar range for a firing solution. A purely
 			// passive (IR / visual) detection isn't enough for an
@@ -278,9 +285,16 @@ export function makeStaticSamPilot(params) {
 			if (!c.radar) continue;
 			const range = c.radar.range;
 			if (range < weapon.minRange || range > weapon.maxRange) continue;
-			if (range < bestRange) {
+			// Priority: aircraft beat cruise missiles when both in
+			// range (a fighter is a higher-value, more-capable threat
+			// than a single inbound cruise weapon). Multiplier of
+			// 1.6 on cruise puts a 30 km Storm Shadow behind a 45 km
+			// fighter but ahead of a 60 km fighter.
+			const classMul = (sig.unitClass === 'cruise_missile') ? 1.6 : 1.0;
+			const score = range * classMul;
+			if (score < bestScore) {
 				best = { target, range };
-				bestRange = range;
+				bestScore = score;
 			}
 		}
 		return best;
@@ -580,8 +594,10 @@ export function makeStaticAaaPilot(params = {}) {
 			if (target.team && unit.team && target.team === unit.team) continue;
 			const sig = target.signature;
 			if (!sig) continue;
-			// Air-only (don't shoot SAMs / buildings / ground).
-			if (sig.unitClass === 'missile' || sig.unitClass === 'cruise_missile') continue;
+			// AAA doctrine: engage aircraft + low-flying cruise
+			// missiles. Don't shoot AAMs (too small/fast for guns),
+			// other ground assets, or SAMs.
+			if (sig.unitClass === 'missile') continue;
 			if (sig.unitClass === 'sam_site' || sig.unitClass === 'building' ||
 				sig.unitClass === 'ground'   || sig.unitClass === 'ewr') continue;
 			if (!c.radar) continue;
