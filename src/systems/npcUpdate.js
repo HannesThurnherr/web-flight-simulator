@@ -26,6 +26,7 @@ import { pushKill } from './eventLog.js';
 import { particles } from '../utils/particles.js';
 import { soundManager } from '../utils/soundManager.js';
 import { getTeamDatalink, tickAllDatalinks } from './teamDatalink.js';
+import { isRadiating } from './sensorSystem.js';
 import { applyNpcMeshMatrix } from './npcRendering.js';
 
 export function npcSystemUpdate(sys, dt, playerState, simTime = 0) {
@@ -61,6 +62,25 @@ export function npcSystemUpdate(sys, dt, playerState, simTime = 0) {
 		const dl = getTeamDatalink(npc.team);
 		if (dl) dl.publishContacts(npc, simTime);
 	}
+
+	// ELINT pass: passive theater-wide emitter detection. Any
+	// hostile unit currently radiating gets published to the friendly
+	// team's intelContacts. Republished each tick — when the emitter
+	// goes EMCON the entry expires after ELINT_MEMORY seconds and
+	// disappears from the planner. Range-unlimited because real
+	// strategic ELINT (Cobra Ball, EP-3, MASINT sats) sees emitters
+	// across continents; the realism here is "you only see what's
+	// actively emitting," not a distance gate.
+	const friendlyDl = getTeamDatalink('friendly');
+	if (friendlyDl) {
+		for (const npc of sys.npcs) {
+			if (!npc || npc.destroyed) continue;
+			if (npc.team === 'friendly') continue;
+			if (!isRadiating(npc)) continue;
+			friendlyDl.publishElint(npc, simTime);
+		}
+	}
+
 	tickAllDatalinks(simTime);
 
 	// Age any in-flight flares spawned by NPC evasion (reuses the

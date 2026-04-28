@@ -23,6 +23,12 @@
 // the whole team losing the track.
 const DATALINK_MEMORY = 4.0;
 
+// How long (seconds) an ELINT entry survives without a refreshing
+// emit. Real ELINT loses contact almost immediately when the emitter
+// goes EMCON; we keep a brief memory so the planner doesn't flicker
+// when an emitter cycles between scan/track modes.
+const ELINT_MEMORY = 8.0;
+
 // How long (seconds) an engagement registration stays on the books past
 // the missile's apparent lifetime, in case the missile object's cleanup
 // is delayed a frame. Belt-and-braces — normal flow is explicit clear.
@@ -85,6 +91,40 @@ export class TeamDatalink {
 		});
 	}
 
+	// ELINT publish — passive emitter detection. Theater-wide: any
+	// currently-radiating hostile unit gets published to the friendly
+	// team datalink with the emitter's position. Republished each
+	// tick for as long as it radiates; entries time out after
+	// ELINT_MEMORY_S so a SAM going emcon disappears from the planner
+	// shortly after (cleanup in tick()). NOTE: a briefed entry on the
+	// same target is OVERWRITTEN by ELINT — sensor-derived intel is
+	// fresher than the database. The planner's resolution treats
+	// kinds 'briefed-known' / 'briefed-suspected' / 'elint' the same
+	// way (intel-only path) but renders different labels.
+	publishElint(target, now) {
+		if (!target || target.destroyed) return;
+		if (target.team === this.team) return;
+		const existing = this.intelContacts.get(target);
+		// Don't downgrade a briefed-known to ELINT — briefed is the
+		// "we know exact coords from imagery" state, ELINT is just
+		// "we hear an emitter in this area." Suspected gets upgraded
+		// because ELINT confirms the rough position.
+		if (existing && existing.kind === 'briefed-known') {
+			existing.lastSeen = now;
+			return;
+		}
+		this.intelContacts.set(target, {
+			kind: 'elint',
+			lon: target.lon,
+			lat: target.lat,
+			alt: target.alt,
+			uncertaintyM: 0,
+			sourceUnit: null,
+			firstSeen: existing ? existing.firstSeen : now,
+			lastSeen:  now,
+		});
+	}
+
 	// ---- Contact fusion ----------------------------------------------------
 
 	// Called each frame from a radar-equipped team-mate. `unit` must have
@@ -129,11 +169,17 @@ export class TeamDatalink {
 				this.contacts.delete(target);
 			}
 		}
-		// Intel contacts: drop only when the unit is dead. Briefed
-		// targets persist forever — they're database entries, not
-		// sensor hits.
-		for (const [target] of this.intelContacts) {
+		// Intel contacts: briefed entries persist forever (they're
+		// database entries from the briefing room). ELINT entries
+		// expire after ELINT_MEMORY_S without a refresh — modeling
+		// the loss of an emitter going EMCON. Both kinds drop when
+		// the unit dies.
+		for (const [target, entry] of this.intelContacts) {
 			if (!target || target.destroyed || target.active === false) {
+				this.intelContacts.delete(target);
+				continue;
+			}
+			if (entry.kind === 'elint' && (now - entry.lastSeen) > ELINT_MEMORY) {
 				this.intelContacts.delete(target);
 			}
 		}

@@ -498,18 +498,26 @@ export class StrikePlannerView {
 					renderUnit = this._lastKnown.get(u);
 					labelText = `${labelBase}  LAST ${_formatAge(now - this._lastKnown.get(u).lastSeen)}`;
 				} else {
-					// Intel-only (briefed, never sensor-painted in this
-					// session). Dimmer than stale + a tag describing the
-					// intel quality. Suspected entries also draw an
-					// uncertainty disc (handled outside updateOne via
-					// _syncUncertaintyDiscs below).
+					// Intel-only (briefed or ELINT, never sensor-painted
+					// in this session). Dimmer than stale + a tag
+					// describing the intel source. Suspected entries
+					// also draw an uncertainty disc.
 					renderColor = baseColor.withAlpha(0.35);
 					renderUnit = { lon: intel.lon, lat: intel.lat, alt: intel.alt };
-					labelText  = intel.kind === 'briefed-suspected'
-						? `${labelBase}  ?`
-						: `${labelBase}  BRIEFED`;
 					if (intel.kind === 'briefed-suspected') {
+						labelText = `${labelBase}  ?`;
 						uncertaintyM = intel.uncertaintyM || 0;
+					} else if (intel.kind === 'elint') {
+						// ELINT contacts get a slight orange tint so
+						// they stand out from briefed (which uses team
+						// color) — the player should immediately read
+						// "this is something actively emitting RIGHT
+						// NOW" vs "this is something the briefing
+						// said exists."
+						renderColor = Cesium.Color.fromCssColorString('#ffaa44').withAlpha(0.55);
+						labelText = `${labelBase}  ELINT`;
+					} else {
+						labelText = `${labelBase}  BRIEFED`;
 					}
 				}
 				this._ensureMarker(id, baseColor, labelText);
