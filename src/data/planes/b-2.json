@@ -1,0 +1,60 @@
+{
+	"id": "b-2",
+	"name": "B-2A SPIRIT",
+	"description": "Northrop Grumman flying-wing strategic stealth bomber. RCS ~0.001 m² makes it essentially invisible to radar at any practical range — buried engines keep IR low from beneath. Subsonic, unmanoeuvrable, but carries 16 GBU-class weapons in two internal rotary bays. The default loadout for high-altitude SEAD penetration: drop everything, fly home.",
+	"model": "/assets/models/b-2-spirit.glb",
+	"modelRotation": { "x": 0, "y": -1.5707963267948966, "z": 0 },
+	"realLengthM": 21.0,
+	"signature": "stealth_bomber",
+	"engineCount": 4,
+	"nozzle": { "xRatio": 0.05, "yRatio": 0.05, "zRatio": 0.50 },
+	"hideNodes": [
+		"LGFront_3",
+		"LG-RightBack_4",
+		"LG-LeftBack_5",
+		"B-2LandingOn_6"
+	],
+	"physicsOverrides": {
+		"mass": 170000,
+		"wingArea": 478,
+		"cdZero": 0.012,
+		"controlCoef": { "pitch": 2.5, "roll": 1.8, "yaw": 0.8 },
+		"alphaStallDeg": 14,
+		"clMaxStall": 1.30,
+		"postStallPlateau": 0.7,
+		"stallBlendDeg": 5,
+		"departureSusceptibility": 0.4,
+		"maxThrustN": 308000,
+		"abMultiplier": 1.0
+	},
+	"hardpoints": [
+		{ "id": "bay-L-1", "label": "Bay L-1", "type": "internal", "accepts": ["GBU"] },
+		{ "id": "bay-L-2", "label": "Bay L-2", "type": "internal", "accepts": ["GBU"] },
+		{ "id": "bay-L-3", "label": "Bay L-3", "type": "internal", "accepts": ["GBU"] },
+		{ "id": "bay-L-4", "label": "Bay L-4", "type": "internal", "accepts": ["GBU"] },
+		{ "id": "bay-L-5", "label": "Bay L-5", "type": "internal", "accepts": ["GBU"] },
+		{ "id": "bay-L-6", "label": "Bay L-6", "type": "internal", "accepts": ["GBU"] },
+		{ "id": "bay-L-7", "label": "Bay L-7", "type": "internal", "accepts": ["GBU"] },
+		{ "id": "bay-L-8", "label": "Bay L-8", "type": "internal", "accepts": ["GBU"] },
+		{ "id": "bay-R-1", "label": "Bay R-1", "type": "internal", "accepts": ["GBU"] },
+		{ "id": "bay-R-2", "label": "Bay R-2", "type": "internal", "accepts": ["GBU"] },
+		{ "id": "bay-R-3", "label": "Bay R-3", "type": "internal", "accepts": ["GBU"] },
+		{ "id": "bay-R-4", "label": "Bay R-4", "type": "internal", "accepts": ["GBU"] },
+		{ "id": "bay-R-5", "label": "Bay R-5", "type": "internal", "accepts": ["GBU"] },
+		{ "id": "bay-R-6", "label": "Bay R-6", "type": "internal", "accepts": ["GBU"] },
+		{ "id": "bay-R-7", "label": "Bay R-7", "type": "internal", "accepts": ["GBU"] },
+		{ "id": "bay-R-8", "label": "Bay R-8", "type": "internal", "accepts": ["GBU"] }
+	],
+	"maxLoadoutKg": 18000,
+	"radarOverride": { "nominalRange": 200000, "fovH": 1.0472, "fovV": 0.5236 },
+	"specs": {
+		"role": "Strategic Stealth Bomber",
+		"topSpeed": "Mach 0.95",
+		"combatRadius": "6 000 km",
+		"rcs": "~0.001 m²",
+		"irSig": "Low (buried exhausts)",
+		"radarRange": "200 km (APQ-181 LPI)",
+		"agility": 2,
+		"supercruise": false
+	}
+}

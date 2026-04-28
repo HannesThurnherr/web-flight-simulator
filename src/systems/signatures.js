@@ -44,6 +44,21 @@ export const SIGNATURES = {
 		visualSize: 19,
 		unitClass: 'stealth_fighter',
 	},
+	// Strategic stealth bomber (B-2 Spirit class). RCS ~0.001 from
+	// flying-wing planform + RAM coatings. IR is moderate despite
+	// four engines because the exhausts are deeply embedded in the
+	// upper wing surface and cooled before exit (no visible plume
+	// from below). Visual size is very large though — 52 m wingspan
+	// is about twice an F-15's. So a B-2 is essentially invisible to
+	// radar at any reasonable range, IR-detectable only at fairly
+	// short range (and not at all from below where it counts), but
+	// trivial to spot visually if you know where to look.
+	stealth_bomber: {
+		rcs: 0.001,
+		irEmission: 200,
+		visualSize: 50,
+		unitClass: 'stealth_bomber',
+	},
 	// Big radar return, big heat plume, big visual — AWACS / tanker / cargo.
 	awacs: {
 		rcs: 150,
