@@ -492,16 +492,18 @@ export class NPCSystem {
 
 		// Platform physics: ground SAMs / EWRs are static, but they
 		// still get a PlanePhysics instance so the position + sensor
-		// integration paths look like everything else. Use the
-		// platform's spec if provided; fall back to the NPC fighter
-		// spec for any platform that doesn't ship its own (the static
-		// ones don't actually fly so the spec only matters if a
-		// future platform becomes mobile).
-		const physics = new PlanePhysics(
-			platform.physicsOverrides
-				? { ...platform.physicsOverrides, __id: `platform-${platform.id || 'unknown'}` }
-				: NPC_FIGHTER_SPEC,
-		);
+		// integration paths look like everything else. Static
+		// platforms don't actually fly — their JSON only needs to
+		// publish whatever differs from the fighter baseline (mass,
+		// wingArea, etc.). Merge partial overrides on top of the
+		// NPC fighter spec so the strict-spec validator is happy
+		// without forcing every barracks JSON to declare full
+		// aerodynamics.
+		const physics = new PlanePhysics({
+			...NPC_FIGHTER_SPEC,
+			...(platform.physicsOverrides || {}),
+			__id: `platform-${platform.id || 'unknown'}`,
+		});
 		physics.reset(lon, lat, alt, 0, 0, 0);
 
 		// Ground platforms don't fly — flag `isStatic` so the main update
