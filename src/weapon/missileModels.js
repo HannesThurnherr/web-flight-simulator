@@ -36,6 +36,76 @@ const _templates = {
 	'agm-86': null, 'storm-shadow': null,
 };
 
+// Some Sketchfab GLBs ship with junk meshes far from the body
+// (warning-decal placards baked at 10+ m offsets, debug bounding
+// envelopes, etc.). The default Box3.setFromObject unions ALL of
+// them and reports a wildly oversized envelope, which then makes
+// the scale + centring pass fit phantom space and leave the
+// actual body off to the side of the wrapper origin (and the
+// flame consequently nowhere near the tail).
+//
+// Outlier-rejecting bbox: collect each leaf mesh's bbox center +
+// radius, drop any mesh whose center is further than 4× the
+// median radius from the median center. The body cluster
+// dominates because there are several body meshes near origin
+// and a handful of decals far away — the median lives in the
+// body cluster, and the decals get filtered. Hides the rejected
+// meshes (sets visible=false) so they don't render either.
+function _bboxIgnoringOutliers(gltfScene) {
+	gltfScene.updateMatrixWorld(true);
+	const meshes = [];
+	gltfScene.traverse((obj) => {
+		if (obj.isMesh && obj.geometry) {
+			const b = new THREE.Box3().setFromObject(obj);
+			if (b.isEmpty()) return;
+			const c = b.getCenter(new THREE.Vector3());
+			const s = b.getSize(new THREE.Vector3());
+			meshes.push({ obj, bbox: b, center: c, radius: s.length() / 2 });
+		}
+	});
+	if (meshes.length === 0) {
+		// Fallback: nothing to filter, return naive bbox.
+		return new THREE.Box3().setFromObject(gltfScene);
+	}
+	if (meshes.length <= 2) {
+		// Too few meshes to have a meaningful "median" — trust them
+		// all and return the union.
+		const b = new THREE.Box3();
+		for (const m of meshes) b.union(m.bbox);
+		return b;
+	}
+	// Median center along each axis (more robust than mean against
+	// the very outliers we're trying to reject).
+	const sortAxis = (axis) => meshes.map(m => m.center[axis]).sort((a, b) => a - b);
+	const median = (arr) => arr[Math.floor(arr.length / 2)];
+	const medCenter = new THREE.Vector3(
+		median(sortAxis('x')),
+		median(sortAxis('y')),
+		median(sortAxis('z')),
+	);
+	const radii = meshes.map(m => m.radius).sort((a, b) => a - b);
+	const medRadius = Math.max(0.01, median(radii));
+	const cutoff = 4 * medRadius;
+
+	const keep = new THREE.Box3();
+	let kept = 0;
+	let rejected = 0;
+	for (const m of meshes) {
+		const d = m.center.distanceTo(medCenter);
+		if (d > cutoff) {
+			m.obj.visible = false;
+			rejected++;
+		} else {
+			keep.union(m.bbox);
+			kept++;
+		}
+	}
+	if (rejected > 0) {
+		console.log(`[missileModels] outlier filter kept ${kept}, rejected ${rejected} meshes`);
+	}
+	return keep.isEmpty() ? new THREE.Box3().setFromObject(gltfScene) : keep;
+}
+
 // Rotate + scale + centre the glTF scene so the missile's long axis lies
 // along +Y and the model measures exactly `realLengthM` along that axis.
 function _normalizeMissileModel(gltfScene, realLengthM) {
@@ -44,9 +114,10 @@ function _normalizeMissileModel(gltfScene, realLengthM) {
 
 	// Pass 1: orient. Detect which axis is currently the long axis and
 	// rotate so it becomes +Y. (+Y is the convention missile.updateThreeMatrix
-	// bakes as world-forward.)
+	// bakes as world-forward.) Use the outlier-filtered bbox so phantom
+	// decal meshes don't decide our long axis.
 	gltfScene.updateMatrixWorld(true);
-	const box = new THREE.Box3().setFromObject(gltfScene);
+	const box = _bboxIgnoringOutliers(gltfScene);
 	const size = new THREE.Vector3();
 	box.getSize(size);
 	if (size.z >= size.x && size.z >= size.y) {
@@ -58,26 +129,23 @@ function _normalizeMissileModel(gltfScene, realLengthM) {
 	}
 	// else +Y is already long — no rotation needed.
 
-	// Pass 2: scale. Remeasure after rotation, then uniformly scale so
-	// the new +Y extent equals the real missile length.
+	// Pass 2: scale. Remeasure (filtered) after rotation, then
+	// uniformly scale so the long axis equals the real missile length.
 	gltfScene.updateMatrixWorld(true);
-	const box2 = new THREE.Box3().setFromObject(gltfScene);
+	const box2 = _bboxIgnoringOutliers(gltfScene);
 	const size2 = new THREE.Vector3();
 	box2.getSize(size2);
 	const longest = Math.max(size2.x, size2.y, size2.z, 0.01);
 	const s = realLengthM / longest;
 	wrapper.scale.setScalar(s);
 
-	// Pass 3: centre along all three axes so the model sits around the
-	// missile's body origin. The procedural meshes were centred on the
-	// body centreline, so the flame/glow offsets (`-bodyLen/2`) are
-	// referenced from there. Centring keeps those offsets correct.
+	// Pass 3: centre using the filtered bbox so the wrapper origin
+	// sits on the BODY's centroid, not on the union of body + phantom
+	// decals. Flame offsets (`-bodyLen/2`) reference this origin.
 	gltfScene.updateMatrixWorld(true);
-	const box3 = new THREE.Box3().setFromObject(gltfScene);
+	const box3 = _bboxIgnoringOutliers(gltfScene);
 	const centre = new THREE.Vector3();
 	box3.getCenter(centre);
-	// centre is in wrapper-local space (post-scale), divide by scale to
-	// push the correction into the gltfScene's own coordinate frame.
 	gltfScene.position.sub(centre.divideScalar(s));
 
 	return wrapper;
