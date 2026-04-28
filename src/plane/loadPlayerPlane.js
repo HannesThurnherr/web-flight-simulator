@@ -208,9 +208,25 @@ export function loadPlayerPlane(plane, ctx) {
 		// symmetrically by nozzleX. Anything above two falls through
 		// to a uniform horizontal spread of nozzleX*2 spanning the
 		// group.
+		//
+		// For airframes with non-uniform engine clustering (B-2's two
+		// pairs, B-1's two-and-two, etc.), the JSON can publish
+		// `nozzlePositions: [{xRatio,yRatio,zRatio}, …]` to override
+		// the auto-layout entirely. Each entry's ratios feed through
+		// the same size.x / size.y / box2.max.z multipliers as the
+		// single-`nozzle` shorthand, so the values stay model-
+		// independent.
 		const engineCount = plane.engineCount || 2;
 		const flamePositions = [];
-		if (engineCount === 1) {
+		if (Array.isArray(plane.nozzlePositions) && plane.nozzlePositions.length > 0) {
+			for (const p of plane.nozzlePositions) {
+				flamePositions.push({
+					x: size.x * (p.xRatio ?? 0),
+					y: size.y * (p.yRatio ?? yRatio),
+					z: box2.max.z * (p.zRatio ?? zRatio),
+				});
+			}
+		} else if (engineCount === 1) {
 			flamePositions.push({ x: 0, y: nozzleY, z: tailZ });
 		} else if (engineCount === 2) {
 			flamePositions.push({ x: -nozzleX, y: nozzleY, z: tailZ });
