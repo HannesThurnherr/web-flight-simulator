@@ -128,10 +128,29 @@ export class StrikePlannerView {
 			this._savedLook = ctrl.enableLook;
 			ctrl.enableTilt = false;
 			ctrl.enableLook = false;
+			// Defensive: an earlier iteration of this code disabled
+			// inputs entirely, and a stale session may have left the
+			// flag false. Force-enable so pan + zoom land regardless.
+			ctrl.enableInputs = true;
+			// Cesium's native pan/zoom controller binds DOM events to
+			// its own canvas at z=1. The THREE container at z=5 sits
+			// on top and was absorbing every drag + wheel before they
+			// could reach Cesium. pointer-events:none alone wasn't
+			// enough in practice, so just hide threeContainer entirely
+			// while the planner owns the screen — the cockpit isn't
+			// visible anyway and Three.js keeps rendering off-screen.
+			const threeContainer = document.getElementById('threeContainer');
+			if (threeContainer) {
+				this._savedThreeDisplay = threeContainer.style.display;
+				threeContainer.style.display = 'none';
+			}
 		} else {
-			// Restore whatever the rest of the app set.
 			if (this._savedTilt !== undefined) ctrl.enableTilt = this._savedTilt;
 			if (this._savedLook !== undefined) ctrl.enableLook = this._savedLook;
+			const threeContainer = document.getElementById('threeContainer');
+			if (threeContainer) {
+				threeContainer.style.display = this._savedThreeDisplay || '';
+			}
 		}
 
 		this._setAllMarkersVisible(active);

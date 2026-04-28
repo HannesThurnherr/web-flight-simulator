@@ -469,16 +469,8 @@ export function update(dt, ctx) {
 		if (uiContainer) {
 			uiContainer.style.opacity = pilotCamOwns ? '' : '0';
 		}
-		// While the strike planner owns the screen, the THREE container
-		// (z-index 5, above the Cesium canvas at z=1) must stop
-		// intercepting pointer events — Cesium's native pan/zoom
-		// controller listens on its own canvas, and threeContainer
-		// would otherwise absorb every drag and wheel before they
-		// reached it. Restore on close.
-		const threeContainer = document.getElementById('threeContainer');
-		if (threeContainer) {
-			threeContainer.style.pointerEvents = planActive ? 'none' : '';
-		}
+		// (Strike planner toggles threeContainer.style.display in its
+		// own setActive — no per-frame overlay management needed.)
 
 		// NPC screen markers (diamonds + labels, the
 		// `npc-markers-layer` div) live OUTSIDE uiContainer so we can
