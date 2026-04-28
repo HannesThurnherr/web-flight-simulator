@@ -79,6 +79,18 @@ export const SIGNATURES = {
 		visualSize: 6,
 		unitClass: 'cruise_missile',
 	},
+	// Free-fall + glide PGMs (JDAM, GBU-12, GBU-39 SDB). Tiny RCS, no
+	// thrust → effectively no IR signature, fairly small visual. Real
+	// radar-based SAMs (Patriot, S-300/400, Tor) CAN engage them
+	// terminal-phase, but it's hard. Distinct unitClass so the SAM
+	// pickTarget logic can engage them while still excluding live
+	// AAMs (which are too small + fast to bother with).
+	bomb: {
+		rcs: 0.05,
+		irEmission: 0,
+		visualSize: 4,
+		unitClass: 'bomb',
+	},
 	// Live AAMs in flight. Tiny radar return, hot exhaust while the motor
 	// burns, very small silhouette.
 	missile_ir: {

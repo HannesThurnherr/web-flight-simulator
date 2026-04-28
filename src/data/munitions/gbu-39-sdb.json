@@ -8,7 +8,7 @@
 	"rcsContributionM2": 0.01,
 	"description": "GBU-39 Small Diameter Bomb. 250 lb GPS-guided glide weapon — deployable wings give it ~10:1 glide ratio so a high-altitude toss release reaches well over 100 km. Tiny warhead (focused-blast 25 lb, ~15 m kill radius) — surgical strike on hardened targets, not area suppression. Quad-pack carriage means a strike fighter can hold many of them on a single hardpoint (we model them per-pylon for now).",
 	"simType": "GBU-39",
-	"signature": "missile_radar",
+	"signature": "bomb",
 	"seekerType": "gps",
 	"modelTemplate": "gbu-39",
 	"realLengthM": 1.83,

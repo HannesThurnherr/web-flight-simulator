@@ -684,11 +684,16 @@ export class WeaponSystem {
 			}
 		}
 
-		// Pass every possible target (player + NPCs) to each projectile.
-		// Friendly-fire / self-kill is filtered inside the missile via
-		// `missile.team` and `missile.launcher`.
+		// Pass every possible target (player + NPCs + other projectiles)
+		// to each projectile. Friendly-fire / self-kill is filtered
+		// inside the missile via `missile.team` and `missile.launcher`.
+		// Including NPC projectiles lets future AAM-vs-cruise-missile
+		// engagements work; today nothing on the player side targets
+		// inbound missiles, but the symmetric path is needed for the
+		// SAM-shoots-down-cruise case to read identically.
 		const npcs = playerState.npcs || [];
-		const targets = [playerState, ...npcs];
+		const npcProjs = playerState.npcProjectiles || [];
+		const targets = [playerState, ...npcs, ...npcProjs];
 
 		for (let i = this.projectiles.length - 1; i >= 0; i--) {
 			const p = this.projectiles[i];

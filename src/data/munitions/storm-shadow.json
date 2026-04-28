@@ -6,7 +6,7 @@
 	"tags": ["cruise", "gps-guided", "stealth", "stand-off"],
 	"massKg": 1300,
 	"rcsContributionM2": 0.02,
-	"description": "Stand-off stealth cruise missile. Subsonic, GPS/INS, holds medium-altitude cruise (no terrain-following — the LO planform stays straight-line at ~5 km MSL). Real-world range ~370 km. Stand-in for AGM-158 JASSM in our loadout (no JASSM model on hand). Fire-and-forget terminal dive on the GPS coord.",
+	"description": "Stand-off stealth cruise missile. Subsonic, GPS/INS, terrain-following at ~50 m AGL during cruise (low-altitude penetration is the doctrinal profile, not high-altitude cruise). Pop-up to ~800 m and dive at -55° on the GPS coord. Real-world range ~370 km. Stand-in for AGM-158 JASSM in our loadout (no JASSM model on hand).",
 	"simType": "STORM-SHADOW",
 	"signature": "cruise_missile",
 	"seekerType": "cruise",
@@ -26,13 +26,13 @@
 		"dragRefAltitude": 5000,
 		"vManeuverRef": 250,
 		"gAvailFloor": 0.3,
-		"cruiseAltM": 5000,
-		"cruiseAltMode": "msl",
+		"cruiseAltM": 50,
+		"cruiseAltMode": "agl",
 		"cruiseTurnG": 1.2,
-		"climbAngleDeg": 6,
-		"terminalRangeM": 9000,
+		"climbAngleDeg": 20,
+		"terminalRangeM": 4500,
 		"popUpAltAGL": 800,
-		"diveAngleDeg": -35
+		"diveAngleDeg": -55
 	},
 	"warhead": {
 		"killRadiusM": 70,

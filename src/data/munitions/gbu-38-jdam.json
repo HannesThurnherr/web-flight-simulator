@@ -8,7 +8,7 @@
 	"rcsContributionM2": 0.04,
 	"description": "500 lb GPS-guided bomb. Same all-weather precision as the GBU-31, lighter warhead and tighter kill radius — better for collateral-sensitive targets or when the loadout needs more shots per pylon. Effective up to ~24 km from medium-altitude release.",
 	"simType": "GBU-38",
-	"signature": "missile_radar",
+	"signature": "bomb",
 	"seekerType": "gps",
 	"modelTemplate": "jdam-38",
 	"realLengthM": 2.36,

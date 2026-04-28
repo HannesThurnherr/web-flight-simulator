@@ -243,7 +243,8 @@ export function makeStaticSamPilot(params) {
 		//   fighter, stealth_fighter, awacs, cargo
 		// (cruise_missile too — small but still fair game for SHORAD.)
 		const ENGAGEABLE = new Set([
-			'fighter', 'stealth_fighter', 'awacs', 'cargo', 'cruise_missile',
+			'fighter', 'stealth_fighter', 'awacs', 'cargo',
+			'cruise_missile', 'bomb',
 		]);
 		for (const [target] of dl.allContacts()) {
 			if (!target || target.destroyed || target.active === false) continue;
@@ -285,12 +286,18 @@ export function makeStaticSamPilot(params) {
 			if (!c.radar) continue;
 			const range = c.radar.range;
 			if (range < weapon.minRange || range > weapon.maxRange) continue;
-			// Priority: aircraft beat cruise missiles when both in
-			// range (a fighter is a higher-value, more-capable threat
-			// than a single inbound cruise weapon). Multiplier of
-			// 1.6 on cruise puts a 30 km Storm Shadow behind a 45 km
-			// fighter but ahead of a 60 km fighter.
-			const classMul = (sig.unitClass === 'cruise_missile') ? 1.6 : 1.0;
+			// Priority: aircraft > cruise missiles > bombs. Aircraft
+			// are higher-value strategic threats; cruise missiles
+			// have stand-off range; bombs are seconds-from-impact
+			// but small (and a single bomb usually only kills one
+			// asset, vs an aircraft that can kill many). The
+			// multipliers shift the picker's "closer = better"
+			// score so a 30 km cruise missile beats a 50 km fighter
+			// but loses to a 25 km bomb terminal-diving on the SAM
+			// itself.
+			let classMul = 1.0;
+			if (sig.unitClass === 'cruise_missile') classMul = 1.6;
+			else if (sig.unitClass === 'bomb')      classMul = 0.7;
 			const score = range * classMul;
 			if (score < bestScore) {
 				best = { target, range };
@@ -595,8 +602,10 @@ export function makeStaticAaaPilot(params = {}) {
 			const sig = target.signature;
 			if (!sig) continue;
 			// AAA doctrine: engage aircraft + low-flying cruise
-			// missiles. Don't shoot AAMs (too small/fast for guns),
-			// other ground assets, or SAMs.
+			// missiles + terminal-diving bombs. Don't shoot AAMs
+			// (too small/fast for guns), other ground assets, or
+			// SAMs. Real Shilkas + Phalanx-class CIWS engage all
+			// these classes when in envelope.
 			if (sig.unitClass === 'missile') continue;
 			if (sig.unitClass === 'sam_site' || sig.unitClass === 'building' ||
 				sig.unitClass === 'ground'   || sig.unitClass === 'ewr') continue;

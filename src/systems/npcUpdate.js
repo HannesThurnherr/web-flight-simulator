@@ -98,7 +98,16 @@ export function npcSystemUpdate(sys, dt, playerState, simTime = 0) {
 	// player gets a `destroyed` flag when an incoming missile hits
 	// it, which main.js acts on to trigger the crash/respawn
 	// transition.
-	const targetList = [playerState, ...sys.npcs];
+	//
+	// Include the player's OWN projectiles in the target list too —
+	// without this, NPC SAM missiles can't actually hit inbound
+	// player cruise missiles (the swept-segment hit-check inside
+	// each missile iterates `targets`, which previously only had
+	// player + NPCs). The team filter inside missile.update keeps
+	// SAMs from accidentally killing other friendly missiles.
+	const playerProjs = (playerState && playerState.weaponSystem && playerState.weaponSystem.projectiles)
+		|| [];
+	const targetList = [playerState, ...sys.npcs, ...playerProjs];
 	for (let i = sys.projectiles.length - 1; i >= 0; i--) {
 		const p = sys.projectiles[i];
 		const wasActive = p.active;

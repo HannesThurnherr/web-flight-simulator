@@ -8,7 +8,7 @@
 	"rcsContributionM2": 0.08,
 	"description": "2000 lb GPS-guided bomb. Heavy strike, all-weather, precision via coords. Drops on a frozen lat/lon/alt captured at release — the TGP can slew anywhere afterward without affecting the shot. Effective up to ~24 km from medium-altitude release, longer with toss.",
 	"simType": "GBU-31",
-	"signature": "missile_radar",
+	"signature": "bomb",
 	"seekerType": "gps",
 	"modelTemplate": "jdam-31",
 	"realLengthM": 3.84,

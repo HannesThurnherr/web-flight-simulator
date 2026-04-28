@@ -83,6 +83,34 @@ export class CruiseSeeker extends Missile {
 		return this._lastTerrainAlt;
 	}
 
+	// Forward-look terrain max over a lookahead corridor. Sample
+	// terrain at N points spaced along the missile's heading and
+	// return the HIGHEST elevation found. TFR uses this (not the
+	// terrain directly under the missile) so the missile climbs to
+	// clear ridges BEFORE it reaches them — a "look at the terrain
+	// I'm about to fly over, not the terrain I'm currently above."
+	// At 250 m/s cruise + 8° max climb angle the missile climbs
+	// ~35 m/s vertically, so a 2 km lookahead gives ~8 s reaction
+	// time, enough to clear most terrain features at TFR altitude.
+	_forwardTerrainMax(lookAheadM = 2000, samples = 5) {
+		const headingRad = this.heading * Math.PI / 180;
+		const cosLat = Math.cos(this.lat * Math.PI / 180) || 1;
+		let maxH = this._terrainAtCurrent();
+		for (let i = 1; i <= samples; i++) {
+			const d = (lookAheadM * i) / samples;
+			const dN = d * Math.cos(headingRad);
+			const dE = d * Math.sin(headingRad);
+			const lat = this.lat + (dN / 111320);
+			const lon = this.lon + (dE / (111320 * cosLat));
+			try {
+				const carto = Cesium.Cartographic.fromDegrees(lon, lat);
+				const h = this.viewer.scene.globe.getHeight(carto);
+				if (h != null && Number.isFinite(h) && h > maxH) maxH = h;
+			} catch (_) { /* skip */ }
+		}
+		return maxH;
+	}
+
 	_guide(dt) {
 		if (this.lostLock || !this._targetCoord) return;
 
@@ -103,10 +131,12 @@ export class CruiseSeeker extends Missile {
 			this._phase = STATE_CLIMB;
 		}
 		// CLIMB → CRUISE once we've reached the cruise altitude target
-		// (taking AGL/MSL mode into account).
+		// (taking AGL/MSL mode into account). Use the forward-look
+		// terrain so we don't transition prematurely just because
+		// we're currently above a valley.
 		if (this._phase === STATE_CLIMB) {
 			const cruiseTargetAlt = (f.cruiseAltMode === 'agl')
-				? this._terrainAtCurrent() + f.cruiseAltM
+				? this._forwardTerrainMax() + f.cruiseAltM
 				: f.cruiseAltM;
 			if (this.alt >= cruiseTargetAlt - 50) this._phase = STATE_CRUISE;
 		}
@@ -154,16 +184,30 @@ export class CruiseSeeker extends Missile {
 				break;
 			}
 			case STATE_CRUISE: {
-				// Hold the cruise altitude target via proportional pitch
-				// (5° pitch per 200 m of altitude error, capped). Heading
-				// drives toward the target on a wide arc.
+				// Hold the cruise altitude target via proportional
+				// pitch. AGL mode uses the FORWARD terrain max so
+				// the missile climbs to clear a ridge BEFORE it
+				// hits one. Asymmetric gains: climb aggressively
+				// (it's worse to fly into a hill than to overshoot
+				// cruise altitude briefly).
+				//
+				// Emergency-G boost: when terrain-avoidance demands a
+				// climb, temporarily raise the turn-G cap to the
+				// seeker's full maxG so the pitch can swing up fast
+				// enough. Cruise at the configured cruiseTurnG when
+				// the missile is on or above its cruise altitude.
 				const cruiseTargetAlt = (f.cruiseAltMode === 'agl')
-					? this._terrainAtCurrent() + f.cruiseAltM
+					? this._forwardTerrainMax() + f.cruiseAltM
 					: f.cruiseAltM;
 				const altErr = cruiseTargetAlt - this.alt;
-				desiredPitch   = Math.max(-15, Math.min(15, altErr / 200 * 5));
+				if (altErr > 0) {
+					desiredPitch = Math.min(35, altErr * 2.0);
+					turnGCap     = this.data.seeker.maxG;
+				} else {
+					desiredPitch = Math.max(-10, altErr / 200 * 5);
+					turnGCap     = f.cruiseTurnG;
+				}
 				desiredHeading = desiredHeadingToTgt;
-				turnGCap       = f.cruiseTurnG;
 				break;
 			}
 			case STATE_POPUP: {
