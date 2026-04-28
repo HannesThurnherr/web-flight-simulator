@@ -41,6 +41,7 @@ import {
 	refineDesignationAlt,
 	removeDesignationAt,
 	designationQueue,
+	clearDesignationQueue,
 } from './designation.js';
 import { getTeamDatalink } from './teamDatalink.js';
 
@@ -54,6 +55,18 @@ const COLOR_NPC_FALLBACK = Cesium.Color.fromCssColorString('#ff4040');
 const COLOR_MSL_FRIENDLY = Cesium.Color.fromCssColorString('#ffc040');
 const COLOR_MSL_HOSTILE  = Cesium.Color.fromCssColorString('#ff40e0');
 const COLOR_TARGET       = Cesium.Color.fromCssColorString('#ff4040');
+
+// How long to keep a contact in the planner's memory after detection
+// drops. Real strike planning uses indefinite persistence; we cap at
+// 10 minutes so destroyed-elsewhere ghosts eventually clear.
+const STALE_MEMORY_S = 600;
+
+function _formatAge(seconds) {
+	const s = Math.max(0, Math.floor(seconds));
+	const m = Math.floor(s / 60);
+	const r = s % 60;
+	return `${m.toString().padStart(2, '0')}:${r.toString().padStart(2, '0')}`;
+}
 
 function _colorForUnit(u) {
 	return COLOR_FACTIONS[u.team] || COLOR_NPC_FALLBACK;
@@ -88,19 +101,30 @@ export class StrikePlannerView {
 		// open time. Set every frame's update().
 		this._lastPlayerState = null;
 
-		// Pan + click detection bookkeeping. We drive pan ourselves
-		// (Cesium's native controller wasn't reliably receiving events
-		// even with threeContainer hidden), so window-capture pointer
-		// events update centerLon/centerLat directly. A small drag
-		// distance is treated as a click (designation); larger as a
-		// drag (pan). Same approach commander view uses.
+		// Pan + click + drag-target detection. Mode is decided on
+		// pointerdown based on what's under the cursor:
+		//   'pan'    — empty terrain or world: drag pans the camera.
+		//   'target' — clicked an existing target dot: drag moves it.
+		//   'unit'   — clicked an enemy unit marker: tentative add at
+		//              the unit's position; commits on pointerup if
+		//              no significant move.
+		// Click vs drag is decided by total travel: tiny travel on
+		// release of 'pan' or 'unit' = click → designate.
 		this._clickBudgetPx = 6;
-		this._dragging = false;
+		this._dragMode      = null; // 'pan' | 'target' | 'unit' | null
+		this._dragTargetIdx = -1;   // index when _dragMode === 'target'
+		this._dragUnitRef   = null; // unit when _dragMode === 'unit'
 		this._lastX = 0;
 		this._lastY = 0;
 		this._downX = 0;
 		this._downY = 0;
 		this._dragDist = 0;
+
+		// Stale-contact memory: target → { lon, lat, alt, lastSeen }.
+		// Updated each frame from current contacts ∪ datalink. Entries
+		// persist for STALE_MEMORY_S after detection drops, rendering
+		// as desaturated/dashed markers per roadmap §5g.4.
+		this._lastKnown = new Map();
 
 		this._bindInputs();
 	}
@@ -136,7 +160,139 @@ export class StrikePlannerView {
 
 		this._setAllMarkersVisible(active);
 		for (const m of this._targetMarkers) m.show = active;
+		this._showToolbar(active);
 		this.viewer.scene.requestRender();
+	}
+
+	_ensureToolbar() {
+		if (this._toolbar) return this._toolbar;
+		const bar = document.createElement('div');
+		bar.id = 'strike-planner-toolbar';
+		bar.style.cssText = `
+			position: absolute;
+			top: 16px; left: 16px;
+			display: none;
+			padding: 8px 12px;
+			background: rgba(0, 30, 0, 0.7);
+			border: 1px solid rgba(0, 255, 0, 0.5);
+			color: #0f0;
+			font-family: 'AceCombat', monospace;
+			font-size: 12px;
+			letter-spacing: 1px;
+			text-shadow: 0 0 6px rgba(0, 255, 0, 0.7);
+			z-index: 50;
+			pointer-events: auto;
+			user-select: none;
+		`;
+		const status = document.createElement('div');
+		status.id = 'strike-planner-status';
+		status.style.cssText = 'margin-bottom: 6px; opacity: 0.9;';
+		bar.appendChild(status);
+
+		const row = document.createElement('div');
+		row.style.cssText = 'display: flex; gap: 6px;';
+
+		const mkBtn = (label, key, onClick) => {
+			const b = document.createElement('button');
+			b.textContent = `${label}  [${key}]`;
+			b.style.cssText = `
+				padding: 4px 10px;
+				background: rgba(0, 40, 0, 0.7);
+				border: 1px solid rgba(0, 255, 0, 0.6);
+				color: #0f0;
+				font: inherit;
+				cursor: pointer;
+			`;
+			b.addEventListener('click', (ev) => {
+				ev.preventDefault();
+				ev.stopPropagation();
+				onClick();
+			});
+			b.addEventListener('pointerdown', (ev) => ev.stopPropagation());
+			b.addEventListener('pointerup',   (ev) => ev.stopPropagation());
+			return b;
+		};
+
+		row.appendChild(mkBtn('AUTO ASSIGN', 'A', () => this.autoAssign()));
+		row.appendChild(mkBtn('CLEAR',       'C', () => clearDesignationQueue()));
+		bar.appendChild(row);
+
+		const hint = document.createElement('div');
+		hint.style.cssText = 'margin-top:6px; font-size:10px; opacity:0.55;';
+		hint.innerHTML = 'L-click empty: add target · L-drag dot: move · R-click dot: delete · L-click unit: target unit';
+		bar.appendChild(hint);
+
+		document.body.appendChild(bar);
+		this._toolbar = bar;
+		this._toolbarStatus = status;
+		return bar;
+	}
+
+	_showToolbar(visible) {
+		this._ensureToolbar();
+		if (this._toolbar) this._toolbar.style.display = visible ? 'block' : 'none';
+	}
+
+	_refreshToolbar(playerState) {
+		if (!this._toolbarStatus) return;
+		const ws = playerState && playerState.weaponSystem;
+		const cur = ws && ws.getCurrentWeapon && ws.getCurrentWeapon();
+		const ammo = cur && typeof cur.ammo === 'number' && cur.ammo !== Infinity
+			? cur.ammo : '—';
+		const name = cur ? (cur.name || cur.type || cur.id) : 'NO WEAPON';
+		this._toolbarStatus.textContent =
+			`TARGETS: ${designationQueue.length}${ammo === '—' ? '' : ' / ' + ammo}   ${name}`;
+	}
+
+	// Auto-assign: queue one target per detected/stale enemy ground
+	// contact, in range-from-player order, capped at the current
+	// strike weapon's ammo. If the player's loaded weapon isn't a
+	// GBU-class, no-op (auto-assign would pick targets nothing can
+	// hit). Wipes the existing queue first so repeated A presses
+	// don't keep stacking.
+	autoAssign() {
+		const ps = this._lastPlayerState;
+		if (!ps) return;
+		const ws = ps.weaponSystem;
+		const cur = ws && ws.getCurrentWeapon && ws.getCurrentWeapon();
+		if (!cur || cur.id !== 'gbu') return;
+		const ammo = (typeof cur.ammo === 'number' && cur.ammo !== Infinity) ? cur.ammo : 99;
+		if (ammo <= 0) return;
+
+		const playerTeam = ps.team || 'friendly';
+		const candidates = [];
+		// Each marker we've drawn this frame that has a __strikeUnit
+		// pointer is a valid candidate (already filtered by team-
+		// knowledge in _syncMarkers, including stale entries).
+		for (const ent of this._markers.values()) {
+			const u = ent.__strikeUnit;
+			if (!u || u.destroyed) continue;
+			if (u.team === playerTeam) continue;
+			// Use the rendered position (which is `_lastKnown` for
+			// stale, live for detected) so the queued target lat/lon
+			// matches what the planner shows.
+			const cart = ent.position && ent.position.getValue
+				? ent.position.getValue(this.viewer.clock.currentTime)
+				: ent.position;
+			if (!cart) continue;
+			const carto = Cesium.Cartographic.fromCartesian(cart);
+			const lon = Cesium.Math.toDegrees(carto.longitude);
+			const lat = Cesium.Math.toDegrees(carto.latitude);
+			const alt = Math.max(0, carto.height || 0);
+			const cosLat = Math.cos(ps.lat * Math.PI / 180) || 1;
+			const dE = (lon - ps.lon) * 111320 * cosLat;
+			const dN = (lat - ps.lat) * 111320;
+			const range = Math.sqrt(dE * dE + dN * dN);
+			candidates.push({ lon, lat, alt, range });
+		}
+		candidates.sort((a, b) => a.range - b.range);
+
+		clearDesignationQueue();
+		const take = Math.min(ammo, candidates.length);
+		for (let i = 0; i < take; i++) {
+			const c = candidates[i];
+			addDesignation(c.lon, c.lat, c.alt);
+		}
 	}
 
 	// Per-frame update. Caller passes the same args commanderView gets.
@@ -147,6 +303,7 @@ export class StrikePlannerView {
 		this._applyCamera();
 		this._syncMarkers(playerState, units, missiles);
 		this._syncTargetMarkers();
+		this._refreshToolbar(playerState);
 		this.viewer.scene.requestRender();
 	}
 
@@ -196,12 +353,19 @@ export class StrikePlannerView {
 	_syncMarkers(playerState, units, missiles) {
 		const seen = new Set();
 
-		const updateOne = (id, u, color) => {
+		const updateOne = (id, u, color, opts = {}) => {
 			const e = this._markers.get(id);
 			if (!e) return;
-			e.position = Cesium.Cartesian3.fromDegrees(u.lon, u.lat, u.alt);
+			e.position = Cesium.Cartesian3.fromDegrees(u.lon, u.lat, u.alt || 0);
 			e.point.color = color;
 			e.show = true;
+			// Stamp the underlying unit / metadata so the click
+			// dispatcher in _bindInputs can route a left-click on a
+			// unit into a "add target on this unit" action. Friendlies
+			// and missiles don't get the stamp — they're not strike
+			// targets.
+			e.__strikeUnit  = opts.unitForClick || null;
+			e.__strikeStale = !!opts.stale;
 			seen.add(id);
 		};
 
@@ -225,22 +389,68 @@ export class StrikePlannerView {
 		const playerTeam = (playerState && playerState.team) || 'friendly';
 		const teamDl = getTeamDatalink(playerTeam);
 		const dlContacts = teamDl ? teamDl.contacts : null;
-		const knownToPlayer = (u) => {
+		const isCurrentlyDetected = (u) => {
 			if (!u) return false;
-			if (u.team === playerTeam) return true; // friendlies
 			if (ownContacts && ownContacts.has(u)) return true;
 			if (dlContacts  && dlContacts.has(u))  return true;
 			return false;
 		};
 
+		// Update the stale-contact memory: any currently-detected unit
+		// gets its position cached now, with a timestamp. Cached
+		// entries persist for STALE_MEMORY_S so the planner can show
+		// "I last saw this here" markers even after detection drops.
+		const now = performance.now() * 0.001;
 		if (units) {
 			for (const u of units) {
 				if (!u || u.destroyed) continue;
-				if (!knownToPlayer(u)) continue;
+				if (u.team === playerTeam) continue;
+				if (isCurrentlyDetected(u)) {
+					this._lastKnown.set(u, {
+						lon: u.lon, lat: u.lat, alt: u.alt || 0,
+						lastSeen: now,
+					});
+				}
+			}
+		}
+		// Drop entries past the memory window or whose unit died.
+		for (const [u, mem] of this._lastKnown) {
+			if (!u || u.destroyed || u.active === false) {
+				this._lastKnown.delete(u);
+				continue;
+			}
+			if (now - mem.lastSeen > STALE_MEMORY_S) {
+				this._lastKnown.delete(u);
+			}
+		}
+
+		if (units) {
+			for (const u of units) {
+				if (!u || u.destroyed) continue;
+				const isFriendly = u.team === playerTeam;
+				const detected = isCurrentlyDetected(u);
+				const stale = !detected && this._lastKnown.has(u);
+				if (!isFriendly && !detected && !stale) continue;
+
 				const id = `npc-${u.id || u.name}`;
-				const c  = _colorForUnit(u);
-				this._ensureMarker(id, c, u.name || 'BOGEY');
-				updateOne(id, u, c);
+				const baseColor = _colorForUnit(u);
+				// Stale: desaturate. Use the cached position (the unit's
+				// last-known) rather than the live pos so the planner
+				// shows old intel, not god-eye truth. Friendlies and
+				// detected units render at live position in full color.
+				const renderColor = stale ? baseColor.withAlpha(0.4) : baseColor;
+				const renderUnit = stale ? this._lastKnown.get(u) : u;
+				const labelBase = u.name || 'BOGEY';
+				const labelText = stale
+					? `${labelBase}  LAST ${_formatAge(now - this._lastKnown.get(u).lastSeen)}`
+					: labelBase;
+				this._ensureMarker(id, baseColor, labelText);
+				const m = this._markers.get(id);
+				if (m && m.label) m.label.text = labelText;
+				updateOne(id, renderUnit, renderColor, {
+					unitForClick: isFriendly ? null : u,
+					stale,
+				});
 			}
 		}
 		if (missiles) {
@@ -308,15 +518,18 @@ export class StrikePlannerView {
 			this.viewer.entities.remove(ent);
 		}
 		// Update each marker's position + label + visibility based on
-		// the current queue. Head (index 0) gets a brighter marker so
-		// the player sees which shot is next up.
+		// the current queue. Head (index 0) gets a brighter marker
+		// AND a slow pulse on its pixel size so the player sees which
+		// shot is next up at a glance even on a busy battlefield.
+		const t = performance.now() * 0.001;
+		const headPulse = 16 + Math.sin(t * 3) * 2;   // 14..18px @ ~2 Hz
 		for (let i = 0; i < designationQueue.length; i++) {
 			const d = designationQueue[i];
 			const ent = this._targetMarkers[i];
 			ent.position = Cesium.Cartesian3.fromDegrees(d.lon, d.lat, (d.alt || 0) + 50);
 			if (ent.label) ent.label.text = String(i + 1);
 			if (ent.point) {
-				ent.point.pixelSize = i === 0 ? 16 : 12;
+				ent.point.pixelSize = i === 0 ? headPulse : 12;
 				ent.point.color = i === 0
 					? COLOR_TARGET
 					: COLOR_TARGET.withAlpha(0.7);
@@ -334,31 +547,71 @@ export class StrikePlannerView {
 			const k = e.key.toLowerCase();
 			if (k === 'b') {
 				this.setActive(!this.active);
-			} else if (k === 'escape' && this.active) {
+				return;
+			}
+			if (!this.active) return;
+			if (k === 'escape') {
 				this.setActive(false);
+			} else if (k === 'a') {
+				e.preventDefault();
+				this.autoAssign();
+			} else if (k === 'c') {
+				e.preventDefault();
+				clearDesignationQueue();
 			}
 		});
 
-		// Manual pan + zoom via window-capture pointer events. Cesium's
-		// native controller wasn't reliably receiving events under
-		// our overlay stack; commander view uses this same pattern
-		// and it's known to work. Window + capture beats element
-		// hit-testing — the events fire regardless of what's on top.
+		// Pointer events on window+capture (commander-view pattern,
+		// see ../commanderView.js for why this beats canvas-bound).
+		// Mode dispatched on pointerdown:
+		//   right-click anywhere → context-style action (delete dot
+		//                          if one is under cursor; otherwise
+		//                          consumed silently to keep the
+		//                          browser context menu away).
+		//   left on target dot   → drag-to-move the target.
+		//   left on enemy unit   → 'unit' tentative; commits on pointerup.
+		//   left on empty world  → 'pan' tentative; commits on pointerup
+		//                          if barely moved (= click → add target).
 		window.addEventListener('pointerdown', (e) => {
 			if (!this.active) return;
-			if (e.button !== 0) return;
-			this._dragging = true;
+			if (e.target && e.target.closest && e.target.closest('#strike-planner-toolbar')) {
+				return; // let toolbar buttons do their own thing
+			}
 			this._lastX = e.clientX;
 			this._lastY = e.clientY;
 			this._downX = e.clientX;
 			this._downY = e.clientY;
 			this._dragDist = 0;
+
+			if (e.button === 2) {
+				// Right-click: delete target under cursor if any.
+				const idx = this._pickTargetIndexAt(e.clientX, e.clientY);
+				if (idx >= 0) removeDesignationAt(idx);
+				e.preventDefault();
+				e.stopPropagation();
+				return;
+			}
+			if (e.button !== 0) return;
+
+			const idx = this._pickTargetIndexAt(e.clientX, e.clientY);
+			if (idx >= 0) {
+				this._dragMode = 'target';
+				this._dragTargetIdx = idx;
+			} else {
+				const unit = this._pickUnitAt(e.clientX, e.clientY);
+				if (unit) {
+					this._dragMode = 'unit';
+					this._dragUnitRef = unit;
+				} else {
+					this._dragMode = 'pan';
+				}
+			}
 			e.preventDefault();
 			e.stopPropagation();
 		}, true);
 
 		window.addEventListener('pointermove', (e) => {
-			if (!this.active || !this._dragging) return;
+			if (!this.active || !this._dragMode) return;
 			const dx = e.clientX - this._lastX;
 			const dy = e.clientY - this._lastY;
 			this._lastX = e.clientX;
@@ -366,33 +619,79 @@ export class StrikePlannerView {
 			this._dragDist += Math.abs(dx) + Math.abs(dy);
 			e.stopPropagation();
 
-			// Grab-and-drag pan: move the look-at point opposite to
-			// the cursor so the world visually follows the cursor
-			// (drag right → world moves right). Sensitivity scales
-			// with `distance` (a metres-per-pixel factor) so panning
-			// feels the same at any zoom level.
-			//
-			// At top-down + north-up: screen +x is east, screen +y is
-			// south. Cursor moves +dx → look-at moves -dx in east
-			// terms (i.e. west). Same for north (with sign flip
-			// because screen-y increases downward).
-			const mpp = this.distance * 0.0006;
-			const eastMeters  = -dx * mpp;
-			const northMeters =  dy * mpp;
-			const cosLat = Math.cos(this.centerLat * Math.PI / 180) || 1;
-			this.centerLat += northMeters / 111320;
-			this.centerLon += eastMeters  / (111320 * Math.max(0.1, cosLat));
+			if (this._dragMode === 'target') {
+				// Live drag: rewrite the queued target's lat/lon to
+				// the cursor's world position. Alt re-samples async
+				// on pointerup (one terrain query per click is enough).
+				const ll = this._screenToLatLon(e.clientX, e.clientY);
+				if (ll) {
+					const d = designationQueue[this._dragTargetIdx];
+					if (d) {
+						d.lon = ll.lon;
+						d.lat = ll.lat;
+					}
+				}
+				return;
+			}
+			if (this._dragMode === 'pan') {
+				// Grab-and-drag pan (drag right → world follows
+				// right). Sensitivity scales with `distance`.
+				const mpp = this.distance * 0.0006;
+				const eastMeters  = -dx * mpp;
+				const northMeters =  dy * mpp;
+				const cosLat = Math.cos(this.centerLat * Math.PI / 180) || 1;
+				this.centerLat += northMeters / 111320;
+				this.centerLon += eastMeters  / (111320 * Math.max(0.1, cosLat));
+			}
+			// 'unit' mode: a wiggle past clickBudget is treated as a
+			// pan starting from the unit. Convert mode and continue.
+			if (this._dragMode === 'unit' && this._dragDist > this._clickBudgetPx) {
+				this._dragMode = 'pan';
+				this._dragUnitRef = null;
+			}
 		}, true);
 
 		window.addEventListener('pointerup', (e) => {
-			if (!this.active || !this._dragging) return;
-			this._dragging = false;
-			// Click vs drag classification using TOTAL travel since
-			// pointerdown — small wiggle counts as a click.
-			if (this._dragDist < this._clickBudgetPx && e.button === 0) {
-				this._handleClickAt(e.clientX, e.clientY);
-			}
+			if (!this.active || !this._dragMode) return;
+			const mode = this._dragMode;
+			const idx  = this._dragTargetIdx;
+			const unit = this._dragUnitRef;
+			this._dragMode = null;
+			this._dragTargetIdx = -1;
+			this._dragUnitRef = null;
 			e.stopPropagation();
+
+			if (mode === 'target') {
+				// Refine alt on the dragged target (cheap one-shot
+				// terrain sample at the dropped lat/lon).
+				const d = designationQueue[idx];
+				if (d) {
+					const carto = Cesium.Cartographic.fromDegrees(d.lon, d.lat);
+					Cesium.sampleTerrainMostDetailed(this.viewer.terrainProvider, [carto])
+						.then(([p]) => refineDesignationAlt(d.lon, d.lat, Math.max(0, p.height || 0)))
+						.catch(() => {});
+				}
+				return;
+			}
+			if (this._dragDist >= this._clickBudgetPx) return; // was a real drag
+
+			// Click commits. 'unit' mode → add at unit's current pos
+			// (snapshotted at pointerup since GPS bombs freeze on
+			// release anyway). 'pan' mode → add at cursor terrain.
+			if (mode === 'unit' && unit) {
+				addDesignation(unit.lon, unit.lat, unit.alt || 0);
+				return;
+			}
+			if (mode === 'pan') {
+				this._addAtScreen(e.clientX, e.clientY);
+			}
+		}, true);
+
+		// Right-click context menu: swallow while the planner is
+		// active so the browser doesn't pop a menu over the map.
+		window.addEventListener('contextmenu', (e) => {
+			if (!this.active) return;
+			e.preventDefault();
 		}, true);
 
 		window.addEventListener('wheel', (e) => {
@@ -432,36 +731,38 @@ export class StrikePlannerView {
 		};
 	}
 
-	_handleClickAt(x, y) {
-		// First check if the click landed on an existing target marker
-		// — Cesium scene.pick returns the entity under the cursor.
-		// Clicking an existing TGT removes it from the queue. (Lets
-		// the player un-queue without keyboard.)
+	// What's under the cursor: target dot index (if any), -1 otherwise.
+	_pickTargetIndexAt(x, y) {
 		const picked = this.viewer.scene.pick(new Cesium.Cartesian2(x, y));
 		if (picked && picked.id && typeof picked.id.__strikeIndex === 'number') {
-			removeDesignationAt(picked.id.__strikeIndex);
-			return;
+			return picked.id.__strikeIndex;
 		}
+		return -1;
+	}
 
-		// Otherwise treat as "add a new target". Globe-pick → terrain
-		// sample → addDesignation. Two-stage: rough alt immediately so
-		// the marker pops without latency, then a precise sample comes
-		// back asynchronously and refines the alt in place.
+	// What's under the cursor: an enemy/known unit, or null. Reads the
+	// __strikeUnit field we stamp on unit markers in _syncMarkers.
+	_pickUnitAt(x, y) {
+		const picked = this.viewer.scene.pick(new Cesium.Cartesian2(x, y));
+		if (picked && picked.id && picked.id.__strikeUnit) {
+			return picked.id.__strikeUnit;
+		}
+		return null;
+	}
+
+	// Add a target at the screen-pixel position. Uses a two-stage alt
+	// resolve (rough cartographic immediately, refined async).
+	_addAtScreen(x, y) {
 		const ray = this.viewer.camera.getPickRay(new Cesium.Cartesian2(x, y));
 		if (!ray) return;
 		const cart = this.viewer.scene.globe.pick(ray, this.viewer.scene);
 		if (!cart) return;
-
 		const carto = Cesium.Cartographic.fromCartesian(cart);
 		const lon = Cesium.Math.toDegrees(carto.longitude);
 		const lat = Cesium.Math.toDegrees(carto.latitude);
-		const roughAlt = Math.max(0, carto.height || 0);
-		addDesignation(lon, lat, roughAlt);
-
+		addDesignation(lon, lat, Math.max(0, carto.height || 0));
 		Cesium.sampleTerrainMostDetailed(this.viewer.terrainProvider, [carto])
-			.then(([p]) => {
-				refineDesignationAlt(lon, lat, Math.max(0, p.height || 0));
-			})
+			.then(([p]) => refineDesignationAlt(lon, lat, Math.max(0, p.height || 0)))
 			.catch(() => {});
 	}
 }
