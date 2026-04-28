@@ -587,16 +587,18 @@ Shares JDAM's GPS guidance core, plus a **cruise profile**:
 **Munition GLBs:** `agm-86.glb` (ALCM), `storm_shadow_ukraine.glb`
 (JASSM substitute) — both ✓ in `new_models/new_munition_models/`.
 
-### 5f. Hardpoint → weapon release wiring
+### 5f. Hardpoint → weapon release wiring  ❌ killed (2026-04-28)
 
-`loadout.js` already counts munitions per simType; the unfinished
-half is the weaponSystem release path that knows which physical
-hardpoint released the round (matters for visual offset, ejection
-direction, residue state). Today we cycle a single `lastMissileSide`
-boolean for left/right alternation. Replace with: the loadout
-tracks per-hardpoint state, fire() picks the next loaded hardpoint
-matching the current weapon's simType, and the launch position
-comes from the hardpoint's mount offset.
+**Original idea:** track per-hardpoint state so launches come from
+real mount geometry instead of a single left/right alternation.
+
+**Why killed:** purely cosmetic, and the prerequisite work isn't
+feasible. We'd need to visually identify each hardpoint's screen-
+space offset on every airframe GLB, and (worse) strip the existing
+in-mesh ordnance that ships baked into the F-15 model — both already
+attempted and abandoned. The current alternating-rail launch reads
+fine in flight; per-hardpoint state isn't worth the per-airframe
+manual labour.
 
 ### 5g. Bulk-target / mass-assign UI
 
@@ -656,7 +658,17 @@ knows: own-sensor contacts + fused team datalink (incl. ISR).
 3-4 queued targets and which munition is wired to each. Scrubs
 forward as bombs release.
 
-### 5h. Platform-class targeting capabilities
+### 5h. Platform-class targeting capabilities  ⚠ deferred (low-priority)
+
+**Status (2026-04-28):** Deferred until more platforms exist. The
+only airframe where the strike doctrine genuinely differs is the
+B-2 (`ata: true`); the F-15 / F-22 / F-35 trio all behave the
+same way through the planner. The auto-assign button in the
+planner already covers the bomber-style "drop a list, distribute"
+use-case for any plane that has enough ammo. Revisit when adding
+B-1 / B-52 / Reaper-class platforms with genuinely different
+strike workflows.
+
 
 Different platforms behave differently — the heavy bomber doesn't
 fight like a strike fighter. Per-platform JSON flags (in the plane
@@ -748,20 +760,22 @@ extend `src/systems/teamDatalink.js` for ISR contacts,
 new platform JSONs `src/data/platforms/rq-4-global-hawk.json`,
 new munition JSONs in `src/data/munitions/`.
 
-### Sequencing
+### Sequencing  (revised 2026-04-28)
 
-| # | Sub-phase | Why this order |
+Original:  a → b → c → d → e → f → g → h → i → j
+Status:    a ✅  b ✅  c ✅  d ✅  e ✅  f ❌  g ⚠ partial  h ⚠ deferred  i ⏳  j ⏳
+
+Revised priority order for what's still pending, ranked by
+gameplay impact rather than implementation order:
+
+| # | Sub-phase | Why this priority |
 |---|---|---|
-| 5a | HARM | Smallest seeker, exercises Phase 3c hooks, no UI work |
-| 5b | TGP / laser designator UI | Foundational for 5c and any future EO weapons |
-| 5c | GBU-12 | First payoff of the TGP — see the bomb track the spot |
-| 5d | JDAM | Same release path as 5e but simpler — get GPS guidance solid |
-| 5e | JASSM/Storm Shadow + ALCM | Cruise profile on top of GPS core |
-| 5f | Hardpoint release wiring | Cleanup that 5a-5e can use immediately |
-| 5g | Bulk-target UI | After release wiring is clean — UI binds to it |
-| 5h | Platform-class capability flags | Ties into 5g — some platforms skip the UI |
-| 5i | AAM ground gating | Paired commit with 5d/5e arrival so player doesn't lose ranged ground attack |
-| 5j | ISR (drone + satellite) | After everything else — extends rather than gates |
+| 5j | ISR (drone + satellite) | **Top priority.** Cruise missiles are practically useless without long-range ground discovery — the player can't see the SAM site beyond visual / IRST. ISR turns 5e from a tech demo into a real capability. Also unlocks the strike planner's "see threats over the horizon" promise. |
+| 5i | AAM ground-targeting gating | Quick cleanup. Five-line change so AIM-9X stops locking onto tanks. Bundle with 5j or land standalone. |
+| 5g.2/3/4 | Strike planner queue UX | Drag-to-reorder, lasso/rectangle multi-select, in-flight queued-targets HUD strip, stale-contact tooltips. Pure polish on the existing planner — every shot in 5d/5e/SDB benefits. |
+| **+** | Datalink-shared designations | Small extension to teamDatalink: publish player designations + read others'. Enables future buddy-lasing + wingman handoff. ~½ day after 5j lands (both touch teamDatalink). |
+| 5h | Platform-class strike flags | Deferred — only B-2 differs from the fighter trio today; revisit when adding B-1 / B-52 / Reaper. |
+| 5f | Hardpoint release wiring | **Killed.** Purely cosmetic, infeasible without manual per-airframe model surgery. |
 
 ---
 
