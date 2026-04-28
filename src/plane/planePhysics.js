@@ -135,7 +135,20 @@ export class PlanePhysics {
 		// if aerobatic feel needs it.
 		this.pitchStabilityCoef = 0.3;         // effective |C_mα| · c_ref (m)
 		this.yawStabilityCoef   = 0.5;         // effective |C_nβ| · b     (m)
-		this.alphaTrim = 2.0 * Math.PI / 180;  // zero-moment AoA ≈ 2°
+		// Auto-trim α target — recomputed each frame from the current
+		// flight condition (mass / dynamic pressure / lift-curve
+		// slope) so the airframe naturally settles at whatever α
+		// gives lift = weight at the current speed and altitude.
+		// Initial value is a fighter-cruise placeholder; the first
+		// integrator tick replaces it.
+		this.alphaTrim = 2.0 * Math.PI / 180;
+		// Lift-curve slope used by the auto-trim solver. Standard
+		// finite-wing value (~5.7 / rad ≈ 0.10 / deg). All our planes
+		// share this — varying it per-airframe is overkill for the
+		// trim path; it doesn't break the rest of the aero model
+		// because actual lift uses liftCoefficient() with full
+		// stall behaviour.
+		this._cLAlpha = 5.7;
 
 		// Thrust parameters (N). Absolute values from spec — no
 		// multiplier path. F-15: dry 158 kN, AB 258 kN. F-22: dry
@@ -344,6 +357,30 @@ export class PlanePhysics {
 		const V   = this.velocity.length();               // airspeed (m/s)
 		const rho = airDensity(this._approxAltitude());   // air density (kg/m³)
 		const q   = 0.5 * rho * V * V;                    // dynamic pressure (Pa)
+
+		// ---- Auto-trim: compute the α that gives lift = weight at the
+		// current dynamic pressure, then low-pass it into alphaTrim.
+		// Without this, the airframe's static-stability moment pulls
+		// toward a fixed 2° α regardless of mass / speed / altitude,
+		// which means a heavy bomber at low speed sinks (needs ~8°
+		// for level lift but the trim fights it) and a light fighter
+		// at high speed climbs (needs ~0.5° but trim wants 2°).
+		// The pilot can override via stick input — this is just the
+		// neutral-stick equilibrium target.
+		//
+		//   CL_required = (m·g) / (q·S)
+		//   α_trim      = CL_required / CL_α
+		//
+		// CL_α is the lift-curve slope (~5.7/rad for typical wings).
+		// Smoothed with a ~1 s time constant so airspeed transients
+		// don't visibly oscillate the trim target.
+		if (V > 50 && q > 100) {
+			const cLRequired = (this.mass * GRAVITY) / (q * this.wingArea);
+			const alphaTarget = Math.max(-0.17, Math.min(0.30, cLRequired / this._cLAlpha));
+			const tau = 1.0;  // seconds; 1-pole LPF
+			const k   = Math.min(1, dt / tau);
+			this.alphaTrim += (alphaTarget - this.alphaTrim) * k;
+		}
 
 		// ---- 1. Forces (world frame) -------------------------------------
 		// Thrust along body +Y → world.
