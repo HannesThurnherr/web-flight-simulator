@@ -215,11 +215,12 @@ _loader.load('/assets/models/agm-86.glb', (gltf) => {
 });
 
 // Storm Shadow / SCALP-EG — JASSM-class stealth cruise missile,
-// ~5.1 m long. Source bbox is symmetric on the long axis so we
-// can't tell nose-end from bbox alone; default normalize first
-// and revisit the rotation if it flies tail-first in-game.
+// ~5.1 m long. The source GLB lands belly-up after normalize;
+// roll +90° about the long axis (+Y after normalize) to right
+// the airframe.
 _loader.load('/assets/models/storm-shadow.glb', (gltf) => {
 	_templates['storm-shadow'] = _normalizeMissileModel(gltf.scene, 5.10);
+	_templates['storm-shadow'].rotation.y = Math.PI / 2;
 	_templates['storm-shadow'].traverse((child) => {
 		if (child.isMesh) {
 			child.castShadow = true;
