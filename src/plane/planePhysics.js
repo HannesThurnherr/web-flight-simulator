@@ -292,6 +292,13 @@ export class PlanePhysics {
 	applyOverrides(o = {}) {
 		if (typeof o.thrustDryMul === 'number') this.thrustDryMax *= o.thrustDryMul;
 		if (typeof o.thrustABMul  === 'number') this.thrustABMax  *= o.thrustABMul;
+		// Absolute-value thrust overrides for airframes whose engines
+		// are nothing like the F-15 default (B-2's four F118s, B-1B
+		// turbofans, future cruise-only platforms). Applied AFTER the
+		// multipliers so the multiplier path stays usable for fine
+		// fighter-class tweaks.
+		if (typeof o.thrustDryMax === 'number') this.thrustDryMax = o.thrustDryMax;
+		if (typeof o.thrustABMax  === 'number') this.thrustABMax  = o.thrustABMax;
 		if (typeof o.mass         === 'number') this.mass     = o.mass;
 		if (typeof o.wingArea     === 'number') this.wingArea = o.wingArea;
 		if (typeof o.cdZero       === 'number') this.cdZero   = o.cdZero;
