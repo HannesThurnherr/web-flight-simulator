@@ -154,6 +154,7 @@ export function update(dt, ctx) {
 				}
 			}
 			if (input.fire)               weaponSystem.fire(state);
+			else                          weaponSystem.releaseFireHold();
 			if (input.fireFlare)          weaponSystem.fireFlare(state);
 		}
 		weaponSystem.update(dt, state, isFlying ? input : null);

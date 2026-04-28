@@ -19,12 +19,12 @@ export class WeaponSystem {
 			{ id: 'gun',     name: 'M61A1 CANNON',    ammo: Infinity, maxAmmo: Infinity, fireRate: 0.05, lastFire: 0 },
 			// AIM-9M: legacy reticle IR seeker. Cheap, plentiful, but
 			// flare-vulnerable; narrower acquisition cone than the X.
-			{ id: 'missile', name: 'AIM-9M SIDEWINDER', ammo: 0,  maxAmmo: 0,  fireRate: 1.0,
+			{ id: 'missile', name: 'AIM-9M SIDEWINDER', ammo: 0,  maxAmmo: 0,  fireRate: 0,
 			  lastFire: 0, type: 'AIM-9M',   lockRange: 12000, lockCone: 0.96,  lockTime: 0.7 },
 			// AIM-9X: imaging-IR + thrust-vectoring. ±90° HOBS cone,
 			// near-immune to flare decoys, ~50G turns. The premium WVR
 			// option vs the older 9M.
-			{ id: 'missile', name: 'AIM-9X SIDEWINDER', ammo: 6,  maxAmmo: 6,  fireRate: 1.0,
+			{ id: 'missile', name: 'AIM-9X SIDEWINDER', ammo: 6,  maxAmmo: 6,  fireRate: 0,
 			  lastFire: 0, type: 'AIM-9X',   lockRange: 25000, lockCone: 0.0,   lockTime: 0.4 },
 			// AIM-120D: active-radar BVR. Modern AESA fighter radars
 			// (APG-63V3, APG-77, APG-81, APG-82) hold firing-grade
@@ -34,7 +34,7 @@ export class WeaponSystem {
 			// still flying a 1970s mechanical-scan set. Range bumped to
 			// 120 km so the firing envelope matches the radar's actual
 			// tracking range, not an arbitrarily tighter number.
-			{ id: 'missile', name: 'AIM-120D AMRAAM',  ammo: 4,  maxAmmo: 4,  fireRate: 1.5,
+			{ id: 'missile', name: 'AIM-120D AMRAAM',  ammo: 4,  maxAmmo: 4,  fireRate: 0,
 			  lastFire: 0, type: 'AIM-120',  lockRange: 120000, lockCone: 0.92,  lockTime: 0.3 },
 			// MBDA Meteor BVRAAM. Same Fox-3 architecture as AMRAAM —
 			// midcourse datalink + active-radar terminal — but the
@@ -44,21 +44,21 @@ export class WeaponSystem {
 			// (it's a function of the radar's gimbal, not the missile)
 			// and lockTime is identical (the radar doesn't know which
 			// missile is loaded behind it).
-			{ id: 'missile', name: 'MBDA METEOR',      ammo: 0,  maxAmmo: 0,  fireRate: 1.5,
+			{ id: 'missile', name: 'MBDA METEOR',      ammo: 0,  maxAmmo: 0,  fireRate: 0,
 			  lastFire: 0, type: 'METEOR',   lockRange: 180000, lockCone: 0.92,  lockTime: 0.3 },
 			// AGM-88 HARM. Anti-radiation seeker — passive, no AESA
 			// lock required. The seeker scans hostile radiating units
 			// at launch and auto-picks the strongest in cone. id='agm'
 			// (not 'missile') is what bypasses the lockStatus gate in
 			// fire() and skips the AESA lock-progress loop in update().
-			{ id: 'agm',     name: 'AGM-88 HARM',       ammo: 0,  maxAmmo: 0,  fireRate: 2.0,
+			{ id: 'agm',     name: 'AGM-88 HARM',       ammo: 0,  maxAmmo: 0,  fireRate: 0,
 			  lastFire: 0, type: 'AGM-88',   lockRange: 0,      lockCone: 0,     lockTime: 0 },
 			// GBU-12 Paveway II — laser-guided 500 lb. Fires whenever
 			// the player has a designation (TRACK or LASE on the TGP);
 			// LASE is required during the bomb's terminal phase for
 			// the seeker to hold the spot. id='gbu' bypasses the AESA
 			// lock gate the same way 'agm' does.
-			{ id: 'gbu',     name: 'GBU-12 PAVEWAY II', ammo: 0,  maxAmmo: 0,  fireRate: 2.0,
+			{ id: 'gbu',     name: 'GBU-12 PAVEWAY II', ammo: 0,  maxAmmo: 0,  fireRate: 0,
 			  lastFire: 0, type: 'GBU-12',   lockRange: 0,      lockCone: 0,     lockTime: 0 },
 			// GBU-38 JDAM — 500 lb GPS-guided. Fires whenever the player
 			// has a designation (TRACK or LASE on the TGP); the seeker
@@ -66,11 +66,11 @@ export class WeaponSystem {
 			// state changes afterward. Same `id: 'gbu'` slot as the
 			// laser-guided weapons; the fire branch below dispatches on
 			// the munition's seekerType to pick the right target shape.
-			{ id: 'gbu',     name: 'GBU-38 JDAM',       ammo: 0,  maxAmmo: 0,  fireRate: 2.0,
+			{ id: 'gbu',     name: 'GBU-38 JDAM',       ammo: 0,  maxAmmo: 0,  fireRate: 0,
 			  lastFire: 0, type: 'GBU-38',   lockRange: 0,      lockCone: 0,     lockTime: 0 },
 			// GBU-31 JDAM — 2000 lb GPS-guided. Same release behaviour
 			// as the GBU-38 with a substantially larger warhead.
-			{ id: 'gbu',     name: 'GBU-31 JDAM',       ammo: 0,  maxAmmo: 0,  fireRate: 2.0,
+			{ id: 'gbu',     name: 'GBU-31 JDAM',       ammo: 0,  maxAmmo: 0,  fireRate: 0,
 			  lastFire: 0, type: 'GBU-31',   lockRange: 0,      lockCone: 0,     lockTime: 0 },
 		];
 
@@ -274,7 +274,18 @@ export class WeaponSystem {
 			return;
 		}
 		if (weapon.id === 'gun' && this.isGunOverheated) return;
-		if (now - weapon.lastFire < weapon.fireRate) return;
+		// Edge-detection for non-gun weapons: one press = at most one
+		// launch. Real ripple-fire is the pilot pressing the pickle
+		// button repeatedly, not holding it down. Without this, holding
+		// the trigger for 100ms would burn through a whole magazine.
+		// The gun keeps its cyclic-rate gate (fireRate=0.05) so it
+		// hoses bullets while held.
+		if (weapon.id !== 'gun') {
+			if (this._fireHeld) return;
+			this._fireHeld = true;
+		} else {
+			if (now - weapon.lastFire < weapon.fireRate) return;
+		}
 
 		if (weapon.id === 'missile' && this.lockStatus !== 'LOCKED') {
 			return;
@@ -398,6 +409,14 @@ export class WeaponSystem {
 
 			try { soundManager.play('missile-fire'); } catch (e) { }
 		}
+	}
+
+	// Called when the fire input goes from held → released. Resets the
+	// edge-detection flag so the next press fires again. Without this,
+	// the player would launch one missile per fresh press (correct) but
+	// also be permanently stuck after a single fire (incorrect).
+	releaseFireHold() {
+		this._fireHeld = false;
 	}
 
 	fireFlare(playerState) {

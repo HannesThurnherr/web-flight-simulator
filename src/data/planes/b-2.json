@@ -3,7 +3,7 @@
 	"name": "B-2A SPIRIT",
 	"description": "Northrop Grumman flying-wing strategic stealth bomber. RCS ~0.001 m² makes it essentially invisible to radar at any practical range — buried engines keep IR low from beneath. Subsonic, unmanoeuvrable, but carries 16 GBU-class weapons in two internal rotary bays. The default loadout for high-altitude SEAD penetration: drop everything, fly home.",
 	"model": "/assets/models/b-2-spirit.glb",
-	"modelRotation": { "x": 0, "y": -1.5707963267948966, "z": 0 },
+	"modelRotation": { "x": 0, "y": -90, "z": 0 },
 	"realLengthM": 21.0,
 	"signature": "stealth_bomber",
 	"engineCount": 4,
