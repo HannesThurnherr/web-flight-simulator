@@ -36,6 +36,24 @@ export class TeamDatalink {
 		//   source:   the unit whose radar produced this track (for UX / debug)
 		//   quality:  fusion confidence, 0..1 (radar=1.0, IR-only=0.5, etc.)
 		this.contacts = new Map();
+		// Pre-mission intel + ELINT-derived contacts. Distinct from
+		// the live `contacts` map so the planner can render them
+		// differently and so they persist after a sensor track drops
+		// (briefed targets stay briefed forever — they're a database
+		// entry, not a sensor hit).
+		//
+		// target → {
+		//   kind: 'briefed-known' | 'briefed-suspected' | 'elint-bearing',
+		//   lon, lat, alt,
+		//   uncertaintyM,        // position uncertainty radius (briefed-suspected)
+		//   bearingDeg,          // bearing from sourceUnit (elint-bearing)
+		//   bearingErrorDeg,     // ±half-angle of bearing wedge
+		//   sourceUnit,          // who reported (null for briefed)
+		//   firstSeen, lastSeen, // sim-time
+		// }
+		// Resolution priority when planner draws: live `contacts`
+		// (current sensor) > intelContacts (briefed/elint).
+		this.intelContacts = new Map();
 		// target → { shooter, missile, firedAt }. One entry per target per
 		// time — if a second missile is fired at a target we OVERWRITE with
 		// the newer shot, so the most recent engagement is authoritative.
@@ -44,6 +62,27 @@ export class TeamDatalink {
 		this.engagements = new Map();
 		// Reverse index: missile → target, so clearByMissile() is O(1).
 		this._missileIndex = new Map();
+	}
+
+	// Pre-mission intel publish. Called once at scenario start by the
+	// scenario runner for any spawned platform whose intel.level is
+	// 'known' or 'suspected'. Stays in intelContacts forever (or
+	// until the unit dies / scenario resets).
+	publishBriefed(target, intel, now) {
+		if (!target || target.destroyed) return;
+		if (target.team === this.team) return;
+		const level = intel && intel.level;
+		if (level !== 'known' && level !== 'suspected') return;
+		this.intelContacts.set(target, {
+			kind: level === 'suspected' ? 'briefed-suspected' : 'briefed-known',
+			lon: target.lon,
+			lat: target.lat,
+			alt: target.alt,
+			uncertaintyM: (level === 'suspected') ? (intel.uncertaintyM || 3000) : 0,
+			sourceUnit: null,
+			firstSeen: now,
+			lastSeen:  now,
+		});
 	}
 
 	// ---- Contact fusion ----------------------------------------------------
@@ -88,6 +127,14 @@ export class TeamDatalink {
 			}
 			if (now - entry.lastSeen > DATALINK_MEMORY) {
 				this.contacts.delete(target);
+			}
+		}
+		// Intel contacts: drop only when the unit is dead. Briefed
+		// targets persist forever — they're database entries, not
+		// sensor hits.
+		for (const [target] of this.intelContacts) {
+			if (!target || target.destroyed || target.active === false) {
+				this.intelContacts.delete(target);
 			}
 		}
 		// Engagement ledger: linger a second past missile death so we
@@ -184,6 +231,7 @@ export function allDatalinks() {
 export function resetAllDatalinks() {
 	for (const [, dl] of _datalinks) {
 		dl.contacts.clear();
+		dl.intelContacts.clear();
 		dl.engagements.clear();
 		dl._missileIndex.clear();
 	}

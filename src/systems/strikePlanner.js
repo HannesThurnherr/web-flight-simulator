@@ -97,6 +97,13 @@ export class StrikePlannerView {
 		// 2, 3, … labels showing fire order.
 		this._targetMarkers = []; // index-aligned with designationQueue
 
+		// Uncertainty discs for briefed-suspected intel contacts.
+		// Cesium ellipse entities, one per unit currently rendered
+		// with a non-zero uncertaintyM. Sized to the radius from the
+		// intel record, dashed outline so they read as "we think it's
+		// somewhere in this circle."
+		this._uncertaintyDiscs = new Map(); // id → entity
+
 		// Used by the planner-toggle key to center on the player at
 		// open time. Set every frame's update().
 		this._lastPlayerState = null;
@@ -353,20 +360,49 @@ export class StrikePlannerView {
 	_syncMarkers(playerState, units, missiles) {
 		const seen = new Set();
 
+		const seenDiscs = new Set();
 		const updateOne = (id, u, color, opts = {}) => {
 			const e = this._markers.get(id);
 			if (!e) return;
 			e.position = Cesium.Cartesian3.fromDegrees(u.lon, u.lat, u.alt || 0);
 			e.point.color = color;
 			e.show = true;
-			// Stamp the underlying unit / metadata so the click
-			// dispatcher in _bindInputs can route a left-click on a
-			// unit into a "add target on this unit" action. Friendlies
-			// and missiles don't get the stamp — they're not strike
-			// targets.
 			e.__strikeUnit  = opts.unitForClick || null;
 			e.__strikeStale = !!opts.stale;
 			seen.add(id);
+
+			// Uncertainty disc — created on demand when a marker is
+			// rendered with non-zero uncertaintyM. The disc auto-
+			// disappears when the unit upgrades to live/stale (because
+			// updateOne for that frame passes uncertaintyM=0, so the
+			// disc id won't be in seenDiscs and the cleanup loop
+			// removes it). This is the auto-promotion path: as soon
+			// as a sensor confirms the suspected position, the fuzzy
+			// circle vanishes and the bright marker takes over.
+			if (opts.uncertaintyM && opts.uncertaintyM > 0) {
+				let disc = this._uncertaintyDiscs.get(id);
+				if (!disc) {
+					disc = this.viewer.entities.add({
+						position: Cesium.Cartesian3.fromDegrees(u.lon, u.lat, 100),
+						ellipse: {
+							semiMajorAxis: opts.uncertaintyM,
+							semiMinorAxis: opts.uncertaintyM,
+							material: color.withAlpha(0.08),
+							outline: true,
+							outlineColor: color.withAlpha(0.6),
+							height: 100,
+						},
+					});
+					this._uncertaintyDiscs.set(id, disc);
+				}
+				disc.position = Cesium.Cartesian3.fromDegrees(u.lon, u.lat, 100);
+				disc.ellipse.semiMajorAxis = opts.uncertaintyM;
+				disc.ellipse.semiMinorAxis = opts.uncertaintyM;
+				disc.ellipse.material      = color.withAlpha(0.08);
+				disc.ellipse.outlineColor  = color.withAlpha(0.6);
+				disc.show = true;
+				seenDiscs.add(id);
+			}
 		};
 
 		if (playerState) {
@@ -389,12 +425,21 @@ export class StrikePlannerView {
 		const playerTeam = (playerState && playerState.team) || 'friendly';
 		const teamDl = getTeamDatalink(playerTeam);
 		const dlContacts = teamDl ? teamDl.contacts : null;
+		const dlIntel    = teamDl ? teamDl.intelContacts : null;
 		const isCurrentlyDetected = (u) => {
 			if (!u) return false;
 			if (ownContacts && ownContacts.has(u)) return true;
 			if (dlContacts  && dlContacts.has(u))  return true;
 			return false;
 		};
+		// Knowledge resolution per unit (highest first):
+		//   live   — current sensor or datalink contact
+		//   stale  — recently sensor-painted, now memory-only
+		//   intel  — never sensor-painted, only briefed (or ELINT later)
+		// Marker for any given unit picks the highest-quality source
+		// available this frame, so as soon as a sensor confirms a
+		// briefed contact the marker auto-promotes from dim → bright.
+		const intelFor = (u) => (dlIntel ? dlIntel.get(u) : null);
 
 		// Update the stale-contact memory: any currently-detected unit
 		// gets its position cached now, with a timestamp. Cached
@@ -430,26 +475,50 @@ export class StrikePlannerView {
 				const isFriendly = u.team === playerTeam;
 				const detected = isCurrentlyDetected(u);
 				const stale = !detected && this._lastKnown.has(u);
-				if (!isFriendly && !detected && !stale) continue;
+				const intel = !detected && !stale ? intelFor(u) : null;
+				if (!isFriendly && !detected && !stale && !intel) continue;
 
 				const id = `npc-${u.id || u.name}`;
 				const baseColor = _colorForUnit(u);
-				// Stale: desaturate. Use the cached position (the unit's
-				// last-known) rather than the live pos so the planner
-				// shows old intel, not god-eye truth. Friendlies and
-				// detected units render at live position in full color.
-				const renderColor = stale ? baseColor.withAlpha(0.4) : baseColor;
-				const renderUnit = stale ? this._lastKnown.get(u) : u;
 				const labelBase = u.name || 'BOGEY';
-				const labelText = stale
-					? `${labelBase}  LAST ${_formatAge(now - this._lastKnown.get(u).lastSeen)}`
-					: labelBase;
+
+				// Pick render position + color + label from highest-
+				// quality source available this frame. Live sensor wins,
+				// then memory-stale, then intel.
+				let renderColor;
+				let renderUnit;
+				let labelText;
+				let uncertaintyM = 0;
+				if (detected || isFriendly) {
+					renderColor = baseColor;
+					renderUnit = u;
+					labelText = labelBase;
+				} else if (stale) {
+					renderColor = baseColor.withAlpha(0.4);
+					renderUnit = this._lastKnown.get(u);
+					labelText = `${labelBase}  LAST ${_formatAge(now - this._lastKnown.get(u).lastSeen)}`;
+				} else {
+					// Intel-only (briefed, never sensor-painted in this
+					// session). Dimmer than stale + a tag describing the
+					// intel quality. Suspected entries also draw an
+					// uncertainty disc (handled outside updateOne via
+					// _syncUncertaintyDiscs below).
+					renderColor = baseColor.withAlpha(0.35);
+					renderUnit = { lon: intel.lon, lat: intel.lat, alt: intel.alt };
+					labelText  = intel.kind === 'briefed-suspected'
+						? `${labelBase}  ?`
+						: `${labelBase}  BRIEFED`;
+					if (intel.kind === 'briefed-suspected') {
+						uncertaintyM = intel.uncertaintyM || 0;
+					}
+				}
 				this._ensureMarker(id, baseColor, labelText);
 				const m = this._markers.get(id);
 				if (m && m.label) m.label.text = labelText;
 				updateOne(id, renderUnit, renderColor, {
 					unitForClick: isFriendly ? null : u,
 					stale,
+					uncertaintyM,
 				});
 			}
 		}
@@ -470,10 +539,17 @@ export class StrikePlannerView {
 		for (const [id, ent] of this._markers) {
 			if (!seen.has(id)) ent.show = false;
 		}
+		// Same for uncertainty discs — auto-vanish when the unit
+		// upgrades from intel-suspected to live/stale (sensor
+		// confirmation auto-promotion path).
+		for (const [id, disc] of this._uncertaintyDiscs) {
+			if (!seenDiscs.has(id)) disc.show = false;
+		}
 	}
 
 	_setAllMarkersVisible(visible) {
 		for (const ent of this._markers.values()) ent.show = visible;
+		for (const ent of this._uncertaintyDiscs.values()) ent.show = false;
 	}
 
 	// ---- Designation marker --------------------------------------------------

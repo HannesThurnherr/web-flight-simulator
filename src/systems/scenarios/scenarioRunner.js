@@ -37,6 +37,8 @@
 // Resolve an origin spec into a {lon, lat, alt} triple. Returns null
 // when the spec is triangle-relative (caller uses spawnNPC's built-in
 // vertex logic instead).
+import { getTeamDatalink } from '../teamDatalink.js';
+
 function resolveOrigin(origin, playerState) {
 	if (!origin || origin === 'triangle-vertex') return null;
 	if (typeof origin === 'object' && origin.relTo === 'player') {
@@ -134,11 +136,25 @@ export function buildScenarioFromJson(data) {
 				} else if (s.type === 'platform') {
 					const pos = resolveOrigin(s.origin, playerState);
 					if (!pos) continue;
-					npcSystem.spawnPlatform(
+					const npc = npcSystem.spawnPlatform(
 						s.platformId, pos.lon, pos.lat, pos.alt,
 						s.team || 'friendly',
 						s.pilotOverrides || {},
 					);
+					// Pre-mission intel: a hostile platform marked with
+					// intel: { level: 'known' | 'suspected', uncertaintyM }
+					// gets published to the friendly team datalink at
+					// scenario start, so the strike planner shows it as
+					// a briefed contact (faded marker / fuzzy disc) from
+					// the get-go even though no friendly sensor has
+					// painted it yet. Mirrors real strike doctrine
+					// (planned targets vs reactive engagement).
+					if (npc && s.intel) {
+						const friendly = getTeamDatalink('friendly');
+						const now = (typeof performance !== 'undefined')
+							? performance.now() * 0.001 : 0;
+						friendly.publishBriefed(npc, s.intel, now);
+					}
 				}
 			}
 		},

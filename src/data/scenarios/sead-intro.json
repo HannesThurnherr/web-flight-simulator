@@ -8,25 +8,29 @@
 			"type": "platform",
 			"platformId": "ewr",
 			"team": "hostile-red",
-			"origin": { "relTo": "player", "bearingDeg": 0,  "rangeM": 65000, "altOffsetM": -3000 }
+			"origin": { "relTo": "player", "bearingDeg": 0,  "rangeM": 65000, "altOffsetM": -3000 },
+			"intel":  { "level": "known" }
 		},
 		{
 			"type": "platform",
 			"platformId": "sa-15-tor",
 			"team": "hostile-red",
-			"origin": { "relTo": "player", "bearingDeg": 350, "rangeM": 55000, "altOffsetM": -3000 }
+			"origin": { "relTo": "player", "bearingDeg": 350, "rangeM": 55000, "altOffsetM": -3000 },
+			"intel":  { "level": "suspected", "uncertaintyM": 4000 }
 		},
 		{
 			"type": "platform",
 			"platformId": "sa-15-tor",
 			"team": "hostile-red",
-			"origin": { "relTo": "player", "bearingDeg": 10,  "rangeM": 55000, "altOffsetM": -3000 }
+			"origin": { "relTo": "player", "bearingDeg": 10,  "rangeM": 55000, "altOffsetM": -3000 },
+			"intel":  { "level": "suspected", "uncertaintyM": 4000 }
 		},
 		{
 			"type": "platform",
 			"platformId": "command-post",
 			"team": "hostile-red",
-			"origin": { "relTo": "player", "bearingDeg": 0,   "rangeM": 60000, "altOffsetM": -3000 }
+			"origin": { "relTo": "player", "bearingDeg": 0,   "rangeM": 60000, "altOffsetM": -3000 },
+			"intel":  { "level": "known" }
 		},
 		{
 			"type": "platform",
