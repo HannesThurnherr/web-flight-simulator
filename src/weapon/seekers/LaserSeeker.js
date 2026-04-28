@@ -26,6 +26,7 @@
 import { Missile } from '../missile.js';
 import { playerDesignation } from '../../systems/designation.js';
 import { chordTerrainHit } from '../../systems/sensorSystem.js';
+import { steerTowardCoord } from './coordPN.js';
 import * as Cesium from 'cesium';
 
 export class LaserSeeker extends Missile {
@@ -84,42 +85,11 @@ export class LaserSeeker extends Missile {
 			return;
 		}
 
-		// PN to spot. Lead-pursuit isn't meaningful — the spot is on
-		// the ground, almost stationary. Steer at it directly.
-		const cosLat = Math.cos(this.lat * Math.PI / 180);
-		const dE = (playerDesignation.lon - this.lon) * 111320 * cosLat;
-		const dN = (playerDesignation.lat - this.lat) * 111320;
-		const dU = (playerDesignation.alt - this.alt);
-		const range = Math.sqrt(dE * dE + dN * dN + dU * dU);
-		if (range < 1) return;
-		const horizRange = Math.sqrt(dE * dE + dN * dN);
-		const desiredHeading = (Math.atan2(dE, dN) * 180 / Math.PI + 360) % 360;
-		const desiredPitch   = Math.atan2(dU, Math.max(1, horizRange)) * 180 / Math.PI;
-
-		let dH = desiredHeading - this.heading;
-		while (dH < -180) dH += 360;
-		while (dH >  180) dH -= 360;
-		const dP = desiredPitch - this.pitch;
-
-		// Speed-dependent G availability — same shape as HARM/AAM.
-		const f = this.data && this.data.flight ? this.data.flight : {};
-		const maxG    = (this.data.seeker && this.data.seeker.maxG) || 9;
-		const vRef    = f.vManeuverRef ?? 250;
-		const gFloor  = f.gAvailFloor   ?? 0.05;
-		const qFactor = Math.min(1, Math.max(gFloor, (this.speed * this.speed) / (vRef * vRef)));
-		const gAvail  = maxG * qFactor;
-		const maxTurnRad = (gAvail * 9.81) / Math.max(50, this.speed);
-		const capDeg     = (maxTurnRad * 180 / Math.PI) * dt;
-
-		const pn = f.pnGain ?? 4.0;
-		this.heading += Math.max(-capDeg, Math.min(capDeg, dH * pn * dt));
-		this.pitch   += Math.max(-capDeg, Math.min(capDeg, dP * pn * dt));
-		this.pitch   = Math.max(-89, Math.min(89, this.pitch));
-
+		const { range, headingError, pitchError } = steerTowardCoord(this, playerDesignation, dt);
 		this.debug = {
 			rangeToTarget: range,
-			headingError: dH,
-			pitchError:   dP,
+			headingError,
+			pitchError,
 			mode: 'LASE',
 			targetName: 'SPOT',
 		};

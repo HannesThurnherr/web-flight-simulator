@@ -397,7 +397,7 @@ export class Missile {
 			this._prevTargetDistSq = undefined;
 		}
 
-		this.checkTerrainCollision();
+		this.checkTerrainCollision(npcs);
 	}
 
 	// Closest-approach distance² between the line segment from frame start
@@ -847,10 +847,50 @@ export class Missile {
 		this.destroy();
 	}
 
-	checkTerrainCollision() {
+	checkTerrainCollision(npcs) {
 		const cartographic = Cesium.Cartographic.fromDegrees(this.lon, this.lat);
 		const terrainHeight = this.viewer.scene.globe.getHeight(cartographic);
 		if (terrainHeight !== undefined && this.alt < terrainHeight) {
+			// Splash damage: every NPC within the warhead's kill radius
+			// dies. Without this, a near-miss where the bomb plows
+			// into terrain a few metres from the target leaves the
+			// target unharmed — frustrating for gravity bombs
+			// (GBU-12 / JDAM) where the seeker may put the round
+			// 10–30 m off due to terrain or guidance noise. Each call
+			// to hitNPC logs the kill + spawns particles + calls
+			// destroy(); we want all the kills logged but only one
+			// missile-destroy, so guard with `splashOnly` after the
+			// first one to skip duplicate fx and self-destroy.
+			const killR = this.data && this.data.warhead && this.data.warhead.killRadiusM;
+			if (killR && npcs) {
+				const killR2 = killR * killR;
+				let anyKill = false;
+				for (const npc of npcs) {
+					if (!npc || npc === this.launcher) continue;
+					if (npc.destroyed) continue;
+					if (npc.team && this.team && npc.team === this.team) continue;
+					const dSq = this.calculateDistSqToNPC(npc);
+					if (dSq <= killR2) {
+						if (!anyKill) {
+							this.hitNPC(npc);
+							anyKill = true;
+						} else {
+							// Log the chain kill but skip the
+							// duplicate explosion + self-destroy.
+							pushKill({
+								shooter: this.launcher,
+								target:  npc,
+								weapon:  this.type || (this.data && this.data.simType) || 'BOMB',
+								at:      performance.now() * 0.001,
+								reason:  'splash',
+							});
+							npc.destroyed = true;
+							if (this.onKill) this.onKill(npc);
+						}
+					}
+				}
+				if (anyKill) return;
+			}
 			try {
 				particles.spawnExplosion(this.lon, this.lat, this.alt, { count: 80, smokeCount: 18, big: true });
 				particles.spawnWreckage(this.lon, this.lat, this.alt, this.heading, this.pitch, { count: 48 });

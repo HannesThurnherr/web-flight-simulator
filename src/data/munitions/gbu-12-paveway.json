@@ -29,8 +29,8 @@
 		"gAvailFloor": 0.10
 	},
 	"warhead": {
-		"killRadiusM": 25,
-		"fuzeSenseRadiusM": 30,
+		"killRadiusM": 35,
+		"fuzeSenseRadiusM": 40,
 		"missAbortRadiusMul": 2
 	},
 	"seeker": {
