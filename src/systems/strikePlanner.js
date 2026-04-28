@@ -63,10 +63,14 @@ export class StrikePlannerView {
 		this.viewer = viewer;
 		this.active = false;
 
-		// Initial camera placement when the panel opens. After that
-		// Cesium's native controller owns pan/zoom — we just lock the
-		// orientation to top-down each frame so the user can't tilt.
-		this._initialDistance = 25000;
+		// Camera state (mirrors commander view's pattern). The planner
+		// is a constrained top-down map, so we drive the camera entirely
+		// from these three values via _applyCamera each frame:
+		//   centerLon/centerLat: look-at point on the ground.
+		//   distance: orbital distance from look-at to camera.
+		this.centerLon = 0;
+		this.centerLat = 0;
+		this.distance  = 25000;
 
 		// Marker entities for units (player, NPCs, missiles), keyed by
 		// stable id. Same shape as commanderView's _markers — separate
@@ -83,12 +87,19 @@ export class StrikePlannerView {
 		// open time. Set every frame's update().
 		this._lastPlayerState = null;
 
-		// Click vs drag detection. Pointerdown stamps a position;
-		// pointerup compares — small Δ = click → designate, large = drag
-		// (which Cesium's controller will have already handled).
-		this._clickBudgetPx = 4;
+		// Pan + click detection bookkeeping. We drive pan ourselves
+		// (Cesium's native controller wasn't reliably receiving events
+		// even with threeContainer hidden), so window-capture pointer
+		// events update centerLon/centerLat directly. A small drag
+		// distance is treated as a click (designation); larger as a
+		// drag (pan). Same approach commander view uses.
+		this._clickBudgetPx = 6;
+		this._dragging = false;
+		this._lastX = 0;
+		this._lastY = 0;
 		this._downX = 0;
 		this._downY = 0;
+		this._dragDist = 0;
 
 		this._bindInputs();
 	}
@@ -109,48 +120,17 @@ export class StrikePlannerView {
 
 		const ctrl = this.viewer.scene.screenSpaceCameraController;
 		if (active) {
-			// Snap once to a top-down view centered on the player.
-			// After this, Cesium's native controller owns pan + zoom
-			// (which gives grab-feel drag and zoom-to-cursor for
-			// free); we just clamp the orientation back to top-down
-			// each frame so the user can't tilt or rotate the view.
-			const ps = this._lastPlayerState;
-			if (ps) {
-				this.viewer.camera.setView({
-					destination: Cesium.Cartesian3.fromDegrees(ps.lon, ps.lat, this._initialDistance),
-					orientation: { heading: 0, pitch: -Math.PI / 2, roll: 0 },
-				});
+			// Center on the player so the first frame is useful.
+			if (this._lastPlayerState) {
+				this.centerLon = this._lastPlayerState.lon;
+				this.centerLat = this._lastPlayerState.lat;
 			}
-			// Lock out tilt + look so the planner stays purely top-down.
-			// Pan/zoom remain native: feel matches commander view's
-			// drag-to-pan + wheel-to-zoom-toward-cursor exactly.
-			this._savedTilt = ctrl.enableTilt;
-			this._savedLook = ctrl.enableLook;
-			ctrl.enableTilt = false;
-			ctrl.enableLook = false;
-			// Defensive: an earlier iteration of this code disabled
-			// inputs entirely, and a stale session may have left the
-			// flag false. Force-enable so pan + zoom land regardless.
-			ctrl.enableInputs = true;
-			// Cesium's native pan/zoom controller binds DOM events to
-			// its own canvas at z=1. The THREE container at z=5 sits
-			// on top and was absorbing every drag + wheel before they
-			// could reach Cesium. pointer-events:none alone wasn't
-			// enough in practice, so just hide threeContainer entirely
-			// while the planner owns the screen — the cockpit isn't
-			// visible anyway and Three.js keeps rendering off-screen.
-			const threeContainer = document.getElementById('threeContainer');
-			if (threeContainer) {
-				this._savedThreeDisplay = threeContainer.style.display;
-				threeContainer.style.display = 'none';
-			}
+			// We drive pan + zoom via window-capture pointer events
+			// (same pattern as commander view). Disable Cesium's
+			// native controller so it doesn't fight our setView calls.
+			ctrl.enableInputs = false;
 		} else {
-			if (this._savedTilt !== undefined) ctrl.enableTilt = this._savedTilt;
-			if (this._savedLook !== undefined) ctrl.enableLook = this._savedLook;
-			const threeContainer = document.getElementById('threeContainer');
-			if (threeContainer) {
-				threeContainer.style.display = this._savedThreeDisplay || '';
-			}
+			ctrl.enableInputs = true;
 		}
 
 		this._setAllMarkersVisible(active);
@@ -163,6 +143,7 @@ export class StrikePlannerView {
 		this._lastPlayerState = playerState;
 		if (!this.active) return;
 
+		this._applyCamera();
 		this._syncMarkers(playerState, units, missiles);
 		this._syncTargetMarkers();
 		this.viewer.scene.requestRender();
@@ -170,15 +151,11 @@ export class StrikePlannerView {
 
 	// ---- Camera --------------------------------------------------------------
 
-	_lockOrientation() {
-		// Cesium's native controller can drift heading slightly during
-		// drag-pan in 3D mode. Re-orient back to north-up + top-down
-		// each frame, preserving the camera's current position. Cheap
-		// — just a setView with the existing position.
-		const cam = this.viewer.camera;
-		const carto = Cesium.Cartographic.fromCartesian(cam.position);
-		cam.setView({
-			destination: cam.position,
+	_applyCamera() {
+		// Pure top-down. North-up. Camera sits directly above the
+		// look-at point at `distance` metres of altitude.
+		this.viewer.camera.setView({
+			destination: Cesium.Cartesian3.fromDegrees(this.centerLon, this.centerLat, this.distance),
 			orientation: { heading: 0, pitch: -Math.PI / 2, roll: 0 },
 		});
 	}
@@ -338,32 +315,97 @@ export class StrikePlannerView {
 			}
 		});
 
-		// Pan + zoom are handled by Cesium's native screenSpaceCamera
-		// controller (left them enabled in setActive) — that gives
-		// grab-feel drag, zoom-toward-cursor, and inertia for free.
-		// We only need to detect a true click (pointerdown + pointerup
-		// at roughly the same position, no drag in between) to call
-		// _handleClickAt for designation.
-		//
-		// Window + capture so we beat #threeContainer (z=5), which
-		// overlays the Cesium canvas and would otherwise eat every
-		// pointer event before it could reach a canvas-level handler.
+		// Manual pan + zoom via window-capture pointer events. Cesium's
+		// native controller wasn't reliably receiving events under
+		// our overlay stack; commander view uses this same pattern
+		// and it's known to work. Window + capture beats element
+		// hit-testing — the events fire regardless of what's on top.
 		window.addEventListener('pointerdown', (e) => {
 			if (!this.active) return;
 			if (e.button !== 0) return;
+			this._dragging = true;
+			this._lastX = e.clientX;
+			this._lastY = e.clientY;
 			this._downX = e.clientX;
 			this._downY = e.clientY;
+			this._dragDist = 0;
+			e.preventDefault();
+			e.stopPropagation();
+		}, true);
+
+		window.addEventListener('pointermove', (e) => {
+			if (!this.active || !this._dragging) return;
+			const dx = e.clientX - this._lastX;
+			const dy = e.clientY - this._lastY;
+			this._lastX = e.clientX;
+			this._lastY = e.clientY;
+			this._dragDist += Math.abs(dx) + Math.abs(dy);
+			e.stopPropagation();
+
+			// Grab-and-drag pan: move the look-at point opposite to
+			// the cursor so the world visually follows the cursor
+			// (drag right → world moves right). Sensitivity scales
+			// with `distance` (a metres-per-pixel factor) so panning
+			// feels the same at any zoom level.
+			//
+			// At top-down + north-up: screen +x is east, screen +y is
+			// south. Cursor moves +dx → look-at moves -dx in east
+			// terms (i.e. west). Same for north (with sign flip
+			// because screen-y increases downward).
+			const mpp = this.distance * 0.0006;
+			const eastMeters  = -dx * mpp;
+			const northMeters =  dy * mpp;
+			const cosLat = Math.cos(this.centerLat * Math.PI / 180) || 1;
+			this.centerLat += northMeters / 111320;
+			this.centerLon += eastMeters  / (111320 * Math.max(0.1, cosLat));
 		}, true);
 
 		window.addEventListener('pointerup', (e) => {
-			if (!this.active) return;
-			if (e.button !== 0) return;
-			const dx = e.clientX - this._downX;
-			const dy = e.clientY - this._downY;
-			if (Math.hypot(dx, dy) < this._clickBudgetPx) {
+			if (!this.active || !this._dragging) return;
+			this._dragging = false;
+			// Click vs drag classification using TOTAL travel since
+			// pointerdown — small wiggle counts as a click.
+			if (this._dragDist < this._clickBudgetPx && e.button === 0) {
 				this._handleClickAt(e.clientX, e.clientY);
 			}
+			e.stopPropagation();
 		}, true);
+
+		window.addEventListener('wheel', (e) => {
+			if (!this.active) return;
+			e.preventDefault();
+			e.stopPropagation();
+			// Zoom toward the cursor: compute the world point under
+			// the cursor before the zoom, change distance, then shift
+			// centerLon/centerLat so that same world point ends up at
+			// the cursor again. Same trick Google Maps / Cesium use.
+			const before = this._screenToLatLon(e.clientX, e.clientY);
+			const factor = e.deltaY > 0 ? 1.25 : 1 / 1.25;
+			this.distance = Math.max(500, Math.min(2_000_000, this.distance * factor));
+			// Re-pose the camera at the new distance BEFORE the after-
+			// pick so the projection math uses the new view.
+			this._applyCamera();
+			const after = this._screenToLatLon(e.clientX, e.clientY);
+			if (before && after) {
+				this.centerLon += before.lon - after.lon;
+				this.centerLat += before.lat - after.lat;
+			}
+		}, { passive: false, capture: true });
+	}
+
+	// Project a screen-pixel position to a {lon, lat} on the globe,
+	// using the current camera. Returns null if the ray misses the
+	// globe (e.g. pointing at sky off the horizon).
+	_screenToLatLon(x, y) {
+		const ray = this.viewer.camera.getPickRay(new Cesium.Cartesian2(x, y));
+		if (!ray) return null;
+		const cart = this.viewer.scene.globe.pick(ray, this.viewer.scene);
+		if (!cart) return null;
+		const c = Cesium.Cartographic.fromCartesian(cart);
+		return {
+			lon: Cesium.Math.toDegrees(c.longitude),
+			lat: Cesium.Math.toDegrees(c.latitude),
+		};
 	}
 
 	_handleClickAt(x, y) {
