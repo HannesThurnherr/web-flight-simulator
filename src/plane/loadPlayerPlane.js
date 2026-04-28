@@ -145,7 +145,13 @@ export function loadPlayerPlane(plane, ctx) {
 		// a real-scale plane in the player's camera, the camera
 		// origin would need to move back several metres — deferred
 		// until we have a proper plane-config table.
-		const COCKPIT_APPARENT_LENGTH_M = 5.12;
+		// Per-plane override lets airframes with very different real-
+		// world sizes (B-2 is ~2.7× an F-15 in wingspan) display at
+		// proportionally larger apparent size in the chase view, so
+		// the B-2 doesn't look like a tiny gnat flying along.
+		const COCKPIT_APPARENT_LENGTH_M = (typeof plane.cockpitDisplayMaxM === 'number')
+			? plane.cockpitDisplayMaxM
+			: 5.12;
 		const maxDim = Math.max(size.x, size.y, size.z);
 		const cockpitScale = COCKPIT_APPARENT_LENGTH_M / maxDim;
 

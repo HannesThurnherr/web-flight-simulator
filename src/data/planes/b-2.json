@@ -7,12 +7,13 @@
 	"realLengthM": 21.0,
 	"signature": "stealth_bomber",
 	"engineCount": 4,
-	"nozzle": { "xRatio": 0.05, "yRatio": 0.02, "zRatio": 0.45 },
+	"cockpitDisplayMaxM": 14.0,
+	"nozzle": { "xRatio": 0.10, "yRatio": 0.30, "zRatio": 0.40 },
 	"nozzlePositions": [
-		{ "xRatio": -0.135, "yRatio": 0.02, "zRatio": 0.42 },
-		{ "xRatio": -0.105, "yRatio": 0.02, "zRatio": 0.42 },
-		{ "xRatio":  0.105, "yRatio": 0.02, "zRatio": 0.42 },
-		{ "xRatio":  0.135, "yRatio": 0.02, "zRatio": 0.42 }
+		{ "xRatio": -0.115, "yRatio": 0.30, "zRatio": 0.40 },
+		{ "xRatio": -0.075, "yRatio": 0.30, "zRatio": 0.40 },
+		{ "xRatio":  0.075, "yRatio": 0.30, "zRatio": 0.40 },
+		{ "xRatio":  0.115, "yRatio": 0.30, "zRatio": 0.40 }
 	],
 	"hideNodes": [
 		"LGFront_3",
