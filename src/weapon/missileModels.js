@@ -160,52 +160,40 @@ _loader.load('/assets/models/gbu-12.glb', (gltf) => {
 	console.warn('[missileModels] gbu-12 model failed to load', err);
 });
 
-// GBU-31 / GBU-38 JDAM — both bundled inside the multi-munition
-// collection GLB (no dedicated single-bomb files on hand). Pull the
-// two named subtrees out, scale each to its real length, register
-// under distinct template ids. Same trick as 5c's earlier collection-
-// extraction prototype.
-_loader.load('/assets/models/munition-collection.glb', (gltf) => {
-	// The two JDAM nodes in the collection are conventionally named:
-	//   `JDAM_1`        — single-fin tail variant → assign to GBU-38 (500 lb)
-	//   `JDAM (2)_0`    — paired-fin variant      → assign to GBU-31 (2000 lb)
-	// The mapping is somewhat arbitrary (both nodes look similar at
-	// flight scale); this assignment keeps the larger weapon paired
-	// with the visually busier mesh.
-	const want = {
-		// Three.js's GLTFLoader sanitizes node names ("JDAM (2)_0" can
-		// become "JDAM_2__0" or similar), so match on the digit-2
-		// suffix instead of the literal parenthesized form.
-		'jdam-31': { match: /^JDAM.*2/i, len: 3.84 },
-		'jdam-38': { match: /^JDAM(?!.*2)/i, len: 2.36 },
-	};
-	for (const [tplId, spec] of Object.entries(want)) {
-		let node = null;
-		gltf.scene.traverse((obj) => {
-			if (node) return;
-			if (obj.name && spec.match.test(obj.name)) node = obj;
-		});
-		if (!node) {
-			console.warn(`[missileModels] ${tplId} node not found in munition-collection.glb`);
-			continue;
+// GBU-38 JDAM — dedicated GLB (500 lb War Thunder asset). Long
+// axis is X in the source; bbox is asymmetric (-1.4 to +0.95 m)
+// with the body+nose extending toward -X and the tail fins at +X.
+// _normalizeMissileModel rotates X→Y, putting the nose at -Y;
+// flip 180° around Z afterwards so the nose ends up at +Y (the
+// engine's forward convention). If the rendered bomb ever flies
+// tail-first, this is the line to revisit.
+_loader.load('/assets/models/gbu-38-jdam.glb', (gltf) => {
+	_templates['jdam-38'] = _normalizeMissileModel(gltf.scene, 2.36);
+	_templates['jdam-38'].rotation.z = Math.PI;
+	_templates['jdam-38'].traverse((child) => {
+		if (child.isMesh) {
+			child.castShadow = true;
+			child.receiveShadow = true;
 		}
-		// Defensive clone + reset transform: the source node carries a
-		// parent-relative offset that we don't want once it's standing
-		// alone.
-		const isolated = node.clone(true);
-		isolated.position.set(0, 0, 0);
-		isolated.rotation.set(0, 0, 0);
-		isolated.scale.set(1, 1, 1);
-		_templates[tplId] = _normalizeMissileModel(isolated, spec.len);
-		_templates[tplId].traverse((child) => {
-			if (child.isMesh) {
-				child.castShadow = true;
-				child.receiveShadow = true;
-			}
-		});
-	}
+	});
 }, undefined, (err) => {
-	console.warn('[missileModels] munition-collection.glb (JDAM) failed to load', err);
+	console.warn('[missileModels] gbu-38-jdam model failed to load', err);
+});
+
+// GBU-31 JDAM (2000 lb) — no dedicated GLB yet, reuse the
+// 500 lb GBU-38 mesh scaled up to the 2000 lb body length
+// (3.84 m). Same orientation handling as the 38.
+_loader.load('/assets/models/gbu-38-jdam.glb', (gltf) => {
+	_templates['jdam-31'] = _normalizeMissileModel(gltf.scene, 3.84);
+	_templates['jdam-31'].rotation.z = Math.PI;
+	_templates['jdam-31'].traverse((child) => {
+		if (child.isMesh) {
+			child.castShadow = true;
+			child.receiveShadow = true;
+		}
+	});
+}, undefined, (err) => {
+	console.warn('[missileModels] gbu-31-jdam (reuse) failed to load', err);
 });
 
 // Return a fresh clone of the aim-9 template, or null if the GLB hasn't
