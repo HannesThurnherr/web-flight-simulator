@@ -468,12 +468,16 @@ export function update(dt, ctx) {
 		const uiContainer = document.getElementById('uiContainer');
 		if (uiContainer) {
 			uiContainer.style.opacity = pilotCamOwns ? '' : '0';
-			// While the strike planner owns the screen, the HUD must
-			// also stop intercepting pointer events — opacity:0 alone
-			// keeps it transparent but still hit-testable, and clicks
-			// + drags would fall on the invisible HUD instead of
-			// reaching the Cesium canvas underneath.
-			uiContainer.style.pointerEvents = planActive ? 'none' : '';
+		}
+		// While the strike planner owns the screen, the THREE container
+		// (z-index 5, above the Cesium canvas at z=1) must stop
+		// intercepting pointer events — Cesium's native pan/zoom
+		// controller listens on its own canvas, and threeContainer
+		// would otherwise absorb every drag and wheel before they
+		// reached it. Restore on close.
+		const threeContainer = document.getElementById('threeContainer');
+		if (threeContainer) {
+			threeContainer.style.pointerEvents = planActive ? 'none' : '';
 		}
 
 		// NPC screen markers (diamonds + labels, the
