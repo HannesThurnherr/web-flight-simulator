@@ -323,6 +323,27 @@ export class PlanePhysics {
 			if (typeof f.roll  === 'number') this.controlAuthorityFloor.roll  = f.roll;
 			if (typeof f.yaw   === 'number') this.controlAuthorityFloor.yaw   = f.yaw;
 		}
+		// Per-axis moment of inertia (kg·m²). Defaults are F-15-class
+		// (180k pitch, 30k roll, 200k yaw). A heavy bomber needs much
+		// higher values — pitch + yaw scale ~with mass × length²;
+		// roll explodes with wingspan² because mass is distributed
+		// out at the wingtips.
+		if (o.inertia) {
+			const I = o.inertia;
+			if (typeof I.pitch === 'number') this.inertia.x = I.pitch;
+			if (typeof I.roll  === 'number') this.inertia.y = I.roll;
+			if (typeof I.yaw   === 'number') this.inertia.z = I.yaw;
+		}
+		// Per-axis aerodynamic damping coefficient (N·m per (rho·V·ω)).
+		// Defaults again F-15-class. Heavy aircraft have larger
+		// stabilizers / control surfaces, so they damp faster relative
+		// to their inertia ratio is what gives them their stable feel.
+		if (o.dampingCoef) {
+			const D = o.dampingCoef;
+			if (typeof D.pitch === 'number') this.dampingCoef.x = D.pitch;
+			if (typeof D.roll  === 'number') this.dampingCoef.y = D.roll;
+			if (typeof D.yaw   === 'number') this.dampingCoef.z = D.yaw;
+		}
 
 		// Thrust vectoring (Phase 7a).
 		if (o.tv) {

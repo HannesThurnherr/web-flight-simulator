@@ -8,12 +8,12 @@
 	"signature": "stealth_bomber",
 	"engineCount": 4,
 	"cockpitDisplayMaxM": 14.0,
-	"nozzle": { "xRatio": 0.10, "yRatio": 0.30, "zRatio": 0.40 },
+	"nozzle": { "xRatio": 0.08, "yRatio": 0.10, "zRatio": 0.40 },
 	"nozzlePositions": [
-		{ "xRatio": -0.115, "yRatio": 0.30, "zRatio": 0.40 },
-		{ "xRatio": -0.075, "yRatio": 0.30, "zRatio": 0.40 },
-		{ "xRatio":  0.075, "yRatio": 0.30, "zRatio": 0.40 },
-		{ "xRatio":  0.115, "yRatio": 0.30, "zRatio": 0.40 }
+		{ "xRatio": -0.090, "yRatio": 0.10, "zRatio": 0.40 },
+		{ "xRatio": -0.055, "yRatio": 0.10, "zRatio": 0.40 },
+		{ "xRatio":  0.055, "yRatio": 0.10, "zRatio": 0.40 },
+		{ "xRatio":  0.090, "yRatio": 0.10, "zRatio": 0.40 }
 	],
 	"hideNodes": [
 		"LGFront_3",
@@ -26,13 +26,14 @@
 		"wingArea": 478,
 		"cdZero": 0.012,
 		"controlCoef": { "pitch": 2.5, "roll": 1.8, "yaw": 0.8 },
+		"inertia":      { "pitch": 1800000, "roll": 2700000, "yaw": 3000000 },
+		"dampingCoef":  { "pitch": 9000,    "roll": 3500,    "yaw": 9000    },
+		"controlAuthorityFloor": { "pitch": 300, "roll": 200, "yaw": 100 },
 		"alphaStallDeg": 14,
 		"clMaxStall": 1.30,
 		"postStallPlateau": 0.7,
 		"stallBlendDeg": 5,
-		"departureSusceptibility": 0.4,
-		"maxThrustN": 308000,
-		"abMultiplier": 1.0
+		"departureSusceptibility": 0.4
 	},
 	"hardpoints": [
 		{ "id": "bay-L-1", "label": "Bay L-1", "type": "internal", "accepts": ["GBU"] },
