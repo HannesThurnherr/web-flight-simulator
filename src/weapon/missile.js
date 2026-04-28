@@ -314,7 +314,7 @@ export class Missile {
 		// `this.target` is intentionally null/non-NPC. Skipping _guide
 		// for them would leave the bomb falling ballistic.
 		const seekerType = this.data && this.data.seekerType;
-		const isCoordHomer = seekerType === 'laser' || seekerType === 'gps';
+		const isCoordHomer = seekerType === 'laser' || seekerType === 'gps' || seekerType === 'cruise';
 		if (!this.lostLock && (isCoordHomer || (this.target && !this.target.destroyed))) {
 			this._guide(dt);
 		}

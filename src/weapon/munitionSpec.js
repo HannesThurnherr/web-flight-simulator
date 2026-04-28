@@ -79,6 +79,18 @@ const SEEKER_FIELDS_BY_TYPE = {
 	'gps': [
 		'seeker.maxG',
 	],
+	'cruise': [
+		'seeker.maxG',
+		// cruise-specific flight fields. Living under flight.* (not
+		// seeker.*) because they're profile-shape parameters, not
+		// terminal seeker behaviour.
+		'flight.cruiseAltM',
+		'flight.cruiseTurnG',
+		'flight.climbAngleDeg',
+		'flight.terminalRangeM',
+		'flight.popUpAltAGL',
+		'flight.diveAngleDeg',
+	],
 	'null': [], // dumb projectile; no seeker fields
 };
 
@@ -131,6 +143,18 @@ export function validateMunitionSpec(munitionId, data) {
 			`[munitionSpec] munition "${munitionId}" (seekerType=${seekerType}) is ` +
 			`missing required numeric fields: ${missing.join(', ')}`,
 		);
+	}
+
+	// Cruise has one string-valued required field (cruiseAltMode)
+	// the numeric validator can't catch. Check separately.
+	if (seekerType === 'cruise') {
+		const m = data.flight && data.flight.cruiseAltMode;
+		if (m !== 'agl' && m !== 'msl') {
+			throw new Error(
+				`[munitionSpec] cruise munition "${munitionId}" must declare ` +
+				`flight.cruiseAltMode as 'agl' or 'msl' (got ${JSON.stringify(m)})`,
+			);
+		}
 	}
 }
 

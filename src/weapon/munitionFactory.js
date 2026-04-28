@@ -34,6 +34,7 @@ import { NullSeeker }         from './seekers/NullSeeker.js';
 import { GPSSeeker }          from './seekers/GPSSeeker.js';
 import { LaserSeeker }        from './seekers/LaserSeeker.js';
 import { AntiRadiationSeeker } from './seekers/AntiRadiationSeeker.js';
+import { CruiseSeeker }       from './seekers/CruiseSeeker.js';
 
 export function createMunition(
 	munitionId,
@@ -59,6 +60,7 @@ export function createMunition(
 		case 'gps':             return new GPSSeeker(...args);
 		case 'laser':           return new LaserSeeker(...args);
 		case 'anti_radiation':  return new AntiRadiationSeeker(...args);
+		case 'cruise':          return new CruiseSeeker(...args);
 		default:
 			console.warn(`[munitionFactory] unknown seeker type "${seeker}" for munition ${munitionId}`);
 			return null;
