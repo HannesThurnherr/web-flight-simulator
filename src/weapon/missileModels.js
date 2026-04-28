@@ -173,8 +173,11 @@ _loader.load('/assets/models/munition-collection.glb', (gltf) => {
 	// flight scale); this assignment keeps the larger weapon paired
 	// with the visually busier mesh.
 	const want = {
-		'jdam-38': { match: /^JDAM_/i, len: 2.36 },
-		'jdam-31': { match: /^JDAM \(2\)/i, len: 3.84 },
+		// Three.js's GLTFLoader sanitizes node names ("JDAM (2)_0" can
+		// become "JDAM_2__0" or similar), so match on the digit-2
+		// suffix instead of the literal parenthesized form.
+		'jdam-31': { match: /^JDAM.*2/i, len: 3.84 },
+		'jdam-38': { match: /^JDAM(?!.*2)/i, len: 2.36 },
 	};
 	for (const [tplId, spec] of Object.entries(want)) {
 		let node = null;

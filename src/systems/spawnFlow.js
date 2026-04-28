@@ -79,11 +79,13 @@ export function quickRespawn(ctx) {
 	// we go with the same fresh-slate semantics the rest of spawn uses.
 	clearEvents();
 
-	// Fresh physics, re-applied per-plane overrides.
-	const physics = new PlanePhysics();
-	physics.reset(state.lon, state.lat, state.alt, state.heading, 0, 0);
+	// Fresh physics constructed from the active plane's complete spec.
 	const plane = getActivePlane();
-	if (plane && plane.physicsOverrides) physics.applyOverrides(plane.physicsOverrides);
+	const physics = new PlanePhysics({
+		...plane.physicsOverrides,
+		__id: plane.id,
+	});
+	physics.reset(state.lon, state.lat, state.alt, state.heading, 0, 0);
 	ctx.setPhysics(physics);
 
 	ctx.controller.reset();
@@ -352,7 +354,13 @@ export function setupConfirmSpawn(ctx) {
 			ctx.setLastIsBoosting(false);
 
 			ctx.controller.reset();
-			const physics = new PlanePhysics();
+			// Rebuild physics from the active plane's spec — strict-spec
+			// PlanePhysics requires a complete physicsOverrides block.
+			const activePlane = getActivePlane();
+			const physics = new PlanePhysics({
+				...activePlane.physicsOverrides,
+				__id: activePlane.id,
+			});
 			physics.reset(state.lon, state.lat, state.alt, state.heading, state.pitch, state.roll);
 			ctx.setPhysics(physics);
 
