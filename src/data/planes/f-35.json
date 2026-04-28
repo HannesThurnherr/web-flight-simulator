@@ -19,6 +19,8 @@
 		"controlAuthorityFloor": { "pitch": 1500, "roll": 1200, "yaw": 600 },
 		"gSoftLimit": 9.0,
 		"gHardLimit": 10.0,
+		"pitchStabilityCoef": 0.3,
+		"yawStabilityCoef":   0.5,
 		"alphaStallDeg": 19,
 		"clMaxStall": 1.65,
 		"postStallPlateau": 1.0,

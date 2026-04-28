@@ -33,6 +33,8 @@
 		"thrustABMax":  308000,
 		"gSoftLimit": 1.8,
 		"gHardLimit": 2.5,
+		"pitchStabilityCoef": 0.04,
+		"yawStabilityCoef":   0.10,
 		"alphaStallDeg": 14,
 		"clMaxStall": 1.30,
 		"postStallPlateau": 0.7,

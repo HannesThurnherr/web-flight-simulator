@@ -51,6 +51,14 @@ const REQUIRED_PLANE_PHYSICS_FIELDS = [
 	'gSoftLimit',
 	'gHardLimit',
 
+	// Static stability: per-axis restoring moment vs (α − α_trim) and β.
+	// Pitch lever-arm scales with q̄·S, so a big wing has more torque
+	// per unit α deviation. Conventional fighters: ~0.3. Flying wings
+	// (B-2): much lower (~0.05 — near-neutral static margin is the
+	// whole point of the elevon planform).
+	'pitchStabilityCoef',
+	'yawStabilityCoef',
+
 	// High-α lift curve shape (post-stall plateau, blend, departure).
 	'alphaStallDeg',
 	'clMaxStall',

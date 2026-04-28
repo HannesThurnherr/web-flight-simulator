@@ -133,8 +133,8 @@ export class PlanePhysics {
 		//
 		// No dihedral (roll-from-sideslip) coupling yet — can be added later
 		// if aerobatic feel needs it.
-		this.pitchStabilityCoef = 0.3;         // effective |C_mα| · c_ref (m)
-		this.yawStabilityCoef   = 0.5;         // effective |C_nβ| · b     (m)
+		this.pitchStabilityCoef = spec.pitchStabilityCoef;
+		this.yawStabilityCoef   = spec.yawStabilityCoef;
 		// Auto-trim α target — recomputed each frame from the current
 		// flight condition (mass / dynamic pressure / lift-curve
 		// slope) so the airframe naturally settles at whatever α
