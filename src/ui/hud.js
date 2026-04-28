@@ -116,8 +116,7 @@ export class HUD {
 		// when a laser-guided weapon is selected. The remaining
 		// flight cues (afterburner, stall, throttle level) live in
 		// the existing right-side stack.
-		// this.createFlightDataPanel();
-		this.createThrustIndicator();
+		this.createFlightInfoStrip();
 		this.createStallWarning();
 		this.createAfterburnerIndicator();
 		this.createMissileDebugPanel();
@@ -860,26 +859,25 @@ export class HUD {
 		this.stallElem = w;
 	}
 
-	// Standalone thrust indicator. The full flight-data panel was
-	// retired (AOA/G/VS/SLIP weren't being read), but throttle %
-	// is something the player actually needs at a glance — without
-	// it there's no quick visual confirmation of W/S throttle input
-	// or afterburner state aside from engine sound and the A/B tag.
-	// Sits just above the A/B indicator at the bottom-left.
-	createThrustIndicator() {
-		if (document.getElementById('hud-thrust-indicator')) return;
+	// Bottom-center flight info strip. AOA, G-load, V/S, SLIP, and
+	// THR (with AB stripes) in one horizontal bar so the player has
+	// the cockpit dials at a glance without giving up a quadrant of
+	// the screen. Pinned bottom-center so it sits between the
+	// minimap (bottom-left, ~250 wide) and the weapons HUD
+	// (bottom-right, ~300 wide); the inline max-width keeps the
+	// strip from growing into either neighbor on narrow viewports.
+	createFlightInfoStrip() {
+		if (document.getElementById('flight-info-strip')) return;
 		const panel = document.createElement('div');
-		panel.id = 'hud-thrust-indicator';
-		// Sits just above the minimap (which occupies bottom 30–280,
-		// left 30–280), aligned with its left edge so the two read as
-		// one column.
+		panel.id = 'flight-info-strip';
 		panel.style.cssText = `
 			position: absolute;
-			bottom: 305px;
-			left: 30px;
-			padding: 6px 10px;
+			bottom: 30px;
+			left: 50%;
+			transform: translateX(-50%);
+			padding: 6px 14px;
 			border: 1px solid rgba(0, 255, 0, 0.4);
-			background: rgba(0, 20, 0, 0.35);
+			background: rgba(0, 20, 0, 0.45);
 			color: #0f0;
 			font-family: 'AceCombat', monospace;
 			font-size: 12px;
@@ -889,32 +887,55 @@ export class HUD {
 			z-index: 10;
 			display: flex;
 			align-items: center;
+			gap: 14px;
+			white-space: nowrap;
+			max-width: calc(100vw - 640px);
+		`;
+		const cell = (label, valueId, valueInit, w = 56) => `
+			<div style="display:flex; align-items:center;">
+				<span style="opacity:0.7; margin-right:6px;">${label}</span>
+				<span id="${valueId}" style="display:inline-block; min-width:${w}px; text-align:right;">${valueInit}</span>
+			</div>
 		`;
 		panel.innerHTML = `
-			<span style="opacity:0.75; margin-right:8px;">THR</span>
-			<div id="hud-thrust-bar" style="
-				position:relative;
-				width:110px; height:10px;
-				border:1px solid rgba(0,255,0,0.5);
-				background:rgba(0,20,0,0.5);
-			">
-				<div id="hud-thrust-fill" style="
-					position:absolute; top:0; left:0; height:100%;
-					background:#0f0; width:0%;
-				"></div>
-				<div id="hud-thrust-ab" style="
-					position:absolute; top:0; left:0; height:100%;
-					width:100%;
-					background:repeating-linear-gradient(
-						45deg, rgba(255,180,0,0.85), rgba(255,180,0,0.85) 4px,
-						rgba(255,120,0,0.6) 4px, rgba(255,120,0,0.6) 8px);
-					opacity:0;
-					transition:opacity 0.12s;
-				"></div>
+			${cell('AOA',  'hud-aoa',  '  0.0&deg;')}
+			<span style="opacity:0.3;">|</span>
+			${cell('G',    'hud-g',    '  1.0', 38)}
+			<span style="opacity:0.3;">|</span>
+			${cell('V/S',  'hud-vs',   '    0', 60)}
+			<span style="opacity:0.3;">|</span>
+			${cell('SLIP', 'hud-beta', '  0.0&deg;')}
+			<span style="opacity:0.3;">|</span>
+			<div style="display:flex; align-items:center;">
+				<span style="opacity:0.7; margin-right:6px;">THR</span>
+				<div id="hud-thrust-bar" style="
+					position:relative;
+					width:90px; height:10px;
+					border:1px solid rgba(0,255,0,0.5);
+					background:rgba(0,20,0,0.5);
+				">
+					<div id="hud-thrust-fill" style="
+						position:absolute; top:0; left:0; height:100%;
+						background:#0f0; width:0%;
+					"></div>
+					<div id="hud-thrust-ab" style="
+						position:absolute; top:0; left:0; height:100%;
+						width:100%;
+						background:repeating-linear-gradient(
+							45deg, rgba(255,180,0,0.85), rgba(255,180,0,0.85) 4px,
+							rgba(255,120,0,0.6) 4px, rgba(255,120,0,0.6) 8px);
+						opacity:0;
+						transition:opacity 0.12s;
+					"></div>
+				</div>
+				<span id="hud-thrust-pct" style="margin-left:8px; min-width:34px; text-align:right;">  0%</span>
 			</div>
-			<span id="hud-thrust-pct" style="margin-left:8px; min-width:34px; text-align:right;">  0%</span>
 		`;
 		this.uiContainer.appendChild(panel);
+		this.aoaElem       = document.getElementById('hud-aoa');
+		this.gElem         = document.getElementById('hud-g');
+		this.vsElem        = document.getElementById('hud-vs');
+		this.betaElem      = document.getElementById('hud-beta');
 		this.thrustFill    = document.getElementById('hud-thrust-fill');
 		this.thrustAB      = document.getElementById('hud-thrust-ab');
 		this.thrustPctElem = document.getElementById('hud-thrust-pct');
