@@ -30,9 +30,9 @@
 		"cruiseAltMode": "msl",
 		"cruiseTurnG": 1.2,
 		"climbAngleDeg": 6,
-		"terminalRangeM": 5000,
+		"terminalRangeM": 9000,
 		"popUpAltAGL": 800,
-		"diveAngleDeg": -50
+		"diveAngleDeg": -35
 	},
 	"warhead": {
 		"killRadiusM": 70,

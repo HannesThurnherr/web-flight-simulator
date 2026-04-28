@@ -30,7 +30,7 @@
 		"cruiseAltMode": "agl",
 		"cruiseTurnG": 1.5,
 		"climbAngleDeg": 8,
-		"terminalRangeM": 4000,
+		"terminalRangeM": 6000,
 		"popUpAltAGL": 600,
 		"diveAngleDeg": -45
 	},

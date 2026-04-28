@@ -41,7 +41,9 @@ import { Missile } from '../missile.js';
 const STATE_BOOST    = 'BOOST';
 const STATE_CLIMB    = 'CLIMB';
 const STATE_CRUISE   = 'CRUISE';
-const STATE_TERMINAL = 'TERMINAL';
+const STATE_POPUP    = 'POPUP';     // ALCM-style climb to popUpAlt before diving
+const STATE_DIVE     = 'DIVE';      // hold fixed dive angle toward target
+const STATE_TERMINAL = 'TERMINAL';  // close-in PN to coord
 
 export class CruiseSeeker extends Missile {
 	constructor(scene, viewer, startPos, heading, pitch, speed,
@@ -108,9 +110,25 @@ export class CruiseSeeker extends Missile {
 				: f.cruiseAltM;
 			if (this.alt >= cruiseTargetAlt - 50) this._phase = STATE_CRUISE;
 		}
-		// CRUISE → TERMINAL when within terminal range. One-way; no
-		// reverting back to cruise once the dive starts.
+		// CRUISE → POPUP/DIVE when within terminal range. AGL-mode
+		// missiles (ALCM) need to pop up first because they're
+		// terrain-following at very low altitude and don't have the
+		// altitude to dive at the configured angle. MSL-mode missiles
+		// (Storm Shadow) cruise at altitude already and skip straight
+		// to DIVE. One-way transition.
 		if (this._phase === STATE_CRUISE && horizRange <= f.terminalRangeM) {
+			this._phase = (f.cruiseAltMode === 'agl') ? STATE_POPUP : STATE_DIVE;
+		}
+		// POPUP → DIVE once the missile reaches popUpAltAGL.
+		if (this._phase === STATE_POPUP) {
+			const groundHere = this._terrainAtCurrent();
+			if (this.alt - groundHere >= f.popUpAltAGL - 50) this._phase = STATE_DIVE;
+		}
+		// DIVE → TERMINAL within close-in PN range so the seeker
+		// makes its final corrections directly at the spot. Slant
+		// range is the right gate here: at 800 m the missile is
+		// committed and the dive geometry has done its job.
+		if (this._phase === STATE_DIVE && slantRange < 800) {
 			this._phase = STATE_TERMINAL;
 		}
 
@@ -148,10 +166,34 @@ export class CruiseSeeker extends Missile {
 				turnGCap       = f.cruiseTurnG;
 				break;
 			}
+			case STATE_POPUP: {
+				// Climb at the same angle CLIMB used until we reach
+				// popUpAltAGL — gives the missile altitude to dive
+				// from. Heading still tracks target so the climb is
+				// committed.
+				desiredHeading = desiredHeadingToTgt;
+				desiredPitch   = f.climbAngleDeg;
+				turnGCap       = f.cruiseTurnG;
+				break;
+			}
+			case STATE_DIVE: {
+				// Hold the configured dive angle (negative pitch)
+				// pointed at target heading. The geometry of
+				// (cruise/popup alt) ÷ tan(diveAngle) determines how
+				// much horizontal distance the missile covers
+				// before impact. terminalRangeM in the JSON should
+				// match that geometry — too short and the missile
+				// runs out of horizontal before reaching the ground;
+				// too long and it impacts past the target.
+				desiredHeading = desiredHeadingToTgt;
+				desiredPitch   = f.diveAngleDeg;
+				turnGCap       = this.data.seeker.maxG;
+				break;
+			}
 			case STATE_TERMINAL: {
-				// Direct PN-to-coord — same shape JDAM uses, but with
-				// the seeker's full G ceiling so terminal corrections
-				// can be aggressive.
+				// Close-in PN-to-coord — direct line at the spot for
+				// the last few hundred metres. This is what fixes any
+				// residual offset from the fixed dive angle.
 				desiredHeading = desiredHeadingToTgt;
 				desiredPitch   = Math.atan2(dU, Math.max(1, horizRange)) * 180 / Math.PI;
 				turnGCap       = this.data.seeker.maxG;
