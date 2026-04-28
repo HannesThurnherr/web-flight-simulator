@@ -72,6 +72,20 @@ export class WeaponSystem {
 			// as the GBU-38 with a substantially larger warhead.
 			{ id: 'gbu',     name: 'GBU-31 JDAM',       ammo: 0,  maxAmmo: 0,  fireRate: 0,
 			  lastFire: 0, type: 'GBU-31',   lockRange: 0,      lockCone: 0,     lockTime: 0 },
+			// AGM-86C ALCM — air-launched cruise missile, terrain-
+			// following at ~120 m AGL, GPS terminal. id='agm' shares
+			// the HARM/anti-radiation slot semantics (no AESA lock
+			// required); the fire branch checks munition seekerType
+			// to dispatch the right target shape (cruise wants the
+			// frozen GPS coord just like JDAM, not the radiating-
+			// emitter target HARM uses).
+			{ id: 'agm',     name: 'AGM-86C CALCM',     ammo: 0,  maxAmmo: 0,  fireRate: 0,
+			  lastFire: 0, type: 'AGM-86',  lockRange: 0,      lockCone: 0,     lockTime: 0 },
+			// Storm Shadow / SCALP-EG (JASSM substitute). Same fire
+			// path as the ALCM; the cruise profile differs entirely
+			// per the munition JSON (MSL vs AGL altitude mode).
+			{ id: 'agm',     name: 'STORM SHADOW',      ammo: 0,  maxAmmo: 0,  fireRate: 0,
+			  lastFire: 0, type: 'STORM-SHADOW', lockRange: 0, lockCone: 0,    lockTime: 0 },
 		];
 
 		this.flareWeapon = { id: 'flare', name: 'MJU-7A', ammo: 30, maxAmmo: 30, fireRate: 0.2, lastFire: 0 };
@@ -335,12 +349,36 @@ export class WeaponSystem {
 			// thing radiating).
 			let target;
 			if (weapon.id === 'agm') {
-				// Use the shared isRadiating() helper so designation
-				// validity matches exactly what the seeker, the RWR
-				// scope, and the commander debug overlay see.
-				target = isRadiating(this.designatedEmitter)
-					? this.designatedEmitter
-					: null;
+				// AGM slot covers two seeker families:
+				//   anti_radiation (HARM) → live emitter target.
+				//   cruise (ALCM, Storm Shadow) → frozen GPS coord
+				//     snapshotted from the strike-planner queue
+				//     head, same shape JDAM uses. Refuse if no
+				//     designation (mode === SLEW).
+				const munId = munitionIdForSimType(weapon.type);
+				const data  = munId ? MUNITIONS[munId] : null;
+				const seekerType = data && data.seekerType;
+				if (seekerType === 'cruise') {
+					if (!playerDesignation || playerDesignation.mode === 'SLEW') {
+						weapon.ammo = Math.min(weapon.maxAmmo, weapon.ammo + 1);
+						try { soundManager.play('weapon-warning'); } catch (e) { }
+						return;
+					}
+					target = {
+						lon: playerDesignation.lon,
+						lat: playerDesignation.lat,
+						alt: playerDesignation.alt,
+					};
+					consumeDesignationHead();
+				} else {
+					// HARM path: designated emitter or null (seeker
+					// auto-picks strongest in cone). Validity check
+					// shared with RWR scope + commander debug overlay
+					// via isRadiating().
+					target = isRadiating(this.designatedEmitter)
+						? this.designatedEmitter
+						: null;
+				}
 			} else if (weapon.id === 'gbu') {
 				// GBU slot covers both laser-guided (GBU-12) and
 				// GPS-guided (GBU-31, GBU-38) bombs. Dispatch on the

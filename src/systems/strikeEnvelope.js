@@ -24,7 +24,7 @@ const G = 9.81;
 export function isStrikeWeapon(munitionData) {
 	if (!munitionData) return false;
 	const s = munitionData.seekerType;
-	return s === 'laser' || s === 'gps';
+	return s === 'laser' || s === 'gps' || s === 'cruise';
 }
 
 // Horizontal great-circle distance only — comparing `currentRange` to
@@ -66,27 +66,39 @@ export function releaseEnvelope(playerState, designation, munitionData) {
 	if (designation.lat === 0 && designation.lon === 0) return null;
 
 	const speed = Math.max(0, playerState.speed || 0);
-	const altAGL = Math.max(50, (playerState.alt || 0) - (designation.alt || 0));
-	if ((playerState.alt || 0) - (designation.alt || 0) < 0) {
-		// Designation is above the player — no unpowered bomb reaches it.
-		return { rMin: 0, rMax: 0, currentRange: _horizRangeMeters(playerState, designation), status: 'OUT' };
+	const flight = (munitionData && munitionData.flight) || {};
+	const currentRange = _horizRangeMeters(playerState, designation);
+
+	let rMax;
+	let rMin;
+	if (munitionData.seekerType === 'cruise') {
+		// Cruise missiles fly under their own power for hundreds of
+		// km — gravity / glide doesn't enter the envelope. Bound on
+		// peakSpeed × maxLifeS (range the motor + fuel reach), with
+		// a small efficiency factor for the climb-cruise-dive losses.
+		// Min range is the planner-doctrine "stand-off" floor — fire
+		// closer than that and you're inside the missile's turn
+		// circle, defeats the point of a cruise weapon.
+		const cruiseEfficiency = 0.85;
+		rMax = (flight.peakSpeed ?? 250) * (flight.maxLifeS ?? 600) * cruiseEfficiency;
+		rMin = 5000; // 5 km hard floor for cruise stand-off
+	} else {
+		// Ballistic / glide bombs (LGB / JDAM): toss-bombing time
+		// model + glide factor, capped by the bomb's own life.
+		const altAGL = Math.max(50, (playerState.alt || 0) - (designation.alt || 0));
+		if ((playerState.alt || 0) - (designation.alt || 0) < 0) {
+			return { rMin: 0, rMax: 0, currentRange, status: 'OUT' };
+		}
+		const pitchRad = (playerState.pitch || 0) * Math.PI / 180;
+		const vH = speed * Math.cos(pitchRad);
+		const vV = speed * Math.sin(pitchRad);
+		const t  = (vV + Math.sqrt(vV * vV + 2 * G * altAGL)) / G;
+		const glide = flight.glideFactor ?? 1.0;
+		const lifeBound = (flight.peakSpeed ?? 350) * (flight.maxLifeS ?? 60);
+		rMax = Math.max(0, Math.min(vH * t * glide, lifeBound));
+		rMin = Math.max(300, 1.5 * speed);
 	}
 
-	// Pitch is stored on playerState in degrees per the existing
-	// convention used elsewhere in this codebase (see physics.js +
-	// LaserSeeker). Convert here.
-	const pitchRad = (playerState.pitch || 0) * Math.PI / 180;
-	const vH = speed * Math.cos(pitchRad);
-	const vV = speed * Math.sin(pitchRad);
-	const t  = (vV + Math.sqrt(vV * vV + 2 * G * altAGL)) / G;
-
-	const flight = (munitionData && munitionData.flight) || {};
-	const glide = flight.glideFactor ?? 1.0;
-	const lifeBound = (flight.peakSpeed ?? 350) * (flight.maxLifeS ?? 60);
-	const rMax = Math.max(0, Math.min(vH * t * glide, lifeBound));
-	const rMin = Math.max(300, 1.5 * speed);
-
-	const currentRange = _horizRangeMeters(playerState, designation);
 	let status;
 	if (currentRange > rMax)              status = 'OUT';
 	else if (currentRange < rMin)         status = 'OUT';
