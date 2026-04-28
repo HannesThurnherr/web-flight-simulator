@@ -34,6 +34,7 @@ const _templates = {
 	'gbu-12': null,
 	'jdam-31': null, 'jdam-38': null,
 	'agm-86': null, 'storm-shadow': null,
+	'gbu-39': null,
 };
 
 // Some Sketchfab GLBs ship with junk meshes far from the body
@@ -280,6 +281,22 @@ _loader.load('/assets/models/agm-86.glb', (gltf) => {
 	});
 }, undefined, (err) => {
 	console.warn('[missileModels] agm-86 model failed to load', err);
+});
+
+// GBU-39B SDB — Small Diameter Bomb, ~1.83 m long, 130 kg, deployable
+// wings give it ~10:1 glide ratio (real range ~110 km from a high-
+// altitude toss release). Source GLB has the same 21-mesh-with-junk
+// pattern the ALCM had; the outlier-rejecting normalizer handles it.
+_loader.load('/assets/models/gbu-39-sdb.glb', (gltf) => {
+	_templates['gbu-39'] = _normalizeMissileModel(gltf.scene, 1.83);
+	_templates['gbu-39'].traverse((child) => {
+		if (child.isMesh) {
+			child.castShadow = true;
+			child.receiveShadow = true;
+		}
+	});
+}, undefined, (err) => {
+	console.warn('[missileModels] gbu-39-sdb model failed to load', err);
 });
 
 // Storm Shadow / SCALP-EG — JASSM-class stealth cruise missile,

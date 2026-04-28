@@ -1,0 +1,39 @@
+{
+	"id": "gbu-39-sdb",
+	"name": "GBU-39 SDB",
+	"shortName": "SDB",
+	"category": "GBU",
+	"tags": ["gbu", "gps-guided", "250lb", "glide", "stand-off"],
+	"massKg": 130,
+	"rcsContributionM2": 0.01,
+	"description": "GBU-39 Small Diameter Bomb. 250 lb GPS-guided glide weapon — deployable wings give it ~10:1 glide ratio so a high-altitude toss release reaches well over 100 km. Tiny warhead (focused-blast 25 lb, ~15 m kill radius) — surgical strike on hardened targets, not area suppression. Quad-pack carriage means a strike fighter can hold many of them on a single hardpoint (we model them per-pylon for now).",
+	"simType": "GBU-39",
+	"signature": "missile_radar",
+	"seekerType": "gps",
+	"modelTemplate": "gbu-39",
+	"realLengthM": 1.83,
+	"flight": {
+		"launchSpeedOffset": 0,
+		"boostDurationS": 0,
+		"boostAccel": 0,
+		"peakSpeed": 320,
+		"minSpeed": 80,
+		"maxLifeS": 240,
+		"maxTurnDegPerSec": 8,
+		"pnGain": 3.0,
+		"glideFactor": 5.0,
+		"dragRef": 0.6,
+		"dragRefSpeed": 250,
+		"dragRefAltitude": 5000,
+		"vManeuverRef": 220,
+		"gAvailFloor": 0.10
+	},
+	"warhead": {
+		"killRadiusM": 15,
+		"fuzeSenseRadiusM": 25,
+		"missAbortRadiusMul": 2
+	},
+	"seeker": {
+		"maxG": 6
+	}
+}

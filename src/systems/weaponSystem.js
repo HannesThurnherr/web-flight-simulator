@@ -72,6 +72,12 @@ export class WeaponSystem {
 			// as the GBU-38 with a substantially larger warhead.
 			{ id: 'gbu',     name: 'GBU-31 JDAM',       ammo: 0,  maxAmmo: 0,  fireRate: 0,
 			  lastFire: 0, type: 'GBU-31',   lockRange: 0,      lockCone: 0,     lockTime: 0 },
+			// GBU-39 SDB — 250 lb GPS glide bomb. Same fire path as
+			// the JDAM family (id='gbu', seekerType='gps'); the high
+			// glideFactor in its JSON gives it ~110 km stand-off
+			// range from a high-altitude toss release.
+			{ id: 'gbu',     name: 'GBU-39 SDB',        ammo: 0,  maxAmmo: 0,  fireRate: 0,
+			  lastFire: 0, type: 'GBU-39',   lockRange: 0,      lockCone: 0,     lockTime: 0 },
 			// AGM-86C ALCM — air-launched cruise missile, terrain-
 			// following at ~120 m AGL, GPS terminal. id='agm' shares
 			// the HARM/anti-radiation slot semantics (no AESA lock
