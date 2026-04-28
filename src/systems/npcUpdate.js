@@ -41,7 +41,7 @@ export function npcSystemUpdate(sys, dt, playerState, simTime = 0) {
 		const retry = sys._pendingPlatformSpawns;
 		sys._pendingPlatformSpawns = [];
 		for (const p of retry) {
-			sys.spawnPlatform(p.platformId, p.lon, p.lat, p.alt, p.team, p.pilotOverrides);
+			sys.spawnPlatform(p.platformId, p.lon, p.lat, p.alt, p.team, p.pilotOverrides, p.onSpawn);
 		}
 	}
 

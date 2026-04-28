@@ -358,7 +358,7 @@ export class NPCSystem {
 	// strategy, and physics overrides. Caller supplies position / team
 	// / any pilot parameter overrides. Used by scenarios for AWACS,
 	// tankers, future ground SAMs, etc.
-	spawnPlatform(platformId, lon, lat, alt, team = 'friendly', pilotOverrides = {}) {
+	spawnPlatform(platformId, lon, lat, alt, team = 'friendly', pilotOverrides = {}, onSpawn = null) {
 		if (!this.loaded) return null;
 		const platform = getPlatform(platformId);
 		if (!platform) {
@@ -394,7 +394,7 @@ export class NPCSystem {
 			console.warn('[spawnPlatform] model not loaded yet; queuing:',
 				platformId, path);
 			if (!this._pendingPlatformSpawns) this._pendingPlatformSpawns = [];
-			this._pendingPlatformSpawns.push({ platformId, lon, lat, alt, team, pilotOverrides });
+			this._pendingPlatformSpawns.push({ platformId, lon, lat, alt, team, pilotOverrides, onSpawn });
 			return null;
 		}
 		const template   = slot.template;
@@ -577,6 +577,9 @@ export class NPCSystem {
 		console.log('[spawnPlatform]', platformId, 'spawned at',
 			`lon=${lon.toFixed(4)} lat=${lat.toFixed(4)} alt=${alt.toFixed(0)}m`,
 			`kind=${platform.kind} model=${path}`);
+		if (typeof onSpawn === 'function') {
+			try { onSpawn(npc); } catch (e) { console.warn('[spawnPlatform] onSpawn cb threw', e); }
+		}
 		return npc;
 	}
 

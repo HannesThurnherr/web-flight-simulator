@@ -136,25 +136,27 @@ export function buildScenarioFromJson(data) {
 				} else if (s.type === 'platform') {
 					const pos = resolveOrigin(s.origin, playerState);
 					if (!pos) continue;
-					const npc = npcSystem.spawnPlatform(
+					// Pre-mission intel: a hostile platform marked with
+					// intel: { level: 'known' | 'suspected', uncertaintyM }
+					// gets published to the friendly team datalink as
+					// soon as the spawn lands (which may be deferred a
+					// few frames while the GLB loads). Use the spawn
+					// callback so the publish happens in either path:
+					// immediate spawn OR queued retry.
+					const onSpawn = s.intel
+						? (npc) => {
+							const friendly = getTeamDatalink('friendly');
+							const now = (typeof performance !== 'undefined')
+								? performance.now() * 0.001 : 0;
+							friendly.publishBriefed(npc, s.intel, now);
+						}
+						: null;
+					npcSystem.spawnPlatform(
 						s.platformId, pos.lon, pos.lat, pos.alt,
 						s.team || 'friendly',
 						s.pilotOverrides || {},
+						onSpawn,
 					);
-					// Pre-mission intel: a hostile platform marked with
-					// intel: { level: 'known' | 'suspected', uncertaintyM }
-					// gets published to the friendly team datalink at
-					// scenario start, so the strike planner shows it as
-					// a briefed contact (faded marker / fuzzy disc) from
-					// the get-go even though no friendly sensor has
-					// painted it yet. Mirrors real strike doctrine
-					// (planned targets vs reactive engagement).
-					if (npc && s.intel) {
-						const friendly = getTeamDatalink('friendly');
-						const now = (typeof performance !== 'undefined')
-							? performance.now() * 0.001 : 0;
-						friendly.publishBriefed(npc, s.intel, now);
-					}
 				}
 			}
 		},
