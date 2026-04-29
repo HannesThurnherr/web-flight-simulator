@@ -699,7 +699,7 @@ ATA platforms get a richer auto-assignment heuristic (threat
 clustering, weapon-target matching) and skip the per-target
 manual designation step.
 
-### 5i. AAM ground-targeting gating
+### 5i. AAM ground-targeting gating  ✅ implemented
 
 Paired with strike munitions landing. AIM-9M / AIM-9X / AIM-120 /
 METEOR seekers all gain a `target.signature.unitClass` whitelist
@@ -707,7 +707,7 @@ METEOR seekers all gain a `target.signature.unitClass` whitelist
 contacts. Five-line change in `aim120._scanForLock`,
 `missile._irScore`, and `weaponSystem.findTargetsInEnvelope`.
 
-### 5j. ISR — finding ground units beyond visual
+### 5j. ISR — finding ground units beyond visual  ✅ implemented
 
 Today's discovery channels for ground units:
 - **Radar:** filtered out by the pulse-Doppler notch (ground
@@ -763,7 +763,7 @@ new munition JSONs in `src/data/munitions/`.
 ### Sequencing  (revised 2026-04-28)
 
 Original:  a → b → c → d → e → f → g → h → i → j
-Status:    a ✅  b ✅  c ✅  d ✅  e ✅  f ❌  g ⚠ partial  h ⚠ deferred  i ⏳  j ⏳
+Status:    a ✅  b ✅  c ✅  d ✅  e ✅  f ❌  g ⚠ partial  h ⚠ deferred  i ✅  j ✅
 
 Revised priority order for what's still pending, ranked by
 gameplay impact rather than implementation order:
@@ -772,10 +772,51 @@ gameplay impact rather than implementation order:
 |---|---|---|
 | 5j | ISR (drone + satellite) | **Top priority.** Cruise missiles are practically useless without long-range ground discovery — the player can't see the SAM site beyond visual / IRST. ISR turns 5e from a tech demo into a real capability. Also unlocks the strike planner's "see threats over the horizon" promise. |
 | 5i | AAM ground-targeting gating | Quick cleanup. Five-line change so AIM-9X stops locking onto tanks. Bundle with 5j or land standalone. |
-| 5g.2/3/4 | Strike planner queue UX | Drag-to-reorder, lasso/rectangle multi-select, in-flight queued-targets HUD strip, stale-contact tooltips. Pure polish on the existing planner — every shot in 5d/5e/SDB benefits. |
+| 5g.2/3/4 | Strike planner queue UX | ✅ drag-reorder, shift+drag area select, in-flight queued-targets HUD strip, formation ammo aggregation in HUD/planner, RTB/CAP toggle. |
 | **+** | Datalink-shared designations | Small extension to teamDatalink: publish player designations + read others'. Enables future buddy-lasing + wingman handoff. ~½ day after 5j lands (both touch teamDatalink). |
 | 5h | Platform-class strike flags | Deferred — only B-2 differs from the fighter trio today; revisit when adding B-1 / B-52 / Reaper. |
 | 5f | Hardpoint release wiring | **Killed.** Purely cosmetic, infeasible without manual per-airframe model surgery. |
+
+---
+
+## Phase 5.5 — Player-led formation (wingmen + formation-pool munitions)  ✅ implemented
+
+Goal: a single F-15EX can't carry enough strike munitions to crack a layered
+IADS by itself — historically a SEAD strike package is a flight of 4+. Phase
+5.5 lets the player pilot the lead and have 1–3 wingmen come along carrying
+ammo, controlled centrally so the player still calls every shot.
+
+### 5.5.1 — Spawn-menu controls
+- Wingmen count (0 / 1 / 2 / 3) — radio buttons on the spawn-pick overlay.
+- Default break-formation behavior (RTB / CAP) when out of strike ammo.
+- Persisted in `gameSettings.formation` so the choice survives reloads.
+
+### 5.5.2 — Formation pilot
+- New `wingman-formation` pilot. Stationkeeps in a slot offset from the
+  leader, rotated by leader heading. Slots: 120 m right + 60 m back, 120 m
+  left + 60 m back, 200 m straight back (echelon trail).
+- Velocity-matching throttle + heading blend between leader heading and
+  pursuit toward slot.
+- Same terrain-avoidance behaviors (Forward + AGL) prioritized above
+  Formation so a wingman pulls up first, reforms second.
+
+### 5.5.3 — Flight-pool munitions
+- Player's `weaponSystem.fire()` aggregates ammo across the formation: trigger
+  pull picks the first wingman in formation mode with ammo of the selected
+  type and *that* aircraft physically launches. Player's own ammo last.
+- HUD ammo + strike-planner toolbar both show `your + flight` aggregate.
+
+### 5.5.4 — Mode switch on ammo exhaustion
+- Wingman auto-switches into `patrol-rtb` (orbit spawn point) or
+  `patrol-cap` (orbit player) when strike-class ammo hits zero.
+- Toggle live with `R` in the strike planner.
+
+### Files
+`src/systems/formation.js`, `src/systems/ai/behaviors.js`,
+`src/systems/ai/index.js`, `src/systems/spawnFlow.js`,
+`src/systems/weaponSystem.js`, `src/systems/strikePlanner.js`,
+`src/ui/hud.js`, `src/ui/settings.js`,
+`index.html`, `src/style.css`.
 
 ---
 
@@ -1195,6 +1236,198 @@ out from `scenarioRunner.js` once the field surface grows.
   scenarios you actually want to run need.
 - The trigger graph UI is the highest-effort sub-phase. Start with a
   flat trigger list editor (form fields, no graph) — graph is polish.
+
+---
+
+## Phase NFAC — Near-future air combat (~2050)
+
+A separate **forward-looking** phase: every existing system in this
+roadmap targets the current ~2025 fleet (4th + 5th gen, JDAM-era PGMs,
+basic SEAD, RWS/TWS/STT). NFAC is what the picture looks like 25
+years from now if the reasonable extrapolations of current programs
+land — and if we want the sim to remain interesting against
+contemporaries.
+
+### Premise
+
+A 2050 near-peer engagement is dominated by:
+- **Survivability collapse** of legacy 4th-gen — modern long-range
+  IADS + AEW finds them at ranges that defeat AAM kinematics.
+- **Penetrators that go fast** — hypersonic terminal phase makes
+  intercept a millisecond-budget problem, not a Pk problem.
+- **Soft kills before hard kills** — directed-energy point defense
+  routinely defeats subsonic cruise missiles, drones, and even
+  warhead optics; lasers and HPMs are the new chaff.
+- **Manned-unmanned teaming as the norm** — every fighter sortie is
+  a fighter + 2-4 loyal-wingman drones; the human is a flight lead,
+  not a weapon-stations operator.
+- **Long-range hypersonic standoff** — a fighter doesn't get within
+  AMRAAM range of a stealth target; the engagement happens at
+  300-1000 km via boost-glide weapons cued by space-based ISR.
+
+### NFAC.1 — 6th-gen airframes (NGAD / GCAP / FCAS / J-XX)
+- New plane spec class: bigger, longer-ranged, broadband-stealth,
+  internal weapon bays sized for hypersonic AAMs.
+- Adaptive-cycle engine modeled as a third throttle regime: cruise
+  efficient at low power (better fuel burn → bigger combat radius
+  knob), supersonic efficient at military power (true supercruise),
+  full afterburner same as 5th-gen.
+- IRST as the primary BVR sensor — broadband stealth defeats radar
+  at any reasonable range, but plume IR is a much harder problem to
+  hide. Sensor swap matters: NFAC fights are won by who detects the
+  plume first, not who's running their radar.
+- Optionally manned. Player can pilot directly OR fly the loyal
+  wingmen below from a commander seat.
+- Candidate platforms: NGAD (USAF), GCAP (UK/Italy/Japan),
+  FCAS (FR/DE/ES), J-XX / J-36 (PRC).
+
+### NFAC.2 — Loyal wingman drones (CCAs)
+- New unit class: stealth UCAVs intended to fly with a manned lead.
+  Lower survivability than a fighter but expendable — designed to
+  be lost. Cheap enough that doctrine treats them as ammunition.
+- Three doctrinal roles per drone, configurable at spawn:
+    sensor — drives forward of lead, lights up emitters, flies into
+      threat range first to cue the lead's missiles.
+    shooter — carries 4× hypersonic AAMs / 2× standoff strike,
+      rear-of-lead, fires on lead's command.
+    decoy — emits aggressive radar / IR signature, acts as missile
+      magnet so the manned lead survives the merge.
+- Datalink-to-lead: shoot-don't-shoot, target prioritization,
+  engagement deconfliction. Reuses the existing teamDatalink fusion
+  and the formation pilot architecture from Phase 5.5 — but with
+  drone-specific behaviors (run forward of lead, accept missile fire
+  from lead's seeker, lose-and-keep-going).
+- Candidate platforms: MQ-28 Ghost Bat, YFQ-42 / YFQ-44 (CCA
+  competitors), Mosquito / Drukon / European Wingman.
+
+### NFAC.3 — Hypersonic weapons
+- New seeker class `hypersonic-glide`: boost phase to ~Mach 8-10,
+  then glide at Mach 5-7 via a maneuvering glide vehicle.
+- Engagement-time math is the new constraint: at Mach 6 the
+  weapon covers 100 km in 50 seconds. Defender response window is
+  measured against this, not against AMRAAM Mach 4.
+- Two flavors:
+    HACM-class — air-launched, ~1500 km range, anti-ship / fixed
+      ground target. Fires from 6th-gen internal bay.
+    AIM-260-NGAS-class — long-range hypersonic AAM, ~300 km no-
+      escape zone vs supercruising stealth target. Replaces the
+      current AIM-120D as the BVR option for 6th-gen loadouts.
+- Re-uses the existing CruiseSeeker terminal-phase forward-sim
+  infrastructure with a hypersonic flight envelope (much higher
+  peakSpeed, much higher maxG, no terrain-following — boost-glide
+  comes in from above).
+
+### NFAC.4 — Directed-energy point defense
+- New subsystem `LaserPDSubsystem` on ground platforms + NFAC
+  fighters: a soft-kill seeker that targets inbound subsonic
+  munitions (cruise missiles, drones, decoy-class drones, glide
+  bombs). Mechanic:
+    * Acquisition window: needs LOS + weather + ~2-3 s dwell time
+      on target to burn through.
+    * Per-target damage accumulator. When it hits a per-munition
+      threshold, the seeker is blinded (lostLock) or the airframe
+      structurally fails.
+    * Power budget: a laser can engage one inbound at a time and
+      has a ~5-10 s recharge between shots. Saturate by sending
+      more inbound than the laser can sequence through in flight
+      time.
+- Hypersonic weapons are EXEMPT — too fast for current-gen lasers
+  to pre-compensate range/lead-angle through the boundary layer.
+  This makes "send in a wave of cheap subsonic decoys to overload
+  the laser, then a hypersonic finisher behind them" the textbook
+  doctrine.
+- High-power microwave (HPM) variant: area-effect against drone
+  swarms. Disables electronics on every drone in a cone. Reuses
+  the same subsystem with an area-AOE flag.
+- Candidate platforms: existing Iron Beam, US AHEL / IFPC-HEL,
+  shipboard HELIOS. Air-launched HPM (Leonidas / THOR-class) on
+  CCAs.
+
+### NFAC.5 — Space-based ISR (real-time)
+- Extension of Phase 5j satellite ISR: instead of periodic snapshot
+  passes, model a constellation that produces continuous tracks
+  on radiating ground emitters and (with longer dwell) optical
+  tracks on stationary surface assets.
+- Datalink fusion: ground units appear as 'space-track' kind in
+  intelContacts, refreshed every few seconds rather than every few
+  minutes. Effectively turns the strike-planner picture from
+  "old briefing + occasional refresh" into "live god-eye view of
+  every emitter on the map."
+- Counter: player / hostile space-based ISR can be denied by
+  blinding satellites — a dedicated ASAT engagement (out of scope
+  for the airframe sim) or simply scenario-author flag.
+- The point is that NFAC missions feel less like fog-of-war and
+  more like asymmetric-information warfare — the side with better
+  ISR sees everything the other side has.
+
+### NFAC.6 — Adaptive radar modes + LPI
+- New radar modes layered on top of Phase 6 RWS/TWS/STT:
+    LPI cruise — low-probability-of-intercept waveform; reduces
+      RWR strength by 20+ dB. Still emits, but the target's
+      passive RWR likely won't detect it.
+    Cognitive jamming — detects jammer waveform and adapts. Phase
+      6 jamming reduces detect range by 40 % in cone; NFAC radars
+      cut that to 10 % via on-the-fly waveform selection.
+    Bistatic / multistatic — when teamed, one radar emits and
+      others receive. Stealth aircraft are still big from below;
+      the receiving fighter sees a target the emitter pretended
+      not to.
+- Reuses the existing sensorSystem.detectRadar config object —
+  add `lpi: true` and `cognitiveJam: true` flags, modify the RWR
+  publish path and the jamming-attenuation path.
+
+### NFAC.7 — AI pilots that aren't dumb
+- The current behavior-stack pilot is fine for 4th/5th-gen — it
+  flies envelopes correctly, doesn't fall out of the sky, and
+  engages on sensor cues. NFAC raises the bar:
+    Lookahead RL-style decision tree, 10-30 s time horizon,
+      considers fuel, missile inventory, geometry to all known
+      threats simultaneously.
+    Dynamic role swapping in a flight ("you become the shooter,
+      I'll become the decoy") based on relative geometry.
+    Credible deception — pretend to commit, abort, retry. Make the
+      target waste a missile.
+- Probably ships as a separate `cognitivePilot` in ai/index.js,
+  not a replacement of the existing fighter pilot. NFAC scenarios
+  pick it via platform JSON; legacy stays on the simpler stack.
+
+### NFAC.8 — Scenario authoring
+- New scenario kinds enabled by NFAC tech:
+    "Day 1 strike" — open the war by taking out the enemy IADS
+      command nodes with hypersonics from outside the SAM envelope.
+    "CCA-led probe" — player flies a single 6th-gen + 4 drones,
+      probes a defended airspace, decides which drones to send
+      forward and which to keep in reserve.
+    "Counter-saturation" — defender role; the player sits in a
+      laser-PD-equipped position and has to manage acquisition
+      priorities as a wave of inbound saturates the system.
+- Slots cleanly under the Phase 10 scenario editor — adds NFAC
+  unit kinds + drone-role assignments + laser-PD ammo to the
+  per-unit panels.
+
+### Why this is its own phase
+
+Everything above could in principle be incremental tuning on
+existing systems. The reason for a separate phase is that the
+*tactical picture* is qualitatively different — once hypersonic
++ laser-PD + CCAs land, the BVR fight isn't BVR anymore. Treating
+it as a distinct ruleset (NFAC scenarios opt in) keeps the
+existing 2025 scenarios playable without forcing every future
+scenario into the laser-defended hypersonic world.
+
+### Sequencing
+
+NFAC depends on:
+- Phase 6 (EW / IFF / radar modes) — NFAC.6 layers on top.
+- Phase 10 (scenario editor) — NFAC.8 needs editor surface for the
+  new unit kinds.
+- Phase 5.5 (formation) — NFAC.2 reuses the wingman pilot
+  scaffolding for CCA loyal-wingman drones.
+
+Land in order: NFAC.1 (airframes, alone) → NFAC.3 (hypersonics,
+alone) → NFAC.2 (CCAs, depends on 5.5) → NFAC.4 (laser PD, depends
+on 5.5 + scenario authoring) → NFAC.5 + NFAC.6 (sensor side, depend
+on 6) → NFAC.7 (cognitive pilot) → NFAC.8 (scenario hooks).
 
 ---
 
