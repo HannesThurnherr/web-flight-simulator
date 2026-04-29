@@ -14,10 +14,10 @@
 	"realLengthM": 5.10,
 	"flight": {
 		"launchSpeedOffset": 20,
-		"boostDurationS": 2,
-		"boostAccel": 80,
+		"boostDurationS": 1500,
+		"boostAccel": 5,
 		"peakSpeed": 260,
-		"minSpeed": 160,
+		"minSpeed": 220,
 		"maxLifeS": 1500,
 		"maxTurnDegPerSec": 6,
 		"pnGain": 3.0,
@@ -31,8 +31,8 @@
 		"cruiseTurnG": 1.2,
 		"climbAngleDeg": 8,
 		"terminalRangeM": 500,
-		"popUpAltAGL": 0,
-		"diveAngleDeg": -50
+		"popUpAltAGL": 900,
+		"diveAngleDeg": -55
 	},
 	"warhead": {
 		"killRadiusM": 70,
@@ -40,6 +40,6 @@
 		"missAbortRadiusMul": 2
 	},
 	"seeker": {
-		"maxG": 4
+		"maxG": 8
 	}
 }

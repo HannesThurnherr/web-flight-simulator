@@ -251,11 +251,24 @@ export class AntiRadiationSeeker extends Missile {
 		const CRUISE_AGL_M     = 1500; // sit ~1.5 km above target's alt while transiting
 
 		// Target pitch in cruise mode: aim at (target.alt + cruiseAGL).
-		// Target pitch in terminal mode: aim straight at target alt.
+		// Target pitch in terminal mode: aim straight at target alt —
+		// but enforce a minimum 45° dive so the missile doesn't take a
+		// flat path that snags on the last terrain feature short of
+		// the SAM. The minimum kicks in whenever the geometric pitch
+		// is shallower than -45° (i.e. we're not high enough above
+		// the target for a steep direct line). This produces a brief
+		// over-the-top arc — apex past the LKP, then steep dive —
+		// which is also how real HARM terminal trajectories look.
+		const MIN_DIVE_DEG = 45;
 		const cruiseAimAlt = lkp.alt + CRUISE_AGL_M;
 		const cruiseDU = cruiseAimAlt - this.alt;
 		const cruisePitch = Math.atan2(cruiseDU, Math.max(1, horizRange)) * 180 / Math.PI;
-		const terminalPitch = Math.atan2(dU, Math.max(1, horizRange)) * 180 / Math.PI;
+		const geomTerminalPitch = Math.atan2(dU, Math.max(1, horizRange)) * 180 / Math.PI;
+		// dU is target_alt - own_alt; for a target below us it's negative.
+		// "Steeper" dive = more negative pitch. Take the more negative of
+		// the geometric line and -MIN_DIVE_DEG so the missile pitches over
+		// hard whenever it's not already on a steep line.
+		const terminalPitch = Math.min(geomTerminalPitch, -MIN_DIVE_DEG);
 		// Blend factor: 0 at >TERMINAL+BLEND (full cruise), 1 at <TERMINAL (full dive).
 		let blend = 1;
 		if (horizRange > TERMINAL_RANGE_M + BLEND_RANGE_M) blend = 0;
