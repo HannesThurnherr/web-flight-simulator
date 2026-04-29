@@ -213,7 +213,15 @@ export function makeStaticSamPilot(params) {
 				if (!target || target.destroyed) continue;
 				if (target.team && unit.team && target.team === unit.team) continue;
 				const sig = target.signature;
-				if (!sig || (sig.unitClass !== 'missile' && sig.unitClass !== 'cruise_missile')) continue;
+				// Inbound-threat classes that justify popping radar:
+				// AAMs (HARM in flight), cruise missiles, and bombs.
+				// A diving JDAM/SDB targeting the battery itself is
+				// just as much a "I need to engage NOW" stimulus as
+				// a HARM coming in.
+				if (!sig) continue;
+				if (sig.unitClass !== 'missile' &&
+				    sig.unitClass !== 'cruise_missile' &&
+				    sig.unitClass !== 'bomb') continue;
 				if (!c.radar) continue;
 				const dE = (target.lon - unit.lon) * 111320 * cosLat;
 				const dN = (target.lat - unit.lat) * 111320;
