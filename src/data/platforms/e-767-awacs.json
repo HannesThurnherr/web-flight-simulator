@@ -4,6 +4,7 @@
 	"kind": "airborne",
 	"model": "/assets/models/e-767-awacs.glb",
 	"modelRotation": { "x": 0, "y": 0, "z": 0 },
+	"modelScale": 3.4,
 	"signature": "awacs",
 	"sensors": {
 		"radar": {

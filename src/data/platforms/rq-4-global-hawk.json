@@ -1,0 +1,36 @@
+{
+	"id": "rq-4-global-hawk",
+	"name": "RQ-4 Global Hawk",
+	"kind": "airborne",
+	"model": "/assets/models/rq-4-global-hawk.glb",
+	"modelRotation": { "x": 0, "y": 180, "z": 90 },
+	"modelScale": 85,
+	"signature": "drone_isr",
+	"sensors": {
+		"radar": {
+			"enabled": true,
+			"active": true,
+			"mode": "search",
+			"nominalRange": 200000,
+			"referenceRcs": 5,
+			"boresightPitchDeg": -45,
+			"fovHalfHDeg": 180,
+			"fovHalfVDeg": 45,
+			"notchThreshold": 0,
+			"targetKinds": ["ground"]
+		}
+	},
+	"pilot": {
+		"type": "orbit",
+		"defaultParams": {
+			"radiusM":      30000,
+			"altitudeM":    18000,
+			"throttle":     0.5,
+			"targetSpeed":  160
+		}
+	},
+	"physicsOverrides": {
+		"mass": 7000,
+		"wingArea": 51
+	}
+}

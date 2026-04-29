@@ -393,12 +393,41 @@ export function detectRadar(observer, target, radar) {
 	const sig = target && target.signature;
 	if (!sig) return null;
 
+	// 0) Optional target-class filter. A ground-mapping radar (RQ-4
+	//    SAR, future fighter SAR/GMTI mode) shouldn't double as an
+	//    air-search radar — even if its FOV cone happens to cover a
+	//    fighter at low altitude, the signal-processing chain is
+	//    fundamentally different. `targetKinds` whitelists by
+	//    npc.kind ('ground' | 'airborne' | …); absent = no filter,
+	//    detect anything in cone (the existing behavior for fighter
+	//    APGs, SAM seekers, AWACS).
+	if (radar.targetKinds && radar.targetKinds.length) {
+		if (!radar.targetKinds.includes(target.kind)) return null;
+	}
+
 	const los = losObserverToTarget(observer, target);
 	if (los.losLenMeters < 1) return null;
 
 	// 1) FOV (rectangular cone — separate az/el like a real mech-scan set).
-	if (Math.abs(los.bearingBody)   > radar.fovH) return null;
-	if (Math.abs(los.elevationBody) > radar.fovV) return null;
+	//
+	// Optional boresight offset: a radar can be physically mounted at
+	// an angle to the airframe's nose-forward axis. Most radars are
+	// 0°/0° (forward-pointing), but down-looking ground-mapping
+	// radars (e.g. RQ-4 SAR, future fighter SAR/GMTI mode) sit at
+	// boresightPitch ≈ -90° (straight down) so they cover the lower
+	// hemisphere regardless of the airframe's heading. The offset
+	// shifts the cone's apex direction; the FOV half-angles then
+	// describe the cone around that shifted boresight.
+	const boresightPitch = (radar.boresightPitchDeg != null)
+		? radar.boresightPitchDeg * Math.PI / 180 : 0;
+	const boresightYaw = (radar.boresightYawDeg != null)
+		? radar.boresightYawDeg * Math.PI / 180 : 0;
+	let azRel = los.bearingBody - boresightYaw;
+	while (azRel >  Math.PI) azRel -= 2 * Math.PI;
+	while (azRel < -Math.PI) azRel += 2 * Math.PI;
+	const elRel = los.elevationBody - boresightPitch;
+	if (Math.abs(azRel) > radar.fovH) return null;
+	if (Math.abs(elRel) > radar.fovV) return null;
 
 	// 2) Aspect-modulated RCS. Nose-on/tail-on different from beam.
 	const tgtFwd = unitForwardENU(target);

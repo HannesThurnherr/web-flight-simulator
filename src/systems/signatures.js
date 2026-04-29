@@ -72,6 +72,17 @@ export const SIGNATURES = {
 		visualSize: 42,
 		unitClass: 'cargo',
 	},
+	// High-altitude long-endurance ISR drone (RQ-4 / RQ-170 class).
+	// Modest RCS — not stealth but not a fighter either; quiet IR
+	// signature from a small turbofan; small visual at 18 km cruise.
+	// Kept distinct from fighter / awacs so SAMs can be tuned to
+	// engage drones via class filters when we get there.
+	drone_isr: {
+		rcs: 3,
+		irEmission: 60,
+		visualSize: 14,
+		unitClass: 'drone_isr',
+	},
 	// Small, slow, low-flying. Easy IR when close; poor radar contrast.
 	cruise_missile: {
 		rcs: 0.1,

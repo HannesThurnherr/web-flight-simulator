@@ -71,7 +71,27 @@ function resolveOrigin(origin, playerState) {
 // onStop} interface from a data record. Calling code (src/systems/
 // scenarios/index.js) wraps the JSON through this and registers the
 // result.
+//
+// Optional scenario fields beyond spawns / loadout:
+//   satellite: {
+//     intervalS:   number      // seconds between snapshots (default 180)
+//     memoryS:     number      // how long each snapshot stays valid (default 600)
+//     firstAtS:    number      // first-pass delay (default = intervalS)
+//     team:        string      // beneficiary team (default 'friendly')
+//     classes:     [string,…]  // platform.kind values to include
+//                              // (default ['ground'])
+//   }
+//
+// Drives a periodic theater-wide snapshot of every hostile unit whose
+// `kind` is in `classes`, dropping their CURRENT exact position into
+// the beneficiary team's intelContacts as `kind: 'satellite'`. Entries
+// age out after memoryS, at which point the player has to wait for
+// the next pass to refresh.
 export function buildScenarioFromJson(data) {
+	// Satellite-ISR closure state — captured by update() below. Reset
+	// each onStart so re-running the scenario starts fresh.
+	let satTimer = 0;
+	let satFired = false;
 	return {
 		id: data.id,
 		name: data.name,
@@ -81,6 +101,9 @@ export function buildScenarioFromJson(data) {
 			const { npcSystem, playerState, weaponSystem } = ctx;
 			npcSystem.autoSpawn    = data.autoSpawn !== false;
 			npcSystem.triangleSide = data.triangleSideM || 70000;
+			// Satellite-ISR state reset.
+			satTimer = 0;
+			satFired = false;
 
 			// Optional player loadout override. Same schema as the per-NPC
 			// loadout: `{ "<simType>": count }`. Anything not listed drops
@@ -161,9 +184,40 @@ export function buildScenarioFromJson(data) {
 			}
 		},
 
-		update(/* ctx, dt */) {
-			// Pure-data scenarios don't need per-frame logic — the
-			// autoSpawn flag + pilot types handle ongoing behaviour.
+		update(ctx, dt) {
+			// Satellite-ISR pass scheduling. Walks every hostile unit
+			// whose `kind` is in the configured class list and drops
+			// a snapshot into the beneficiary team's datalink, then
+			// resets the timer for the next pass.
+			const sat = data.satellite;
+			if (sat && ctx && ctx.npcSystem) {
+				satTimer += dt;
+				const intervalS = sat.intervalS ?? 180;
+				const firstAtS  = sat.firstAtS  ?? intervalS;
+				const triggerAt = satFired ? intervalS : firstAtS;
+				if (satTimer >= triggerAt) {
+					satTimer -= triggerAt;
+					satFired = true;
+					const team   = sat.team || 'friendly';
+					const dl     = getTeamDatalink(team);
+					const memS   = sat.memoryS ?? 600;
+					const allow  = sat.classes || ['ground'];
+					if (dl) {
+						const now = (typeof performance !== 'undefined')
+							? performance.now() * 0.001 : 0;
+						let n = 0;
+						for (const npc of ctx.npcSystem.npcs) {
+							if (!npc || npc.destroyed) continue;
+							if (npc.team === team) continue;
+							if (!allow.includes(npc.kind)) continue;
+							dl.publishSatellite(npc, now, memS);
+							n++;
+						}
+						console.log('[scenario] SAT pass:',
+							`team=${team} units=${n} memoryS=${memS} nextInS=${intervalS}`);
+					}
+				}
+			}
 		},
 
 		onStop(ctx) {
