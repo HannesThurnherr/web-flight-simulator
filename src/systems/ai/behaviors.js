@@ -750,3 +750,182 @@ export class EngageBehavior extends Behavior {
 		return { heading, pitch };
 	}
 }
+
+// ----------------------------------------------------------------------------
+// FormationBehavior — wingman stationkeeping under a leader.
+//
+// Active for any unit listed in `formation.members` while its mode is
+// formation. The wingman computes its slot offset in the leader's
+// body frame, projects that to a world-space target lat/lon/alt, and
+// flies a heading + pitch + throttle command toward that target.
+//
+// Priority is HIGH (above Engage / Cruise) so a wingman in formation
+// never wanders off chasing bandits — the player picks targets.
+// Below MissileEvasion + ForwardTerrainAvoid: a wingman with a
+// missile up its tail breaks formation to defend, and pulls up for
+// terrain. Reforms automatically when the threat clears (mode is
+// still formation, isActive returns true again).
+// ----------------------------------------------------------------------------
+import { formation, getMemberMode, FORMATION_SLOTS, MODE_FORMATION } from '../formation.js';
+
+export class FormationBehavior extends Behavior {
+	constructor() { super('Formation'); }
+	isActive(ctx) {
+		const u = ctx.unit;
+		if (!u || !formation.leader) return false;
+		if (!formation.members.includes(u)) return false;
+		if (getMemberMode(u) !== MODE_FORMATION) return false;
+		// If leader is dead, hand control to next behavior (Cruise →
+		// the wingman just keeps flying straight).
+		if (formation.leader.destroyed) return false;
+		return true;
+	}
+
+	apply(ctx, cmd, _dt) {
+		const u      = ctx.unit;
+		const leader = formation.leader;
+		const slot   = FORMATION_SLOTS[u._wingmanSlot] || FORMATION_SLOTS[0];
+
+		// Body-frame slot offset rotated by the leader's heading. Body
+		// +X = right, +Y = forward. Slot.right is body +X, slot.back
+		// is body -Y. After rotation by leader heading, project to
+		// ENU (east, north).
+		const hRad = (leader.heading || 0) * Math.PI / 180;
+		const bodyE =  slot.right;
+		const bodyN = -slot.back;
+		const east  = bodyE * Math.cos(hRad) + bodyN * Math.sin(hRad);
+		const north = -bodyE * Math.sin(hRad) + bodyN * Math.cos(hRad);
+
+		const cosLat = Math.cos((leader.lat || 0) * Math.PI / 180) || 1;
+		const tgtLon = leader.lon + east  / (111320 * cosLat);
+		const tgtLat = leader.lat + north / 111320;
+		const tgtAlt = leader.alt;
+
+		// Heading: aim at the target slot, with a small lead so we
+		// don't lag behind during turns. When far from the slot, pure
+		// pursuit works fine; close in, blend in the leader's heading
+		// to avoid swinging through the slot.
+		const dE = (tgtLon - u.lon) * 111320 * cosLat;
+		const dN = (tgtLat - u.lat) * 111320;
+		const dist = Math.hypot(dE, dN);
+		const pursuitHeading = (Math.atan2(dE, dN) * 180 / Math.PI + 360) % 360;
+		const blend = Math.min(1, dist / 200);  // <200 m: hold leader heading
+		// Smallest-arc blend between leader and pursuit heading.
+		const dh = angleDiffDeg(leader.heading || 0, pursuitHeading);
+		cmd.targetHeading = (((leader.heading || 0) + dh * blend) + 360) % 360;
+
+		// Pitch: aim at the slot altitude. Soft so we don't oscillate.
+		const altErr = tgtAlt - u.alt;
+		cmd.targetPitch = Math.max(-15, Math.min(15, altErr * 0.05));
+
+		// Throttle: match the leader's velocity along the leader-to-
+		// slot axis. When ahead/short of slot, throttle up/down to
+		// catch up. Use leader speed as the baseline + a position-
+		// error correction in m/s.
+		const leaderSpd = Math.max(80, leader.speed || 250);
+		// Project the slot-relative position onto the heading axis to
+		// see if we're trailing or overshooting.
+		const headRad = (leader.heading || 0) * Math.PI / 180;
+		const fE =  Math.sin(headRad);
+		const fN =  Math.cos(headRad);
+		const along = dE * fE + dN * fN;   // + = slot is ahead, - = behind
+		// Catch up faster when far behind; ease off when close.
+		const correction = Math.max(-30, Math.min(60, along * 0.4));
+		cmd.targetSpeed = leaderSpd + correction;
+		cmd.throttle    = Math.max(0.4, Math.min(1.0, 0.7 + correction / 100));
+		cmd.boost       = (cmd.throttle >= 0.99 && correction > 30);
+
+		// Suppress weapons / countermeasures while in formation. The
+		// player's WeaponSystem.fire path commands the wingman to
+		// shoot directly; we never want the wingman's own engage AI
+		// to launch on its initiative while flying lead's wing.
+		cmd.fireWeapon = false;
+		cmd.fireFlare  = false;
+		cmd.fireChaff  = false;
+	}
+}
+
+// ----------------------------------------------------------------------------
+// PatrolRtbBehavior — break-formation "go home and orbit" mode.
+//
+// Used when a wingman has expended all strike-class ammo and the
+// flight's break behavior is set to RTB. Wingman heads back to the
+// formation spawn point (`formation.spawnPoint`) and orbits there at 9 km
+// altitude with a 5 km radius. Will engage a hostile inside 10 km
+// with whatever AAMs it has left, but doesn't go looking for trouble.
+// Priority sits between Engage and Cruise — gets to drive cruise-style
+// patrol when nothing tactical is happening.
+// ----------------------------------------------------------------------------
+export class PatrolRtbBehavior extends Behavior {
+	constructor() { super('PatrolRTB'); }
+	isActive(ctx) {
+		return getMemberMode(ctx.unit) === 'patrol-rtb' &&
+			formation.members.includes(ctx.unit) &&
+			formation.spawnPoint != null;
+	}
+	apply(ctx, cmd, _dt) {
+		const u  = ctx.unit;
+		const sp = formation.spawnPoint;
+		const orbitAlt = 9000;
+		const orbitRad = 5000;
+
+		const cosLat = Math.cos((u.lat || 0) * Math.PI / 180) || 1;
+		const dE = (u.lon - sp.lon) * 111320 * cosLat;
+		const dN = (u.lat - sp.lat) * 111320;
+		const radius = Math.hypot(dE, dN);
+
+		// Tangential heading to maintain orbit (CCW), with radial
+		// correction so we don't drift inward/outward.
+		const radialBearing = Math.atan2(dE, dN) * 180 / Math.PI;
+		let headingCmd = (radialBearing + 90 + 360) % 360;
+		const radialErr = radius - orbitRad;
+		headingCmd += Math.max(-25, Math.min(25, radialErr * 0.001));
+		cmd.targetHeading = (headingCmd + 360) % 360;
+
+		const altErr = orbitAlt - u.alt;
+		cmd.targetPitch = Math.max(-8, Math.min(8, altErr * 0.01));
+		cmd.targetSpeed = 220;
+		cmd.throttle    = 0.55;
+	}
+}
+
+// ----------------------------------------------------------------------------
+// PatrolCapBehavior — break-formation "stay near the player" mode.
+//
+// Used when a wingman has expended all strike-class ammo and the
+// flight's break behavior is CAP. Orbits at 6 km altitude with a 4 km
+// radius around the leader's CURRENT position (not the spawn point —
+// the lead is presumably still ingressing). Yields to Engage above
+// (regular fighter doctrine) so the wingman uses any AAMs it has on
+// nearby hostiles.
+// ----------------------------------------------------------------------------
+export class PatrolCapBehavior extends Behavior {
+	constructor() { super('PatrolCAP'); }
+	isActive(ctx) {
+		return getMemberMode(ctx.unit) === 'patrol-cap' &&
+			formation.members.includes(ctx.unit) &&
+			formation.leader && !formation.leader.destroyed;
+	}
+	apply(ctx, cmd, _dt) {
+		const u = ctx.unit;
+		const center = formation.leader;
+		const orbitAlt = 6000;
+		const orbitRad = 4000;
+
+		const cosLat = Math.cos((u.lat || 0) * Math.PI / 180) || 1;
+		const dE = (u.lon - center.lon) * 111320 * cosLat;
+		const dN = (u.lat - center.lat) * 111320;
+		const radius = Math.hypot(dE, dN);
+
+		const radialBearing = Math.atan2(dE, dN) * 180 / Math.PI;
+		let headingCmd = (radialBearing + 90 + 360) % 360;
+		const radialErr = radius - orbitRad;
+		headingCmd += Math.max(-25, Math.min(25, radialErr * 0.001));
+		cmd.targetHeading = (headingCmd + 360) % 360;
+
+		const altErr = orbitAlt - u.alt;
+		cmd.targetPitch = Math.max(-8, Math.min(8, altErr * 0.01));
+		cmd.targetSpeed = 260;
+		cmd.throttle    = 0.65;
+	}
+}

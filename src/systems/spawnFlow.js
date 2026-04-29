@@ -39,6 +39,8 @@ import { soundManager } from '../utils/soundManager';
 import { stopAllFlyingSounds } from '../utils/gameplaySounds';
 import { clearEvents } from './eventLog';
 import { gameSettings, saveSettings } from '../ui/settings';
+import { setFormation, clearFormation } from './formation.js';
+import { createWingmanPilot } from './ai/index.js';
 
 // Module-private state — only this file reads or writes either.
 // `spawnMarker` is the Cesium point-entity dropped on the map while the
@@ -153,6 +155,10 @@ export function enterSpawnPicking(ctx, useVignette = true) {
 		}
 	}
 	if (ctx.npcSystem) ctx.npcSystem.clear();
+	// Wingmen got destroyed by npcSystem.clear(); drop the dangling
+	// references so we don't try to read from freed npcs in the
+	// frame between spawn-pick and the new formation being built.
+	clearFormation();
 	stopAllFlyingSounds(0.3);
 	soundManager.play('zoom-in');
 	soundManager.play('wind', 1.0);
@@ -167,6 +173,15 @@ export function enterSpawnPicking(ctx, useVignette = true) {
 		const uiContainer      = document.getElementById('uiContainer');
 		const confirmSpawnBtn  = document.getElementById('confirmSpawnBtn');
 		spawnInstruction.classList.remove('hidden');
+		// Formation config panel only meaningful while picking a spawn —
+		// the user can adjust wingmen count + break behavior right
+		// before committing. Show it here, hide it back in
+		// setupConfirmSpawn after the user clicks CONFIRM.
+		const formationPanel = document.getElementById('formation-config');
+		if (formationPanel) {
+			formationPanel.classList.remove('hidden');
+			_refreshFormationPanel();
+		}
 		threeContainer.classList.add('hidden');
 		uiContainer.classList.add('hidden');
 		const weaponsHud = document.getElementById('weapons-hud');
@@ -432,11 +447,22 @@ export function setupConfirmSpawn(ctx) {
 				};
 				if (scn && scn.onStart) scn.onStart(scnCtx);
 				else ctx.npcSystem.spawnNPC(state.lon, state.lat, state.alt);
+
+				// Player formation (Phase 5.5). After scenario.onStart has
+				// seeded its own NPCs, spawn 0–3 wingmen on the player's
+				// team. Each gets the player's currently-active airframe,
+				// the player's loadout (one ammo set per wingman), and a
+				// wingman pilot with FormationBehavior at high priority.
+				// Spawns are nudged into formation slots so they don't
+				// pile up on top of the leader.
+				_spawnPlayerFormation(ctx, state);
 			}
 
 			document.getElementById('spawnInstruction').classList.add('hidden');
 			document.getElementById('confirmSpawnBtn').classList.add('hidden');
 			document.getElementById('loadingIndicator').classList.add('hidden');
+			const formationPanelDone = document.getElementById('formation-config');
+			if (formationPanelDone) formationPanelDone.classList.add('hidden');
 
 			ctx.setCurrentState('TRANSITIONING');
 			setRenderOptimization(false);
@@ -468,4 +494,171 @@ export function setupConfirmSpawn(ctx) {
 			});
 		}, 500);
 	};
+}
+
+// Spawn the player's wingmen and register them in the flight singleton.
+// Reads gameSettings.formation.{count, breakBehavior} (set by the spawn
+// menu); count defaults to 0 (no wingmen) so existing scenarios with
+// no flight UI configured behave as before.
+//
+// Each wingman is instantiated via npcSystem.createNPCMesh (same path
+// fighter NPCs use), then has its pilot replaced by a wingmanPilot,
+// and its loadout cloned from the player's currently-loaded weapon
+// system. Spawns are placed in formation slots offset from the leader
+// so they don't telefrag each other.
+function _spawnPlayerFormation(ctx, state) {
+	clearFormation();
+	const cfg = (gameSettings && gameSettings.formation) || {};
+	const count = Math.max(0, Math.min(3, cfg.count || 0));
+	if (count === 0) return;
+
+	const npcSystem = ctx.npcSystem;
+	if (!npcSystem) return;
+
+	// Match the slot offsets defined in flight.js so wingmen spawn
+	// already roughly in their formation slots — saves them having
+	// to chase the leader from far behind on game start.
+	const slots = [
+		{ right:  120, back:  60 },
+		{ right: -120, back:  60 },
+		{ right:    0, back: 200 },
+	];
+
+	const team = state.team || 'friendly';
+	const cosLat = Math.cos((state.lat || 0) * Math.PI / 180) || 1;
+	const hRad   = (state.heading || 0) * Math.PI / 180;
+	const members = [];
+
+	// Get the player's loadout (simType → ammo count) so each wingman
+	// carries the same set. Each wingman gets a FULL set — that's the
+	// whole point of bringing them.
+	let playerLoadout = null;
+	try {
+		const planeId = getActivePlaneId();
+		playerLoadout = simTypeCounts(planeId);
+	} catch (e) {
+		playerLoadout = null;
+	}
+
+	for (let i = 0; i < count; i++) {
+		const slot   = slots[i] || slots[slots.length - 1];
+		const bodyE  =  slot.right;
+		const bodyN  = -slot.back;
+		const east   =  bodyE * Math.cos(hRad) + bodyN * Math.sin(hRad);
+		const north  = -bodyE * Math.sin(hRad) + bodyN * Math.cos(hRad);
+		const lon    = state.lon + east  / (111320 * cosLat);
+		const lat    = state.lat + north / 111320;
+		const alt    = state.alt;
+
+		const npc = npcSystem.createNPCMesh(
+			`WINGMAN ${i + 1}`,
+			lon, lat, alt,
+			state.heading,
+			Math.max(120, state.speed || 200),
+			team,
+		);
+		if (!npc) continue;
+
+		// Replace the default fighter pilot with a wingman pilot.
+		// createNPCMesh assigns createFighterPilot by default.
+		npc.pilot = createWingmanPilot(npc);
+
+		// Apply the player's loadout to the wingman's WeaponSubsystem.
+		// Each entry in the subsystem's weapons[] gets matched by `type`
+		// and its ammo set to the requested count (or 0 if not in the
+		// loadout). This mirrors the npcLoadout helper used elsewhere
+		// for one-off scenario customization.
+		if (playerLoadout) {
+			const ws = npc.pilot.subsystems.weapons;
+			if (ws && Array.isArray(ws.weapons)) {
+				for (const w of ws.weapons) {
+					if (w.ammo === Infinity) continue;
+					const n = playerLoadout[w.type];
+					if (typeof n === 'number') {
+						w.ammo    = n;
+						w.maxAmmo = n;
+					}
+				}
+				// Add weapon entries for any simTypes the wingman's
+				// default loadout doesn't include but the player has
+				// (e.g. STORM-SHADOW, GBU-39 — strike weapons NPCs
+				// don't normally carry). Without this, a flight
+				// can't actually share strike-class munitions with
+				// the player.
+				for (const [simType, n] of Object.entries(playerLoadout)) {
+					if (!ws.weapons.some(w => w.type === simType)) {
+						ws.weapons.push({
+							type: simType,
+							ammo: n,
+							maxAmmo: n,
+							fireRate: 4.0,
+							maxInFlight: 4,
+							lastFire: 0,
+						});
+					}
+				}
+			}
+		}
+
+		members.push(npc);
+	}
+
+	setFormation({
+		leader: state,
+		members,
+		spawnPoint: { lon: state.lon, lat: state.lat, alt: state.alt },
+		breakBehavior: cfg.breakBehavior || 'rtb',
+	});
+	console.log('[formation] spawned', count, 'wingmen, breakBehavior=', cfg.breakBehavior || 'rtb');
+}
+
+// One-time setup for the formation-config panel that appears in the
+// spawn-picker overlay. Wires the count and break-behavior buttons
+// to gameSettings.formation, persists on click, and re-styles the
+// active button so the user sees the current selection. Called once
+// from main.js bootstrap, same as setupSpawnPicker / setupConfirmSpawn.
+export function setupFormationPanel() {
+	const panel = document.getElementById('formation-config');
+	if (!panel) return;
+
+	const countBtns = panel.querySelectorAll('.formation-count-btn');
+	for (const b of countBtns) {
+		b.addEventListener('click', () => {
+			const n = parseInt(b.dataset.count, 10) || 0;
+			gameSettings.formation = gameSettings.formation || {};
+			gameSettings.formation.count = n;
+			saveSettings();
+			_refreshFormationPanel();
+		});
+	}
+
+	const breakBtns = panel.querySelectorAll('.formation-break-btn');
+	for (const b of breakBtns) {
+		b.addEventListener('click', () => {
+			const m = b.dataset.break || 'rtb';
+			gameSettings.formation = gameSettings.formation || {};
+			gameSettings.formation.breakBehavior = m;
+			saveSettings();
+			_refreshFormationPanel();
+		});
+	}
+}
+
+// Update the visual active-state of the formation panel buttons to
+// match gameSettings.formation. Called after each click and when the
+// panel becomes visible (so reload-time persisted values show up
+// pre-selected).
+function _refreshFormationPanel() {
+	const panel = document.getElementById('formation-config');
+	if (!panel) return;
+	const cfg = (gameSettings && gameSettings.formation) || {};
+	const count = cfg.count || 0;
+	const brk   = cfg.breakBehavior || 'rtb';
+	for (const b of panel.querySelectorAll('.formation-count-btn')) {
+		const n = parseInt(b.dataset.count, 10) || 0;
+		b.classList.toggle('active', n === count);
+	}
+	for (const b of panel.querySelectorAll('.formation-break-btn')) {
+		b.classList.toggle('active', b.dataset.break === brk);
+	}
 }

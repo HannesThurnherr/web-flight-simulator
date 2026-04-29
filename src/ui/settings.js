@@ -32,6 +32,11 @@ export const gameSettings = {
 	lastScenarioId: null,
 	lastPlaneId:    null,
 	lastSpawn:      null, // { lon, lat, alt, heading }
+	// Phase 5.5 — player-led formation. count is 0–3 wingmen spawned
+	// in formation with the player; breakBehavior decides what they
+	// do when out of strike-class ammo: 'rtb' (orbit spawn point) or
+	// 'cap' (orbit player). Persisted so the choice survives a reload.
+	formation: { count: 0, breakBehavior: 'rtb' },
 };
 
 // Read the stored settings blob into `gameSettings` WITHOUT touching any

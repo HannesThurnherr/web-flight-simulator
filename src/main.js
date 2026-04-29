@@ -51,7 +51,7 @@ import { setupScenarioPicker } from './ui/scenarioPicker';
 import { setupPlanePicker } from './ui/planePicker';
 import {
 	enterSpawnPicking, exitSpawnPicking, quickRespawn,
-	setupSpawnPicker, setupConfirmSpawn,
+	setupSpawnPicker, setupConfirmSpawn, setupFormationPanel,
 	getSpawnMarker, setSpawnMarker, hasScenarioSpawnPoint,
 } from './systems/spawnFlow';
 import {
@@ -431,6 +431,7 @@ setupMeshStripDiagnostic({
 npcSystem = new NPCSystem(viewer, scene, new GLTFLoader());
 setupSpawnPicker(ctx);
 setupConfirmSpawn(ctx);
+setupFormationPanel();
 
 // Main-menu scenario picker — see src/ui/scenarioPicker.js.
 setupScenarioPicker();

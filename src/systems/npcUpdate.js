@@ -28,6 +28,17 @@ import { soundManager } from '../utils/soundManager.js';
 import { getTeamDatalink, tickAllDatalinks } from './teamDatalink.js';
 import { isRadiating } from './sensorSystem.js';
 import { applyNpcMeshMatrix } from './npcRendering.js';
+import { tickFormationModes } from './formation.js';
+
+// Strike-class simTypes: any munition that takes a designation queue
+// point. When a wingman's combined ammo across these types hits zero,
+// they auto-break formation into the configured patrol mode (RTB/CAP).
+// AAMs (AIM-9, AIM-120, METEOR) are NOT strike-class — a wingman with
+// AAMs left is still useful as a dedicated escort and stays in slot.
+const STRIKE_SIMTYPES = [
+	'GBU-12', 'GBU-31', 'GBU-38', 'GBU-39',
+	'AGM-86', 'STORM-SHADOW', 'AGM-88',
+];
 
 export function npcSystemUpdate(sys, dt, playerState, simTime = 0) {
 	if (!sys.loaded) return;
@@ -82,6 +93,12 @@ export function npcSystemUpdate(sys, dt, playerState, simTime = 0) {
 	}
 
 	tickAllDatalinks(simTime);
+
+	// Phase 5.5 — formation mode upkeep. Auto-switches any wingman
+	// whose strike-class ammo has exhausted into the configured
+	// break behavior (RTB / CAP). Cheap (~3 npcs * a few weapons),
+	// fine to run every frame.
+	tickFormationModes(STRIKE_SIMTYPES);
 
 	// Age any in-flight flares spawned by NPC evasion (reuses the
 	// same Flare class the player uses).
