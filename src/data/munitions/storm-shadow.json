@@ -26,13 +26,13 @@
 		"dragRefAltitude": 5000,
 		"vManeuverRef": 250,
 		"gAvailFloor": 0.3,
-		"cruiseAltM": 50,
+		"cruiseAltM": 80,
 		"cruiseAltMode": "agl",
 		"cruiseTurnG": 1.2,
-		"climbAngleDeg": 22,
-		"terminalRangeM": 7000,
-		"popUpAltAGL": 1500,
-		"diveAngleDeg": -55
+		"climbAngleDeg": 8,
+		"terminalRangeM": 500,
+		"popUpAltAGL": 0,
+		"diveAngleDeg": -50
 	},
 	"warhead": {
 		"killRadiusM": 70,

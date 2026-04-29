@@ -140,24 +140,24 @@ export class CruiseSeeker extends Missile {
 				: f.cruiseAltM;
 			if (this.alt >= cruiseTargetAlt - 50) this._phase = STATE_CRUISE;
 		}
-		// CRUISE → POPUP/DIVE when within terminal range. AGL-mode
-		// missiles (ALCM) need to pop up first because they're
-		// terrain-following at very low altitude and don't have the
-		// altitude to dive at the configured angle. MSL-mode missiles
-		// (Storm Shadow) cruise at altitude already and skip straight
-		// to DIVE. One-way transition.
-		if (this._phase === STATE_CRUISE && horizRange <= f.terminalRangeM) {
-			this._phase = (f.cruiseAltMode === 'agl') ? STATE_POPUP : STATE_DIVE;
-		}
-		// POPUP → DIVE once the missile reaches popUpAltAGL.
-		if (this._phase === STATE_POPUP) {
-			const groundHere = this._terrainAtCurrent();
-			if (this.alt - groundHere >= f.popUpAltAGL - 50) this._phase = STATE_DIVE;
+		// CRUISE → DIVE: angle-triggered. Hold cruise altitude until
+		// the look-down angle to target meets the configured dive
+		// angle, THEN dive. Fallback geometric trigger at horizRange
+		// ≤ terminalRangeM for the rare case where geometry never
+		// gets steep enough (target above cruise alt). Skips the
+		// pop-up phase entirely — TFR-class cruise weapons (ALCM,
+		// Storm Shadow at 50–120 m AGL) basically slam into the
+		// target from cruise altitude; the prior elaborate pop-up
+		// was both unrealistic ("ALCM launches really high" feel)
+		// and produced a flat pre-impact path that hit terrain.
+		if (this._phase === STATE_CRUISE) {
+			const lookDownDeg = Math.atan2(-dU, Math.max(1, horizRange)) * 180 / Math.PI;
+			const trigger = lookDownDeg >= Math.abs(f.diveAngleDeg) ||
+				horizRange <= f.terminalRangeM;
+			if (trigger) this._phase = STATE_DIVE;
 		}
 		// DIVE → TERMINAL within close-in PN range so the seeker
-		// makes its final corrections directly at the spot. Slant
-		// range is the right gate here: at 800 m the missile is
-		// committed and the dive geometry has done its job.
+		// makes its final corrections directly at the spot.
 		if (this._phase === STATE_DIVE && slantRange < 800) {
 			this._phase = STATE_TERMINAL;
 		}
@@ -208,16 +208,6 @@ export class CruiseSeeker extends Missile {
 					turnGCap     = f.cruiseTurnG;
 				}
 				desiredHeading = desiredHeadingToTgt;
-				break;
-			}
-			case STATE_POPUP: {
-				// Climb at the same angle CLIMB used until we reach
-				// popUpAltAGL — gives the missile altitude to dive
-				// from. Heading still tracks target so the climb is
-				// committed.
-				desiredHeading = desiredHeadingToTgt;
-				desiredPitch   = f.climbAngleDeg;
-				turnGCap       = f.cruiseTurnG;
 				break;
 			}
 			case STATE_DIVE: {

@@ -44,6 +44,9 @@ import {
 	clearDesignationQueue,
 } from './designation.js';
 import { getTeamDatalink } from './teamDatalink.js';
+import { MUNITIONS } from '../weapon/munitions.js';
+import { munitionIdForSimType } from '../weapon/munitionFactory.js';
+import { isStrikeWeapon } from './strikeEnvelope.js';
 
 const COLOR_PLAYER       = Cesium.Color.fromCssColorString('#00eaff');
 const COLOR_FACTIONS = {
@@ -262,7 +265,17 @@ export class StrikePlannerView {
 		if (!ps) return;
 		const ws = ps.weaponSystem;
 		const cur = ws && ws.getCurrentWeapon && ws.getCurrentWeapon();
-		if (!cur || cur.id !== 'gbu') return;
+		if (!cur || !cur.type) return;
+		// Gate on the munition's seeker class, not the weapon-system
+		// slot id. GBU-* and AGM-* live in different slots (id 'gbu'
+		// vs 'agm') but the strike planner queue is the right
+		// concept for any seeker that takes a frozen GPS coord at
+		// release — JDAM, SDB, GBU-12, ALCM, Storm Shadow — and the
+		// wrong concept for HARM (which needs a live emitter, not a
+		// queue point). isStrikeWeapon centralizes that decision.
+		const munId = munitionIdForSimType(cur.type);
+		const munData = munId ? MUNITIONS[munId] : null;
+		if (!isStrikeWeapon(munData)) return;
 		const ammo = (typeof cur.ammo === 'number' && cur.ammo !== Infinity) ? cur.ammo : 99;
 		if (ammo <= 0) return;
 
