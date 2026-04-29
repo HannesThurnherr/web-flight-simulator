@@ -564,6 +564,33 @@ export function makeStaticAaaPilot(params = {}) {
 	const cueRangeM   = params.cueRangeM   ?? (maxRange * 2);
 	const emconHoldS  = params.emconHoldS  ?? 3.0;
 
+	// Fire-control noise. Two sources of inaccuracy in real gun-radar
+	// laying that an idealized lead solution doesn't model:
+	//
+	//   dispersionDeg    Per-shot aim spread. Mechanical wobble +
+	//                    barrel droop + atmospheric. Rerolled every
+	//                    frame so each bullet in a burst gets a fresh
+	//                    random offset. Realistic 23 mm gun + radar
+	//                    director gives ~0.4–0.8° at typical engagement
+	//                    ranges; a 0.6° default produces a ~25 m miss
+	//                    circle at 2 km, which dilutes per-shot Pk
+	//                    against small cruise-missile cross-sections.
+	//
+	//   leadJitterMps    Bias added to the target's perceived velocity
+	//                    when computing the lead solution. Models radar
+	//                    track-quality noise: the AAA "thinks" the
+	//                    target is doing 250±N m/s and aims slightly
+	//                    behind / ahead of where it actually is.
+	//                    Refreshed at each new burst (gap → active
+	//                    transition) so a whole burst is committed to
+	//                    the same wrong lead, and subsequent bursts
+	//                    re-roll. This is the dominant Pk killer in
+	//                    practice — without it, bullet dispersion alone
+	//                    still hits roughly half the time because the
+	//                    aim center is exactly correct.
+	const dispersionDeg = params.dispersionDeg ?? 0.6;
+	const leadJitterMps = params.leadJitterMps ?? 10;
+
 	const weapons = new WeaponSubsystem({
 		weapons: [{
 			type: 'gun',
@@ -598,7 +625,21 @@ export function makeStaticAaaPilot(params = {}) {
 		// every frame for every gun emplacement adds up.
 		lastEmconCheckAt: -Infinity,
 		cachedWantOn: false,
+		// Lead-jitter bias for the current burst. Refreshed at each
+		// new burst (gap → active transition) so the whole burst
+		// commits to the same wrong lead and rolls fresh next time.
+		leadBiasE: 0,
+		leadBiasN: 0,
+		leadBiasU: 0,
 	};
+
+	// Approximate Gaussian via average of three uniform samples — close
+	// enough for fire-control noise modeling and avoids the visible
+	// uniform-distribution edges. Returns ~N(0, 1/3) — multiply by the
+	// desired stddev.
+	function _g3() {
+		return ((Math.random() + Math.random() + Math.random()) / 3) - 0.5;
+	}
 
 	function pickTarget(unit) {
 		if (!unit.contacts) return null;
@@ -634,13 +675,16 @@ export function makeStaticAaaPilot(params = {}) {
 		const dE0 = (target.lon - unit.lon) * 111320 * cosLat;
 		const dN0 = (target.lat - unit.lat) * 111320;
 		const dU0 = (target.alt - unit.alt);
-		// Target velocity in ENU (target carries heading/pitch/speed).
+		// Target velocity in ENU (target carries heading/pitch/speed),
+		// plus per-burst jitter so the lead solution misses by a
+		// realistic margin. The jitter is regenerated each new burst
+		// in the update loop.
 		const tH = (target.heading || 0) * Math.PI / 180;
 		const tP = (target.pitch   || 0) * Math.PI / 180;
 		const tS = target.speed || 0;
-		const tvE = Math.sin(tH) * Math.cos(tP) * tS;
-		const tvN = Math.cos(tH) * Math.cos(tP) * tS;
-		const tvU = Math.sin(tP) * tS;
+		const tvE = Math.sin(tH) * Math.cos(tP) * tS + pilotState.leadBiasE;
+		const tvN = Math.cos(tH) * Math.cos(tP) * tS + pilotState.leadBiasN;
+		const tvU = Math.sin(tP) * tS + pilotState.leadBiasU;
 		// Bullets exit at muzzleVel (shooter is stationary so no own-speed
 		// boost). Iterate flight-time → projected position twice.
 		let tof = Math.sqrt(dE0*dE0 + dN0*dN0 + dU0*dU0) / muzzleVel;
@@ -727,6 +771,14 @@ export function makeStaticAaaPilot(params = {}) {
 				if (now - pilotState.burstStartedAt >= burstS + burstGapS) {
 					pilotState.burstActive = true;
 					pilotState.burstStartedAt = now;
+					// New burst: re-roll the lead-solution velocity
+					// bias. Stddev = leadJitterMps in each ENU axis,
+					// independently. Whole burst is committed to this
+					// wrong lead so a target survives a burst, doesn't
+					// just get hit by the lucky bullets in the middle.
+					pilotState.leadBiasE = _g3() * leadJitterMps;
+					pilotState.leadBiasN = _g3() * leadJitterMps;
+					pilotState.leadBiasU = _g3() * leadJitterMps * 0.5;
 				} else {
 					return;
 				}
@@ -735,13 +787,18 @@ export function makeStaticAaaPilot(params = {}) {
 				return;
 			}
 
-			// Lead solution.
+			// Lead solution + per-shot aim dispersion. The jitter is
+			// rerolled every frame (≈ every bullet, since fireRate
+			// runs at 20 Hz and the game tick is 60 Hz) so each round
+			// in a burst spreads across the dispersion cone.
 			const lead = computeLead(unit, pick.target);
+			const dh = _g3() * dispersionDeg;
+			const dp = _g3() * dispersionDeg;
 			command.fireWeapon  = true;
 			command.weaponType  = 'gun';
 			command.weaponTarget = pick.target;
-			command.gunHeading  = lead.heading;
-			command.gunPitch    = lead.pitch;
+			command.gunHeading  = lead.heading + dh;
+			command.gunPitch    = lead.pitch   + dp;
 		},
 	};
 }

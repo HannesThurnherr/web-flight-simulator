@@ -29,6 +29,12 @@ const DATALINK_MEMORY = 4.0;
 // when an emitter cycles between scan/track modes.
 const ELINT_MEMORY = 8.0;
 
+// Default memory window for satellite-ISR snapshots when a publisher
+// doesn't override it. Each entry can carry its own `memoryS` so a
+// scenario author can tune how long imagery stays "fresh" — we just
+// need a fallback for callers that don't specify.
+const SATELLITE_MEMORY_DEFAULT = 600.0;
+
 // How long (seconds) an engagement registration stays on the books past
 // the missile's apparent lifetime, in case the missile object's cleanup
 // is delayed a frame. Belt-and-braces — normal flow is explicit clear.
@@ -79,10 +85,39 @@ export class TeamDatalink {
 		if (target.team === this.team) return;
 		const level = intel && intel.level;
 		if (level !== 'known' && level !== 'suspected') return;
+		// Position jitter for briefed-suspected. The whole point of
+		// `level: 'suspected'` is "we think it's here within
+		// uncertaintyM but it could be anywhere in this circle."
+		// Previously we stored the unit's exact position and only
+		// drew a fuzzy disc around it — players who fired at the
+		// suspected dot got perfect coords, defeating the abstraction.
+		// Frozen-once, Gaussian-ish offset rolled at publish time
+		// (one-shot at scenario start) so the marker stays stable
+		// across the briefing — same suspected dot at the same place
+		// every frame, just not on the unit's true coords. Real
+		// units' actual locations are still ground-truth in the
+		// world; only the *intel record* carries the bias.
+		let lon = target.lon;
+		let lat = target.lat;
+		if (level === 'suspected') {
+			const uncertM = intel.uncertaintyM || 3000;
+			// 3-sample uniform → ~Gaussian, scaled to roughly fit
+			// inside uncertaintyM (the disc the planner draws).
+			// stddev ≈ uncertM / 2.5 means ~95% of fixes land
+			// inside the rendered uncertainty disc, ~5% outside —
+			// matches a "1.96σ" reading of the disc as a 95%
+			// confidence circle.
+			const sd = uncertM / 2.5;
+			const dE = ((Math.random() + Math.random() + Math.random()) / 3 - 0.5) * 2 * sd;
+			const dN = ((Math.random() + Math.random() + Math.random()) / 3 - 0.5) * 2 * sd;
+			const cosLat = Math.cos((target.lat || 0) * Math.PI / 180) || 1;
+			lon = target.lon + dE / (111320 * cosLat);
+			lat = target.lat + dN / 111320;
+		}
 		this.intelContacts.set(target, {
 			kind: level === 'suspected' ? 'briefed-suspected' : 'briefed-known',
-			lon: target.lon,
-			lat: target.lat,
+			lon,
+			lat,
 			alt: target.alt,
 			uncertaintyM: (level === 'suspected') ? (intel.uncertaintyM || 3000) : 0,
 			sourceUnit: null,
@@ -120,6 +155,49 @@ export class TeamDatalink {
 			alt: target.alt,
 			uncertaintyM: 0,
 			sourceUnit: null,
+			firstSeen: existing ? existing.firstSeen : now,
+			lastSeen:  now,
+		});
+	}
+
+	// Satellite-ISR snapshot publish. Called periodically by the
+	// scenario runner to drop a theater-wide ground-truth picture into
+	// the friendly datalink, modeling NRO / commercial-grade space-based
+	// imagery passes. Each call captures the unit's CURRENT exact
+	// position (not bearing-only like ELINT, not pre-mission like
+	// briefed); the entry then ages out after `memoryS` seconds, at
+	// which point the player has to wait for the next pass — or rely
+	// on other discovery channels — to see the unit again.
+	//
+	// Briefed entries OVERWRITE — fresher beats older. Live sensor
+	// contacts in this.contacts still take priority over intelContacts
+	// at planner-render time, so a sensor confirmation auto-promotes
+	// the satellite contact to a live track without needing extra code.
+	publishSatellite(target, now, memoryS = SATELLITE_MEMORY_DEFAULT) {
+		if (!target || target.destroyed) return;
+		if (target.team === this.team) return;
+		const existing = this.intelContacts.get(target);
+		// Don't overwrite ELINT (live emitter, strictly more current)
+		// or briefed entries (they're the player's persistent
+		// knowledge baseline — if a satellite-overwrite ages out of
+		// memory, the briefed marker would vanish too, leaving the
+		// planner pretending we never knew about the unit). Skipping
+		// the publish here means the satellite ping is redundant for
+		// already-known units; for never-seen units it adds a fresh
+		// timed entry, which is the actual point of satellite ISR.
+		if (existing && (existing.kind === 'elint' ||
+		                 existing.kind === 'briefed-known' ||
+		                 existing.kind === 'briefed-suspected')) {
+			return;
+		}
+		this.intelContacts.set(target, {
+			kind: 'satellite',
+			lon: target.lon,
+			lat: target.lat,
+			alt: target.alt,
+			uncertaintyM: 0,
+			sourceUnit: null,
+			memoryS,
 			firstSeen: existing ? existing.firstSeen : now,
 			lastSeen:  now,
 		});
@@ -180,6 +258,15 @@ export class TeamDatalink {
 				continue;
 			}
 			if (entry.kind === 'elint' && (now - entry.lastSeen) > ELINT_MEMORY) {
+				this.intelContacts.delete(target);
+			}
+			// Satellite snapshots age per-entry: each carries its own
+			// memoryS so the scenario author can tune how stale a
+			// snapshot is allowed to get. Default 600 s, but a tightly
+			// contested scenario might use 120 s to force the player
+			// to act on imagery before the next pass.
+			if (entry.kind === 'satellite' &&
+				(now - entry.lastSeen) > (entry.memoryS || SATELLITE_MEMORY_DEFAULT)) {
 				this.intelContacts.delete(target);
 			}
 		}

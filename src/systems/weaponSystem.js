@@ -8,6 +8,7 @@ import { soundManager } from '../utils/soundManager';
 import { movePosition } from '../utils/math';
 import { isRadiating } from './sensorSystem.js';
 import { playerDesignation, consumeDesignationHead } from './designation.js';
+import { pickWingmanShooter } from './formation.js';
 
 export class WeaponSystem {
 	constructor(viewer, scene, playerModel) {
@@ -314,10 +315,42 @@ export class WeaponSystem {
 		weapon.lastFire = now;
 		if (weapon.ammo !== Infinity) weapon.ammo--;
 
+		// Phase 5.5 — formation flight pool. For coord-homing strike
+		// weapons (cruise / GPS / laser-guided — any AGM or GBU), pick
+		// the first wingman in formation mode with ammo of the same
+		// simType and have THEM launch instead. The missile flies to
+		// the same designated coord regardless of who released it,
+		// effectively making the formation a 4-aircraft ammo rack
+		// from the player's perspective. Wingmen exhaust their stocks
+		// before the player burns their own — same priority a
+		// real-world strike-package commander would use.
+		//
+		// Other weapon types stay player-only:
+		//   - gun: aim is the player's nose; doesn't transfer.
+		//   - missile (AAM): seeker takes the AESA-locked target ref,
+		//     which only the player's radar produced. A wingman
+		//     "firing" the same missile would have a stale lock.
+		let shooter = playerState;
+		const isFormationPoolEligible = (weapon.id === 'agm' || weapon.id === 'gbu');
+		if (isFormationPoolEligible) {
+			const wing = pickWingmanShooter(weapon.type);
+			if (wing) {
+				// Refund the player's round (decremented just above)
+				// and consume the wingman's instead. Net: same total
+				// ammo gone, but from the wingman's magazine.
+				if (weapon.ammo !== Infinity) {
+					weapon.ammo = Math.min(weapon.maxAmmo, weapon.ammo + 1);
+				}
+				wing.weapon.ammo    = Math.max(0, wing.weapon.ammo - 1);
+				wing.weapon.lastFire = now;
+				shooter = wing.unit;
+			}
+		}
+
 		const startPos = {
-			lon: playerState.lon,
-			lat: playerState.lat,
-			alt: playerState.alt
+			lon: shooter.lon,
+			lat: shooter.lat,
+			alt: shooter.alt
 		};
 
 		if (weapon.id === 'gun') {
@@ -346,7 +379,16 @@ export class WeaponSystem {
 			const side = this.lastMissileSide ? 1 : -1;
 			const missileOffset = new THREE.Vector3(15.0 * side, -15.0, 0.0);
 
-			const launchPos = this.calculateWeaponPos(missileOffset) || startPos;
+			// Launch position: when the player is firing, use the
+			// cockpit-relative hardpoint offset (calculateWeaponPos
+			// projects the offset through the cockpit-camera transform
+			// — only meaningful for the player's own model). When a
+			// wingman is firing, just use the wingman's world pose
+			// directly: a few meters of hardpoint offset is invisible
+			// at the ranges these weapons engage.
+			const launchPos = (shooter === playerState)
+				? (this.calculateWeaponPos(missileOffset) || startPos)
+				: { lon: shooter.lon, lat: shooter.lat, alt: shooter.alt };
 			// AAMs hand the seeker the AESA-locked target. AGM-88 HARM
 			// (anti-radiation) gets the player's designated emitter if
 			// one is set on the RWR; otherwise null and the seeker
@@ -437,10 +479,19 @@ export class WeaponSystem {
 			// AGM-88 → AntiRadiationSeeker, future LGB / JDAM → their
 			// own seeker classes).
 			const munitionId = munitionIdForSimType(weapon.type);
+			// Initial attitude / speed of the new projectile come from
+			// whichever aircraft is actually firing — wingmen are
+			// flying their own pose. `launcher` stays as playerState
+			// so the missile's team / friendly-fire filtering keeps
+			// referring to the human-controlled side; the wingman's
+			// team is also 'friendly' so this would behave the same
+			// either way, but the playerState-as-launcher convention
+			// is what HARM auto-acquire and other systems already
+			// expect downstream.
 			const projectile = createMunition(
 				munitionId,
 				this.scene, this.viewer, launchPos,
-				playerState.heading, playerState.pitch, playerState.speed,
+				shooter.heading, shooter.pitch, shooter.speed,
 				target, this.onKill, playerState,
 			);
 			if (!projectile) {
@@ -729,12 +780,32 @@ export class WeaponSystem {
 		// snapped that back to a 10° cone, breaking AIM-9X HOBS.
 		const lockCone  = (weapon && weapon.lockCone  != null) ? weapon.lockCone  : 0.985;
 
+		// 5i — AAM ground-targeting gating. Air-to-air missiles use
+		// flying-target signatures (Doppler-rich return, hot exhaust,
+		// big visual angular size in their seeker cones). Ground
+		// units violate every assumption: zero ground speed gets
+		// notched by pulse-Doppler, IR signature is dwarfed by terrain
+		// thermal noise, AAMs have no ground-clutter rejection. The
+		// player's AESA will happily *paint* a ground unit (radar is
+		// notch=90 m/s, fine for SAMs that move 0 m/s — wait, no,
+		// notch FILTERS those out. But the radar still tracks them
+		// via terrain-blocking-aware fallback in the visual /
+		// IR sensor channels.) Either way, locking an AIM-9X onto a
+		// tank and firing produces a missile that thrashes around
+		// for a few seconds and dives into the ground. So just gate
+		// it: AAMs don't accept ground-class targets as locks.
+		const isAAM = (weapon && weapon.id === 'missile');
 		for (const npc of playerState.npcs) {
 			if (npc.destroyed) continue;
 			// Team filter — never lock onto friendlies (AWACS, wingman,
 			// tanker). Without this the AESA would happily paint every
 			// friendly in the sky.
 			if (npc.team && npc.team === playerState.team) continue;
+			// Ground-target filter for AAMs only. HARM / GBU / AGM
+			// don't go through findTargetsInEnvelope — they take a
+			// designation directly — so the gate here is air-only and
+			// doesn't collaterally block strike weapons.
+			if (isAAM && npc.kind === 'ground') continue;
 
 			const dot = this.calculateDotProduct(playerState, npc);
 			if (dot <= lockCone) continue;

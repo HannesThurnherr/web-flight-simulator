@@ -109,6 +109,25 @@ export function returnToSlew() {
 // "the planner committed a target; the TGP now holds it."
 export const designationQueue = [];
 
+// Cycle mode. Off (default): consuming the head shifts it off the
+// queue, so a salvo of N bombs against M queued points stops when
+// M is exhausted. On: consuming rotates the head to the back of the
+// queue instead — useful for cruise-missile training where the
+// player wants to shoot every munition they have at the same handful
+// of targets, cycling through repeatedly.
+export const designationState = { cycle: false };
+
+export function setCycleMode(on) {
+	designationState.cycle = !!on;
+}
+export function toggleCycleMode() {
+	designationState.cycle = !designationState.cycle;
+	return designationState.cycle;
+}
+export function getCycleMode() {
+	return designationState.cycle;
+}
+
 function _syncHead() {
 	if (designationQueue.length === 0) {
 		// No queued targets — fall back to the SLEW state so the
@@ -147,11 +166,34 @@ export function removeDesignationAt(index) {
 	_syncHead();
 }
 
+// Move a queued designation from one index to another, shifting the
+// rest. Used by the strike planner's drag-to-reorder UX. No-op if
+// either index is out of range or they're equal. _syncHead() runs at
+// the end so playerDesignation always reflects index 0.
+export function moveDesignation(fromIndex, toIndex) {
+	if (fromIndex < 0 || fromIndex >= designationQueue.length) return;
+	if (toIndex   < 0 || toIndex   >= designationQueue.length) return;
+	if (fromIndex === toIndex) return;
+	const [item] = designationQueue.splice(fromIndex, 1);
+	designationQueue.splice(toIndex, 0, item);
+	_syncHead();
+}
+
 // Pop the head of the queue. Called by the JDAM fire path after a
 // successful release so the next bomb targets the next queued point.
 export function consumeDesignationHead() {
 	if (designationQueue.length === 0) return;
-	designationQueue.shift();
+	if (designationState.cycle) {
+		// Rotate head to the back so the queue cycles indefinitely.
+		// This lets the player drop every munition they have onto a
+		// fixed set of N targets, looping past the end. Useful for
+		// volume-fire training (cruise-missile saturation, JDAM rake
+		// of a SAM site) where you don't want the queue to drain.
+		const head = designationQueue.shift();
+		designationQueue.push(head);
+	} else {
+		designationQueue.shift();
+	}
 	_syncHead();
 }
 

@@ -2,6 +2,7 @@ import { setMinimapCamera, getMiniViewer, getViewer, setPauseMinimapCamera, getP
 import { calculateDistance } from '../world/regions';
 import * as Cesium from 'cesium';
 import { releaseEnvelope, isStrikeWeapon } from '../systems/strikeEnvelope.js';
+import { totalWingmanAmmo } from '../systems/formation.js';
 import { MUNITIONS } from '../weapon/munitions.js';
 import { munitionIdForSimType } from '../weapon/munitionFactory.js';
 import { playerDesignation, designationQueue } from '../systems/designation.js';
@@ -588,6 +589,76 @@ export class HUD {
 				el.style.opacity = '0.6';
 			}
 		}
+	}
+
+	// 5g.4 — strike-planner queued-targets HUD strip. Compact list of
+	// the next ≤3 queued points with name (taken from a hostile npc
+	// at the same coord, if any), range to the player, and bearing
+	// arrow. Visible only when the player has a strike weapon loaded
+	// AND the queue has at least one entry — otherwise hidden so it
+	// doesn't clutter dogfights.
+	updateStrikeQueueStrip(state) {
+		const el = document.getElementById('strike-queue-strip');
+		if (!el) return;
+		const ws = state && state.weaponSystem;
+		const cur = ws && ws.getCurrentWeapon && ws.getCurrentWeapon();
+		const isStrike = cur && (cur.id === 'agm' || cur.id === 'gbu');
+		if (!isStrike || designationQueue.length === 0) {
+			el.classList.add('hidden');
+			return;
+		}
+		el.classList.remove('hidden');
+		// Resolve a name for each queued point: walk known npcs and
+		// pick the one whose lat/lon best matches (within ~150 m).
+		// Suspected briefed dots will match the unit by reference; the
+		// jitter is sub-uncertaintyM so still close enough for name
+		// matching.
+		const npcs = state.npcs || [];
+		const cosLat = Math.cos((state.lat || 0) * Math.PI / 180) || 1;
+		const lookup = (lon, lat) => {
+			let best = null;
+			let bestSq = (150 / 111320) ** 2;
+			for (const u of npcs) {
+				if (!u || u.destroyed) continue;
+				if (u.team === state.team) continue;
+				const dE = (u.lon - lon) * cosLat;
+				const dN = (u.lat - lat);
+				const sq = dE * dE + dN * dN;
+				if (sq < bestSq) { bestSq = sq; best = u; }
+			}
+			return best;
+		};
+		const N = Math.min(3, designationQueue.length);
+		const lines = [];
+		lines.push('<div class="strike-queue-strip-title">QUEUE  ' +
+			`${designationQueue.length}  · ${cur.name || cur.type}</div>`);
+		for (let i = 0; i < N; i++) {
+			const d = designationQueue[i];
+			const dE = (d.lon - state.lon) * 111320 * cosLat;
+			const dN = (d.lat - state.lat) * 111320;
+			const range = Math.hypot(dE, dN);
+			const bearing = (Math.atan2(dE, dN) * 180 / Math.PI + 360) % 360;
+			const relBearing = (((bearing - (state.heading || 0)) + 540) % 360) - 180;
+			// Compact arrow direction. 8 sectors: ↑↗→↘↓↙←↖
+			const arrows = ['↑','↗','→','↘','↓','↙','←','↖'];
+			const sector = Math.round((relBearing + 180) / 45) % 8;
+			// Mapping: relBearing -180=↓ -135=↙ -90=← -45=↖ 0=↑ 45=↗ 90=→ 135=↘ 180=↓
+			const arrowMap = ['↓','↙','←','↖','↑','↗','→','↘'];
+			const arrow = arrowMap[sector] || '↑';
+			const u    = lookup(d.lon, d.lat);
+			const name = u ? (u.name || 'TGT') : `TGT ${i + 1}`;
+			const rangeStr = range >= 1000
+				? `${(range / 1000).toFixed(1)} km`
+				: `${range.toFixed(0)} m`;
+			const cls = i === 0 ? 'strike-queue-strip-row head' : 'strike-queue-strip-row';
+			lines.push(`<div class="${cls}"><span>${i + 1}. ${name}</span>` +
+				`<span>${arrow} ${rangeStr}</span></div>`);
+		}
+		if (designationQueue.length > N) {
+			lines.push(`<div class="strike-queue-strip-row" style="opacity:0.5">` +
+				`<span>+ ${designationQueue.length - N} more</span><span></span></div>`);
+		}
+		el.innerHTML = lines.join('');
 	}
 
 	updateMissileMarkers(state) {
@@ -2100,6 +2171,7 @@ export class HUD {
 		this.updateMouseSteeringOverlay(state);
 		this.updateRwrScope(state);
 		this.updateDesignationMarkers(state);
+		this.updateStrikeQueueStrip(state);
 
 		if (state.weaponSystem) {
 			this.updateWeapons(state.weaponSystem, state);
@@ -2769,7 +2841,29 @@ export class HUD {
 		if (ammoElem) {
 			if (isOverheated) ammoElem.textContent = 'OVERHEAT';
 			else if (weapon.ammo === Infinity) ammoElem.textContent = '∞';
-			else ammoElem.textContent = String(weapon.ammo).padStart(2, '0');
+			else {
+				// Phase 5.5 — display aggregate flight ammo when wingmen
+				// are present. The trigger pull walks the formation pool
+				// (pickWingmanShooter) for AGM/GBU classes, so the
+				// player's "ammo remaining" mental model is the SUM
+				// across the formation, not just their own. Render as
+				// `total / own` when wingmen contribute, plain `total`
+				// otherwise so 0-wingmen sorties stay unchanged.
+				let extra = 0;
+				try {
+					if (weapon.id === 'agm' || weapon.id === 'gbu') {
+						extra = totalWingmanAmmo(weapon.type) || 0;
+					}
+				} catch (e) { extra = 0; }
+				const total = weapon.ammo + extra;
+				if (extra > 0) {
+					ammoElem.textContent = `${String(total).padStart(2, '0')}`;
+					ammoElem.title = `${weapon.ammo} you + ${extra} flight`;
+				} else {
+					ammoElem.textContent = String(weapon.ammo).padStart(2, '0');
+					ammoElem.title = '';
+				}
+			}
 		}
 		if (progElem) progElem.style.width = `${progressPct}%`;
 

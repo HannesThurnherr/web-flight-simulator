@@ -135,7 +135,25 @@ export class Bullet {
 				if (npc === this.launcher) continue;
 				if (npc.team && this.team && npc.team === this.team) continue;
 				const distSq = this.calculateDistSqToNPC(npc);
-				if (distSq < 400) {
+				// Hit radius scales with the target's physical size.
+				// A 20 m radius is right for a fighter (≈19 m
+				// visualSize) but 7× oversized for a cruise missile
+				// (~6 m visualSize, real airframe < 1 m wide). Without
+				// scaling, AAA bullets clip Storm Shadows / SDBs at
+				// ranges where a real round wouldn't have come close
+				// enough to fragment them.
+				//   fighter   visualSize 19 → 7.6 m hit
+				//   drone_isr           14 → 5.6 m
+				//   cruise              6  → 2.4 m → clamped to 3
+				//   bomb                4  → 1.6 m → clamped to 3
+				// Clamp [3, 22] keeps the very-small targets reachable
+				// without bullet-tunneling at 1500 m/s, and caps the
+				// very-large targets so a B-2 isn't a 50 m vacuum
+				// cleaner.
+				const sig = npc.signature;
+				const sz  = (sig && sig.visualSize) || 19;
+				const hitR = Math.max(3, Math.min(22, sz * 0.4));
+				if (distSq < hitR * hitR) {
 					this.hitTarget(npc);
 					return;
 				}

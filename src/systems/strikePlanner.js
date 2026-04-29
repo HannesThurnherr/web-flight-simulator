@@ -42,11 +42,15 @@ import {
 	removeDesignationAt,
 	designationQueue,
 	clearDesignationQueue,
+	toggleCycleMode,
+	getCycleMode,
+	moveDesignation,
 } from './designation.js';
 import { getTeamDatalink } from './teamDatalink.js';
 import { MUNITIONS } from '../weapon/munitions.js';
 import { munitionIdForSimType } from '../weapon/munitionFactory.js';
 import { isStrikeWeapon } from './strikeEnvelope.js';
+import { totalWingmanAmmo, formation, MODE_FORMATION, MODE_PATROL_RTB, MODE_PATROL_CAP, setMemberMode } from './formation.js';
 
 const COLOR_PLAYER       = Cesium.Color.fromCssColorString('#00eaff');
 const COLOR_FACTIONS = {
@@ -121,9 +125,15 @@ export class StrikePlannerView {
 		// Click vs drag is decided by total travel: tiny travel on
 		// release of 'pan' or 'unit' = click → designate.
 		this._clickBudgetPx = 6;
-		this._dragMode      = null; // 'pan' | 'target' | 'unit' | null
+		this._dragMode      = null; // 'pan' | 'target' | 'unit' | 'lasso' | null
 		this._dragTargetIdx = -1;   // index when _dragMode === 'target'
 		this._dragUnitRef   = null; // unit when _dragMode === 'unit'
+		// 5g.3 — rectangle multi-select. Shift+left-drag on empty
+		// terrain draws a screen-space rectangle and, on release,
+		// queues every visible hostile inside it as a designation.
+		this._lassoEl       = null; // HTMLElement showing the rectangle while dragging
+		this._lassoStartX   = 0;
+		this._lassoStartY   = 0;
 		this._lastX = 0;
 		this._lastY = 0;
 		this._downX = 0;
@@ -225,11 +235,42 @@ export class StrikePlannerView {
 
 		row.appendChild(mkBtn('AUTO ASSIGN', 'A', () => this.autoAssign()));
 		row.appendChild(mkBtn('CLEAR',       'C', () => clearDesignationQueue()));
+		const cycleBtn = mkBtn('CYCLE: OFF', 'L', () => {
+			toggleCycleMode();
+			this._refreshToolbar(this._lastPlayerState);
+		});
+		row.appendChild(cycleBtn);
+		this._cycleBtn = cycleBtn;
+		// Phase 5.5 — RTB / CAP toggle for the formation. Updates
+		// formation.breakBehavior live and immediately re-modes any
+		// wingmen currently in patrol — so a mid-mission decision to
+		// recall the flight (RTB → escort base) or hold them on
+		// station (CAP → keep watching the player) takes effect
+		// without going back to the spawn menu.
+		const rtbBtn = mkBtn('FLIGHT: RTB', 'R', () => {
+			formation.breakBehavior = 'rtb';
+			for (const m of formation.members) {
+				if (!m || m.destroyed) continue;
+				if (m._wingmanMode === MODE_PATROL_CAP) setMemberMode(m, MODE_PATROL_RTB);
+			}
+			this._refreshToolbar(this._lastPlayerState);
+		});
+		row.appendChild(rtbBtn);
+		this._rtbBtn = rtbBtn;
 		bar.appendChild(row);
+
+		// Transient status — used by autoAssign to surface why it
+		// did or didn't queue anything. Cleared on the next frame
+		// after a few seconds of display.
+		const flash = document.createElement('div');
+		flash.style.cssText = 'margin-top:6px; font-size:11px; min-height:14px; opacity:0.85;';
+		bar.appendChild(flash);
+		this._toolbarFlash = flash;
+		this._flashUntil = 0;
 
 		const hint = document.createElement('div');
 		hint.style.cssText = 'margin-top:6px; font-size:10px; opacity:0.55;';
-		hint.innerHTML = 'L-click empty: add target · L-drag dot: move · R-click dot: delete · L-click unit: target unit';
+		hint.innerHTML = 'L-click empty: add · L-drag dot: move · L-drag dot onto another: reorder · Shift+drag: area select · R-click dot: delete · [L] cycle · [R] flight';
 		bar.appendChild(hint);
 
 		document.body.appendChild(bar);
@@ -250,8 +291,37 @@ export class StrikePlannerView {
 		const ammo = cur && typeof cur.ammo === 'number' && cur.ammo !== Infinity
 			? cur.ammo : '—';
 		const name = cur ? (cur.name || cur.type || cur.id) : 'NO WEAPON';
+		const cycle = getCycleMode() ? '  · CYCLE' : '';
+		// Aggregate ammo across the formation for strike weapons (the
+		// planner's whole reason to exist). Wingmen ammo isn't visible
+		// otherwise, and seeing "TARGETS: 4 / 12  STORM" tells the
+		// player at a glance that they have plenty of munitions across
+		// the flight even when their own rack is empty.
+		let ammoDisp = ammo === '—' ? '' : ' / ' + ammo;
+		if (cur && (cur.id === 'agm' || cur.id === 'gbu') && typeof cur.ammo === 'number' && cur.ammo !== Infinity) {
+			const extra = totalWingmanAmmo(cur.type) || 0;
+			if (extra > 0) ammoDisp = ` / ${cur.ammo + extra}  (${cur.ammo} you, ${extra} flight)`;
+		}
 		this._toolbarStatus.textContent =
-			`TARGETS: ${designationQueue.length}${ammo === '—' ? '' : ' / ' + ammo}   ${name}`;
+			`TARGETS: ${designationQueue.length}${ammoDisp}   ${name}${cycle}`;
+		if (this._cycleBtn) {
+			this._cycleBtn.textContent = `CYCLE: ${getCycleMode() ? 'ON ' : 'OFF'}  [L]`;
+		}
+		if (this._rtbBtn) {
+			const brk = (formation.breakBehavior === 'cap') ? 'CAP' : 'RTB';
+			this._rtbBtn.textContent = `FLIGHT: ${brk}  [R]`;
+		}
+		if (this._toolbarFlash) {
+			const t = performance.now() * 0.001;
+			if (t > this._flashUntil) this._toolbarFlash.textContent = '';
+		}
+	}
+
+	_flash(msg, color = '#0f0', durationS = 4) {
+		if (!this._toolbarFlash) return;
+		this._toolbarFlash.textContent = msg;
+		this._toolbarFlash.style.color = color;
+		this._flashUntil = performance.now() * 0.001 + durationS;
 	}
 
 	// Auto-assign: queue one target per detected/stale enemy ground
@@ -262,10 +332,16 @@ export class StrikePlannerView {
 	// don't keep stacking.
 	autoAssign() {
 		const ps = this._lastPlayerState;
-		if (!ps) return;
+		if (!ps) {
+			this._flash('AUTO: no player state yet', '#ff8', 3);
+			return;
+		}
 		const ws = ps.weaponSystem;
 		const cur = ws && ws.getCurrentWeapon && ws.getCurrentWeapon();
-		if (!cur || !cur.type) return;
+		if (!cur || !cur.type) {
+			this._flash('AUTO: no weapon selected', '#ff8', 3);
+			return;
+		}
 		// Gate on the munition's seeker class, not the weapon-system
 		// slot id. GBU-* and AGM-* live in different slots (id 'gbu'
 		// vs 'agm') but the strike planner queue is the right
@@ -275,9 +351,15 @@ export class StrikePlannerView {
 		// queue point). isStrikeWeapon centralizes that decision.
 		const munId = munitionIdForSimType(cur.type);
 		const munData = munId ? MUNITIONS[munId] : null;
-		if (!isStrikeWeapon(munData)) return;
+		if (!isStrikeWeapon(munData)) {
+			this._flash(`AUTO: ${cur.name || cur.type} is not a strike weapon — switch to JDAM/SDB/ALCM/STORM`, '#f88', 5);
+			return;
+		}
 		const ammo = (typeof cur.ammo === 'number' && cur.ammo !== Infinity) ? cur.ammo : 99;
-		if (ammo <= 0) return;
+		if (ammo <= 0) {
+			this._flash('AUTO: no ammo loaded', '#f88', 3);
+			return;
+		}
 
 		const playerTeam = ps.team || 'friendly';
 		const teamDl = getTeamDatalink(playerTeam);
@@ -286,6 +368,17 @@ export class StrikePlannerView {
 		const dlIntel     = teamDl ? teamDl.intelContacts : null;
 
 		const candidates = [];
+		// Diagnostic counters — surfaced both to the toolbar flash
+		// and to the console, so when auto-assign comes up empty
+		// the player (and we) can see why instead of staring at
+		// nothing happening.
+		let nUnits = 0;
+		let nFriendly = 0;
+		let nDestroyed = 0;
+		let nNoKnowledge = 0;
+		let nDetected = 0;
+		let nStale = 0;
+		let nIntel = 0;
 		// Walk every unit we have ANY knowledge of (live sensor /
 		// stale memory / briefed / ELINT) and pick out the position
 		// the planner is currently showing for it. Sourcing the
@@ -296,8 +389,9 @@ export class StrikePlannerView {
 		// auto-assign net.
 		const units = (ps.npcs || []);
 		for (const u of units) {
-			if (!u || u.destroyed) continue;
-			if (u.team === playerTeam) continue;
+			nUnits++;
+			if (!u || u.destroyed) { nDestroyed++; continue; }
+			if (u.team === playerTeam) { nFriendly++; continue; }
 
 			let lon, lat, alt;
 			const detected = (ownContacts && ownContacts.has(u))
@@ -307,12 +401,16 @@ export class StrikePlannerView {
 
 			if (detected) {
 				lon = u.lon; lat = u.lat; alt = u.alt || 0;
+				nDetected++;
 			} else if (stale) {
 				const m = this._lastKnown.get(u);
 				lon = m.lon; lat = m.lat; alt = m.alt;
+				nStale++;
 			} else if (intel) {
 				lon = intel.lon; lat = intel.lat; alt = intel.alt || 0;
+				nIntel++;
 			} else {
+				nNoKnowledge++;
 				continue;   // no knowledge at all → skip
 			}
 
@@ -324,11 +422,58 @@ export class StrikePlannerView {
 		}
 		candidates.sort((a, b) => a.range - b.range);
 
+		console.log('[autoAssign]',
+			`units=${nUnits} friendly=${nFriendly} destroyed=${nDestroyed}`,
+			`detected=${nDetected} stale=${nStale} intel=${nIntel} noKnowledge=${nNoKnowledge}`,
+			`candidates=${candidates.length} ammo=${ammo}`,
+			`dlIntelSize=${dlIntel ? dlIntel.size : 'no-dl'}`);
+
 		clearDesignationQueue();
 		const take = Math.min(ammo, candidates.length);
 		for (let i = 0; i < take; i++) {
 			const c = candidates[i];
 			addDesignation(c.lon, c.lat, c.alt);
+		}
+
+		// Refine altitudes against actual terrain. Two reasons the
+		// unit's stored alt is not trustworthy for a GPS designation:
+		//   - Briefed intel records freeze the unit's alt at publish
+		//     time, which often runs BEFORE the static-SAM ground
+		//     clamp lands (terrain tile not loaded yet). The intel
+		//     record then permanently holds a near-zero altitude
+		//     even after the unit clamps to its real terrain height.
+		//   - Even live ground contacts may have transient mismatches
+		//     between unit alt and the terrain mesh under the bomb's
+		//     final approach (different LOD, etc).
+		// One async terrain sample per queued target, then promote
+		// the designation alt to max(unit_alt, terrain_alt). Same
+		// pattern manual click-to-add uses (_addAtScreen). Without
+		// this, GBU-/SDB-class bombs aimed at briefed SAMs in
+		// mountainous terrain crash short of the target.
+		if (take > 0) {
+			const cartos = candidates.slice(0, take).map(c =>
+				Cesium.Cartographic.fromDegrees(c.lon, c.lat));
+			Cesium.sampleTerrainMostDetailed(this.viewer.terrainProvider, cartos)
+				.then((sampled) => {
+					for (let i = 0; i < take; i++) {
+						const c = candidates[i];
+						const tH = sampled[i] && sampled[i].height;
+						if (tH != null && Number.isFinite(tH)) {
+							const alt = Math.max(c.alt, tH);
+							refineDesignationAlt(c.lon, c.lat, alt);
+						}
+					}
+				})
+				.catch(() => {});
+		}
+
+		if (take === 0) {
+			this._flash(
+				`AUTO: 0 candidates (det=${nDetected} stale=${nStale} intel=${nIntel}, ` +
+				`dlIntel=${dlIntel ? dlIntel.size : 0})`, '#f88', 5);
+		} else {
+			this._flash(`AUTO: queued ${take} target${take === 1 ? '' : 's'} ` +
+				`(det=${nDetected} stale=${nStale} intel=${nIntel})`, '#0f8', 3);
 		}
 	}
 
@@ -546,6 +691,22 @@ export class StrikePlannerView {
 						// said exists."
 						renderColor = Cesium.Color.fromCssColorString('#ffaa44').withAlpha(0.55);
 						labelText = `${labelBase}  ELINT`;
+					} else if (intel.kind === 'satellite') {
+						// Satellite snapshots tinted blue/cyan to match
+						// the "imagery from above" mental model. Label
+						// includes a freshness countdown so the player
+						// knows the snapshot is going stale and will
+						// vanish at the configured memory window. The
+						// marker auto-promotes to a bright live track
+						// the moment a sensor confirms it.
+						renderColor = Cesium.Color.fromCssColorString('#66ddff').withAlpha(0.65);
+						const ageS    = Math.max(0, now - intel.lastSeen);
+						const memS    = intel.memoryS || 600;
+						const remS    = Math.max(0, memS - ageS);
+						const remM    = Math.floor(remS / 60);
+						const remR    = Math.floor(remS) % 60;
+						const remStr  = `${remM.toString().padStart(2,'0')}:${remR.toString().padStart(2,'0')}`;
+						labelText = `${labelBase}  SAT ${remStr}`;
 					} else {
 						labelText = `${labelBase}  BRIEFED`;
 					}
@@ -672,6 +833,28 @@ export class StrikePlannerView {
 			} else if (k === 'c') {
 				e.preventDefault();
 				clearDesignationQueue();
+			} else if (k === 'l') {
+				e.preventDefault();
+				const on = toggleCycleMode();
+				this._flash(`CYCLE ${on ? 'ON — queue rotates after each shot' : 'OFF — queue drains'}`,
+					on ? '#0f8' : '#ff8', 3);
+				this._refreshToolbar(this._lastPlayerState);
+			} else if (k === 'r') {
+				e.preventDefault();
+				const next = (formation.breakBehavior === 'cap') ? 'rtb' : 'cap';
+				formation.breakBehavior = next;
+				// Re-mode any wingmen already on patrol so the change
+				// applies immediately, not on next ammo-exhaustion event.
+				for (const m of formation.members) {
+					if (!m || m.destroyed) continue;
+					if (m._wingmanMode === MODE_PATROL_CAP || m._wingmanMode === MODE_PATROL_RTB) {
+						setMemberMode(m, next === 'cap' ? MODE_PATROL_CAP : MODE_PATROL_RTB);
+					}
+				}
+				this._flash(`FLIGHT: ${next.toUpperCase()} ${next === 'cap'
+					? '— wingmen orbit your position' : '— wingmen orbit spawn'}`,
+					'#0f8', 3);
+				this._refreshToolbar(this._lastPlayerState);
 			}
 		});
 
@@ -711,6 +894,17 @@ export class StrikePlannerView {
 			if (idx >= 0) {
 				this._dragMode = 'target';
 				this._dragTargetIdx = idx;
+				// Snapshot the original lat/lon/alt so we can restore
+				// it if the gesture turns out to be a reorder (drop
+				// onto another target dot) rather than a reposition.
+				const d = designationQueue[idx];
+				this._dragOriginalPos = d ? { lon: d.lon, lat: d.lat, alt: d.alt } : null;
+			} else if (e.shiftKey) {
+				// Shift+left-drag = rectangle multi-select (5g.3).
+				this._dragMode = 'lasso';
+				this._lassoStartX = e.clientX;
+				this._lassoStartY = e.clientY;
+				this._showLasso(e.clientX, e.clientY, e.clientX, e.clientY);
 			} else {
 				const unit = this._pickUnitAt(e.clientX, e.clientY);
 				if (unit) {
@@ -747,6 +941,10 @@ export class StrikePlannerView {
 				}
 				return;
 			}
+			if (this._dragMode === 'lasso') {
+				this._showLasso(this._lassoStartX, this._lassoStartY, e.clientX, e.clientY);
+				return;
+			}
 			if (this._dragMode === 'pan') {
 				// Grab-and-drag pan (drag right → world follows
 				// right). Sensitivity scales with `distance`.
@@ -775,7 +973,38 @@ export class StrikePlannerView {
 			this._dragUnitRef = null;
 			e.stopPropagation();
 
+			if (mode === 'lasso') {
+				this._hideLasso();
+				this._commitLasso(this._lassoStartX, this._lassoStartY, e.clientX, e.clientY);
+				return;
+			}
+
 			if (mode === 'target') {
+				// Drag-to-reorder: if the user dropped onto another
+				// queued target dot, splice the dragged one to that
+				// dot's position. Otherwise the gesture committed a
+				// move-by-position (existing behavior) — refine the
+				// terrain alt at the new spot.
+				const dropIdx = this._pickTargetIndexAt(e.clientX, e.clientY);
+				if (dropIdx >= 0 && dropIdx !== idx) {
+					// Reorder. The dot was visually following the
+					// cursor; restore its original lat/lon since
+					// we're using the gesture as "intent to reorder"
+					// not "intent to move." Then splice in the new
+					// position.
+					const moved = designationQueue[idx];
+					if (moved && this._dragOriginalPos) {
+						moved.lon = this._dragOriginalPos.lon;
+						moved.lat = this._dragOriginalPos.lat;
+						moved.alt = this._dragOriginalPos.alt;
+					}
+					this._dragOriginalPos = null;
+					moveDesignation(idx, dropIdx);
+					this._flash(`reordered: target ${idx + 1} → slot ${dropIdx + 1}`,
+						'#0f8', 2);
+					return;
+				}
+				this._dragOriginalPos = null;
 				// Refine alt on the dragged target (cheap one-shot
 				// terrain sample at the dropped lat/lon).
 				const d = designationQueue[idx];
@@ -878,5 +1107,94 @@ export class StrikePlannerView {
 		Cesium.sampleTerrainMostDetailed(this.viewer.terrainProvider, [carto])
 			.then(([p]) => refineDesignationAlt(lon, lat, Math.max(0, p.height || 0)))
 			.catch(() => {});
+	}
+
+	// ---- Rectangle multi-select (5g.3) ---------------------------------------
+	//
+	// Shift+drag draws a screen-space rectangle. On release, every
+	// hostile unit currently rendered as a planner marker (live, stale,
+	// or intel) whose screen-projected position falls inside the
+	// rectangle gets queued as a designation. Friendlies and the player
+	// are excluded. Useful for "blanket-target this whole SAM cluster"
+	// without 8 individual unit-clicks.
+
+	_showLasso(x0, y0, x1, y1) {
+		if (!this._lassoEl) {
+			const el = document.createElement('div');
+			el.style.cssText = `
+				position: absolute;
+				background: rgba(0, 255, 0, 0.08);
+				border: 1px dashed rgba(0, 255, 0, 0.7);
+				pointer-events: none;
+				z-index: 60;
+			`;
+			document.body.appendChild(el);
+			this._lassoEl = el;
+		}
+		const left = Math.min(x0, x1);
+		const top  = Math.min(y0, y1);
+		const w    = Math.abs(x1 - x0);
+		const h    = Math.abs(y1 - y0);
+		this._lassoEl.style.left   = `${left}px`;
+		this._lassoEl.style.top    = `${top}px`;
+		this._lassoEl.style.width  = `${w}px`;
+		this._lassoEl.style.height = `${h}px`;
+		this._lassoEl.style.display = 'block';
+	}
+
+	_hideLasso() {
+		if (this._lassoEl) this._lassoEl.style.display = 'none';
+	}
+
+	// Walk every visible hostile-unit marker, project its world
+	// position to screen, and queue any whose screen point falls inside
+	// the rectangle. Skip friendlies and missiles (the latter already
+	// have their own marker class but aren't useful as designations).
+	_commitLasso(x0, y0, x1, y1) {
+		const left = Math.min(x0, x1);
+		const right = Math.max(x0, x1);
+		const top    = Math.min(y0, y1);
+		const bottom = Math.max(y0, y1);
+		// Reject zero-size / tiny rectangles — those are probably
+		// shift-clicks that didn't actually drag, and committing 0
+		// targets would be confusing.
+		if (right - left < 4 || bottom - top < 4) {
+			this._flash('AREA SELECT: rectangle too small', '#ff8', 2);
+			return;
+		}
+		const ps = this._lastPlayerState;
+		const playerTeam = (ps && ps.team) || 'friendly';
+		const scene = this.viewer.scene;
+		let added = 0;
+		for (const [id, ent] of this._markers) {
+			if (!ent || !ent.show) continue;
+			if (id === '__player') continue;
+			if (id.startsWith('m-')) continue;          // missiles
+			const u = ent.__strikeUnit;
+			if (!u) continue;                            // friendlies are stamped null
+			if (u.destroyed) continue;
+			if (u.team === playerTeam) continue;
+			// Marker's CURRENT position (Cesium ConstantPositionProperty).
+			const pos = ent.position && ent.position.getValue
+				? ent.position.getValue(this.viewer.clock.currentTime)
+				: ent.position;
+			if (!pos) continue;
+			const screen = scene.cartesianToCanvasCoordinates(pos);
+			if (!screen) continue;
+			if (screen.x < left || screen.x > right) continue;
+			if (screen.y < top  || screen.y > bottom) continue;
+			// Project the marker's lat/lon back from the world position
+			// (more accurate than reading u.lon/lat for intel-displayed
+			// suspected dots, where the marker sits on the jittered
+			// briefed coord, not the unit's true position).
+			const carto = Cesium.Cartographic.fromCartesian(pos);
+			const lon = Cesium.Math.toDegrees(carto.longitude);
+			const lat = Cesium.Math.toDegrees(carto.latitude);
+			const alt = u.alt || carto.height || 0;
+			addDesignation(lon, lat, alt);
+			added++;
+		}
+		this._flash(`AREA SELECT: queued ${added} target${added === 1 ? '' : 's'}`,
+			added > 0 ? '#0f8' : '#ff8', 3);
 	}
 }

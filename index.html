@@ -374,6 +374,26 @@
 			</div>
 		</div>
 
+		<div id="formation-config" class="formation-config hidden">
+			<div class="formation-config-row">
+				<span class="formation-config-label">WINGMEN</span>
+				<button type="button" class="formation-count-btn clickable-ui" data-count="0">0</button>
+				<button type="button" class="formation-count-btn clickable-ui" data-count="1">1</button>
+				<button type="button" class="formation-count-btn clickable-ui" data-count="2">2</button>
+				<button type="button" class="formation-count-btn clickable-ui" data-count="3">3</button>
+			</div>
+			<div class="formation-config-row">
+				<span class="formation-config-label">WINCHESTER</span>
+				<button type="button" class="formation-break-btn clickable-ui" data-break="rtb">RTB</button>
+				<button type="button" class="formation-break-btn clickable-ui" data-break="cap">CAP</button>
+			</div>
+			<div class="formation-config-hint">
+				Wingmen carry the same loadout. Player fires their munitions first.
+				WINCHESTER = what they do when out of strike weapons (RTB: orbit spawn /
+				CAP: orbit you).
+			</div>
+		</div>
+
 		<button id="confirmSpawnBtn" class="menu-btn hidden spawn-confirm-btn">CONFIRM SPAWN POINT</button>
 	</div>
 
@@ -388,6 +408,8 @@
 			TIME <span id="time">00:00:00</span><br>
 			SCORE <span id="score">000000</span>
 		</div>
+
+		<div id="strike-queue-strip" class="strike-queue-strip hidden"></div>
 
 		<div id="hud-top-right">
 			FPS <span id="fps">60</span><br>
