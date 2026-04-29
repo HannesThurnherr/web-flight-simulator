@@ -85,14 +85,22 @@ export class CruiseSeeker extends Missile {
 
 	// Forward-look terrain max over a lookahead corridor. Sample
 	// terrain at N points spaced along the missile's heading and
-	// return the HIGHEST elevation found. TFR uses this (not the
-	// terrain directly under the missile) so the missile climbs to
-	// clear ridges BEFORE it reaches them — a "look at the terrain
-	// I'm about to fly over, not the terrain I'm currently above."
-	// At 250 m/s cruise + 8° max climb angle the missile climbs
-	// ~35 m/s vertically, so a 2 km lookahead gives ~8 s reaction
-	// time, enough to clear most terrain features at TFR altitude.
-	_forwardTerrainMax(lookAheadM = 2000, samples = 5) {
+	// return the HIGHEST elevation found. TFR uses this so the
+	// missile climbs to clear ridges BEFORE it reaches them.
+	//
+	// At 250 m/s cruise the lookahead distance directly maps to
+	// reaction time:  6 km lookahead = 24 s.  At a max climb rate
+	// of ~70 m/s (achievable when the emergency-G boost in CRUISE
+	// kicks in) that gives ~1700 m of altitude gain potential
+	// before reaching whatever terrain feature is at the far end
+	// of the lookahead — enough to clear most mountain ridges in
+	// the SEAD-scenario terrain.
+	//
+	// Sample density (15 every 400 m) ensures a sharp ridge near
+	// either end of the corridor still gets picked up; the previous
+	// 5-sample density could miss a ridge that fell between two
+	// samples 400 m apart.
+	_forwardTerrainMax(lookAheadM = 6000, samples = 15) {
 		const headingRad = this.heading * Math.PI / 180;
 		const cosLat = Math.cos(this.lat * Math.PI / 180) || 1;
 		let maxH = this._terrainAtCurrent();
@@ -187,21 +195,27 @@ export class CruiseSeeker extends Missile {
 				// Hold the cruise altitude target via proportional
 				// pitch. AGL mode uses the FORWARD terrain max so
 				// the missile climbs to clear a ridge BEFORE it
-				// hits one. Asymmetric gains: climb aggressively
-				// (it's worse to fly into a hill than to overshoot
-				// cruise altitude briefly).
+				// hits one.
 				//
-				// Emergency-G boost: when terrain-avoidance demands a
-				// climb, temporarily raise the turn-G cap to the
-				// seeker's full maxG so the pitch can swing up fast
-				// enough. Cruise at the configured cruiseTurnG when
-				// the missile is on or above its cruise altitude.
+				// SAFETY_BUFFER_M added on top of cruiseAltM so the
+				// missile starts climbing while there's still margin
+				// — without the buffer, a step in the lookahead-max
+				// terrain reads as "exactly at cruise alt" and the
+				// missile holds level instead of climbing, then
+				// arrives at the ridge with no margin.
+				//
+				// Asymmetric gains: climb aggressively (5°/m of
+				// positive error, capped at 50°), descend gently.
+				// Emergency-G boost on positive error so the pitch
+				// can swing up fast — the configured cruiseTurnG is
+				// for navigation, not survival.
+				const SAFETY_BUFFER_M = 60;
 				const cruiseTargetAlt = (f.cruiseAltMode === 'agl')
-					? this._forwardTerrainMax() + f.cruiseAltM
+					? this._forwardTerrainMax() + f.cruiseAltM + SAFETY_BUFFER_M
 					: f.cruiseAltM;
 				const altErr = cruiseTargetAlt - this.alt;
 				if (altErr > 0) {
-					desiredPitch = Math.min(35, altErr * 2.0);
+					desiredPitch = Math.min(50, altErr * 5.0);
 					turnGCap     = this.data.seeker.maxG;
 				} else {
 					desiredPitch = Math.max(-10, altErr / 200 * 5);
