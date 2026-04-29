@@ -252,10 +252,12 @@ _loader.load('/assets/models/gbu-38-jdam.glb', (gltf) => {
 
 // GBU-31 JDAM (2000 lb) — no dedicated GLB yet, reuse the
 // 500 lb GBU-38 mesh scaled up to the 2000 lb body length
-// (3.84 m). Same orientation handling as the 38.
+// (3.84 m). The 31 ships nose-aft after normalize for reasons
+// I can't reproduce vs the 38 (same source, same code path);
+// no rotation.z flip = correct orientation here. If the 38
+// silhouette ever flips too, both lines need to track.
 _loader.load('/assets/models/gbu-38-jdam.glb', (gltf) => {
 	_templates['jdam-31'] = _normalizeMissileModel(gltf.scene, 3.84);
-	_templates['jdam-31'].rotation.z = Math.PI;
 	_templates['jdam-31'].traverse((child) => {
 		if (child.isMesh) {
 			child.castShadow = true;

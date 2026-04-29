@@ -29,10 +29,10 @@
 		"cruiseAltM": 120,
 		"cruiseAltMode": "agl",
 		"cruiseTurnG": 1.5,
-		"climbAngleDeg": 8,
-		"terminalRangeM": 6000,
-		"popUpAltAGL": 600,
-		"diveAngleDeg": -45
+		"climbAngleDeg": 15,
+		"terminalRangeM": 9000,
+		"popUpAltAGL": 1500,
+		"diveAngleDeg": -50
 	},
 	"warhead": {
 		"killRadiusM": 80,

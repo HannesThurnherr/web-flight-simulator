@@ -221,16 +221,18 @@ export class CruiseSeeker extends Missile {
 				break;
 			}
 			case STATE_DIVE: {
-				// Hold the configured dive angle (negative pitch)
-				// pointed at target heading. The geometry of
-				// (cruise/popup alt) ÷ tan(diveAngle) determines how
-				// much horizontal distance the missile covers
-				// before impact. terminalRangeM in the JSON should
-				// match that geometry — too short and the missile
-				// runs out of horizontal before reaching the ground;
-				// too long and it impacts past the target.
+				// Hold a dive pitched at LEAST as steep as the
+				// configured diveAngleDeg, but use the geometric
+				// required pitch if the actual look-down to target
+				// is steeper (because the missile is high or close).
+				// Without this clamp the missile would hold a flat
+				// -45° all the way down and overshoot whenever the
+				// real geometry calls for -60° — which is exactly
+				// what happens after the pop-up phase, when the
+				// missile is briefly above its dive line.
+				const geometricPitch = Math.atan2(dU, Math.max(1, horizRange)) * 180 / Math.PI;
 				desiredHeading = desiredHeadingToTgt;
-				desiredPitch   = f.diveAngleDeg;
+				desiredPitch   = Math.min(geometricPitch, f.diveAngleDeg);
 				turnGCap       = this.data.seeker.maxG;
 				break;
 			}
