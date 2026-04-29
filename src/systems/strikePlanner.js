@@ -280,25 +280,42 @@ export class StrikePlannerView {
 		if (ammo <= 0) return;
 
 		const playerTeam = ps.team || 'friendly';
+		const teamDl = getTeamDatalink(playerTeam);
+		const ownContacts = ps.contacts || null;
+		const dlContacts  = teamDl ? teamDl.contacts : null;
+		const dlIntel     = teamDl ? teamDl.intelContacts : null;
+
 		const candidates = [];
-		// Each marker we've drawn this frame that has a __strikeUnit
-		// pointer is a valid candidate (already filtered by team-
-		// knowledge in _syncMarkers, including stale entries).
-		for (const ent of this._markers.values()) {
-			const u = ent.__strikeUnit;
+		// Walk every unit we have ANY knowledge of (live sensor /
+		// stale memory / briefed / ELINT) and pick out the position
+		// the planner is currently showing for it. Sourcing the
+		// position from the underlying knowledge record (not from
+		// the Cesium entity's wrapped position property) avoids
+		// Cesium-property quirks that previously caused
+		// briefed-suspected markers to silently slip through the
+		// auto-assign net.
+		const units = (ps.npcs || []);
+		for (const u of units) {
 			if (!u || u.destroyed) continue;
 			if (u.team === playerTeam) continue;
-			// Use the rendered position (which is `_lastKnown` for
-			// stale, live for detected) so the queued target lat/lon
-			// matches what the planner shows.
-			const cart = ent.position && ent.position.getValue
-				? ent.position.getValue(this.viewer.clock.currentTime)
-				: ent.position;
-			if (!cart) continue;
-			const carto = Cesium.Cartographic.fromCartesian(cart);
-			const lon = Cesium.Math.toDegrees(carto.longitude);
-			const lat = Cesium.Math.toDegrees(carto.latitude);
-			const alt = Math.max(0, carto.height || 0);
+
+			let lon, lat, alt;
+			const detected = (ownContacts && ownContacts.has(u))
+				|| (dlContacts && dlContacts.has(u));
+			const stale = !detected && this._lastKnown.has(u);
+			const intel = (!detected && !stale && dlIntel) ? dlIntel.get(u) : null;
+
+			if (detected) {
+				lon = u.lon; lat = u.lat; alt = u.alt || 0;
+			} else if (stale) {
+				const m = this._lastKnown.get(u);
+				lon = m.lon; lat = m.lat; alt = m.alt;
+			} else if (intel) {
+				lon = intel.lon; lat = intel.lat; alt = intel.alt || 0;
+			} else {
+				continue;   // no knowledge at all → skip
+			}
+
 			const cosLat = Math.cos(ps.lat * Math.PI / 180) || 1;
 			const dE = (lon - ps.lon) * 111320 * cosLat;
 			const dN = (lat - ps.lat) * 111320;
