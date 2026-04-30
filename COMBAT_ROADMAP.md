@@ -1054,24 +1054,90 @@ removing the realistic default.
 6. Friendly-fire penalty (kill log + score)
 7. Velocity uncertainty (6d.2 — separate commit, builds on 6d.1)
 
-### 6e — Jamming (with full UX surface)
+### 6e — Jamming + EW engagement
 
-Now safe to land — there's a scope to render the jam strobe into,
-modes to interact with (TWS-jamming vs STT-jamming behave
-differently in real radar physics), and a known mode display so
-state changes are visible.
+Both passive (jammers in the world degrade your sensors) and active
+(player engages jammers as a weapon AND as a countermeasure). Built
+in layers so we ship visible mechanics early.
 
-- `JammerSubsystem` on EA platforms (Growler, AWACS, dedicated EW
-  pods). Reduces victim's `detectRadar` range in ±10° cone toward
-  jammer; burn-through when range < `burnThroughRangeM`.
-- **What the player sees:**
-  - Jam strobe on the scope, distinct hatch pattern from RWR
-  - HUD callout `RDR: JAMMED ±10°` with affected cone shown
-  - Range-degradation indicator (effective range right now)
-  - On jam acquired: brief flash `JAM ACQUIRED → 045°`
-  - On burn-through: `BURNTHROUGH @ 12 km` callout
-- **Gameplay arc:** penetrate from a different direction, kill the
-  jammer, or push to burn-through.
+#### 6e.1 — Core JammerSubsystem + receive-side visualization
+
+The plumbing every later sub-phase needs.
+
+- New `src/systems/ew/jammerSubsystem.js`. Per-platform config:
+    `power`           jammer effective radiated power
+    `type`            'radar' | 'comms' | 'both'
+    `beamCount`       simultaneous victims (1 default; 3 for EA-18G)
+    `coneHalfDeg`     ±cone half-angle (narrow = directional pod,
+                      wide = spread spectrum)
+    `target`          current designated victim (unit ref, or null)
+- Hook into `sensorSystem.detectRadar`: when scanning, accumulate
+  jamming attenuation along the path "observer ← jammers in cone".
+  Reduces victim's effective range for that scan; burn-through
+  when range < `power / k * 1`.
+- New EA-18G Growler platform JSON (friendly EW asset, orbits like
+  AWACS but with comms+radar jammer pod active by default).
+- Scope visualization for receive-side: distinct hatched **jam
+  strobe** at jammer's bearing, range degradation readout
+  `RNG: 80 → 32 km · JAM 045°`.
+- HUD toast on jam-acquired / burnthrough state changes.
+
+#### 6e.2 — Player targeted jamming (weapon-style)
+
+Player jet gets an `AN/ALQ-218` jammer pod as a weapon-system slot.
+
+- Selectable via Q. Like the gun, "infinite ammo" but duty-cycle
+  limited (8 s sustained → 4 s cool-down, displayed as a heat bar
+  alongside gun heat).
+- Designation: with the jammer selected, Tab cycles through the
+  RWR strobe list + AESA radar contacts. Designated emitter gets
+  the energy when you press F/Enter.
+- Engagement: F/Enter held = sustained beam. Release = stop.
+- Visualization on scope: **narrow cone with animated diagonal
+  stipple moving outward** from own-ship-center toward the
+  designated victim's bearing. Color-coded by jam class:
+  red-orange = radar-jam, magenta = comms-jam.
+- Effect: while engaged, the victim's radar gets a ~60 % range
+  degradation against you AND any of their inbound active-radar
+  missiles get their midcourse update rate cut to ~5 Hz from 20.
+
+#### 6e.3 — Reactive jamming countermeasure (flare-style)
+
+One-shot burst, dispenser pattern alongside flares + chaff.
+
+- New `J` key (or pickle-rebind alongside V). Press = 2 s broadband
+  burst.
+- Effect: every active-radar missile inbound within ~6 km rolls
+  break-lock probability based on jam quality + missile generation.
+  IR missiles unaffected.
+- Limits: 6 bursts per sortie, counter on HUD CMDS panel.
+- Visualization: brief expanding sphere from own-ship; all RWR
+  strobes momentarily double-spike (we're stomping back).
+
+#### 6e.4 — Comms jamming → datalink degradation
+
+Once the jammer subsystem exists with `type: 'comms'`, this is
+small.
+
+- Comms-type jammers attenuate `teamDatalink.publishContacts`
+  reception in cone toward jammer. Datalink contacts age out for
+  victims under cone.
+- Auto-flips IFF realism on for any contact whose DL update is
+  stale (this is what makes 6d's plumbing earn its keep).
+- HUD toast: `LINK-16 DEGRADED — DATALINK SPOTTY`.
+
+#### Ship order
+
+```
+6e.1  Core subsystem + NPC jammer + receive-side viz   1 day
+6e.2  Player targeted jamming                          1 day
+6e.3  Player reactive countermeasure                   ½ day
+6e.4  Comms jam → DL degradation → IFF auto-engage     ½ day
+```
+
+Total ~3 days. 6e.1 is foundational and lands first. 6e.2 and 6e.3
+are independent — ship in either order based on what's more fun
+to test.
 
 ### 6f — Chaff (revisits deferred Phase 1.1 / 1.2 / 1.5)
 
