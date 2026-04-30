@@ -822,26 +822,199 @@ ammo, controlled centrally so the player still calls every shot.
 
 ## Phase 6 — EW, IFF, sensor realism
 
-Goal: the "too perfect" feel disappears.
+Goal: the "too perfect" feel disappears — but legibly. Every effect
+that changes detection comes with a HUD/RWR cue, every state change
+is announced briefly when it happens, and the strike planner's intel-
+source labeling reflects the same effects (jammed contacts greyed,
+unknown amber). Without that discipline, EW just feels like the
+radar randomly got worse.
 
-1. **Jamming.** `JammerSubsystem` on AWACS + dedicated EA platforms. Produces
-   a `jammingStrobe` contact (bearing-only, no range). Drops victim's
-   `detectRadar()` range ~40 % in ±10° cone toward jammer. Burn-through when
-   range < `burnThroughRangeM`.
-2. **IFF.** Replace `team === team` with `identifyContact(observer, target)`
-   returning `'friendly' | 'hostile' | 'unknown'`. Driven by IFF interrogation
-   success + visual-ID range + NCTR. Unknowns appear amber on RWR / HUD;
-   shooting an unknown carries kill-friendly risk.
-3. **Radar modes complete.** `RWS | TWS | STT`. TWS tracks N (≈ 6) while
-   displaying all; STT locks one with higher update rate. Only STT enables
-   AMRAAM midcourse update — TWS profile = maddog.
-4. **Datalink fusion upgrade.** Publish IR + visual contacts too, not just
-   radar. Fuse by spatial proximity so one bandit doesn't show as three
-   tracks.
+### 6a — Radar / SA scope (foundational UX) ⏳
 
-**Files:** new `src/systems/ew/jammerSubsystem.js`, new
-`src/systems/iff.js`, `src/systems/sensorSystem.js`,
-`src/systems/teamDatalink.js`.
+A dedicated tactical situation display on the HUD. Builds the
+display surface that 6b–6g need; without it, every later sub-phase
+ships an invisible mechanic with no place to render its state.
+
+**Layout:**
+- **Compact mode** (default): ~220 × 220 px panel, bottom-right of
+  HUD, always visible while a missile weapon is selected.
+- **Expanded mode** (toggled via a key, e.g. `\``): full-overlay
+  scope, ~700 × 700 px centered, dimmed cockpit underneath.
+- B-scope projection (bearing × range, own-ship at bottom-center)
+  for air-to-air. PPI optional later for ground-mapping radars.
+- Selectable range scale: cycle 10 / 20 / 40 / 80 nm via a dedicated
+  key. Range tics drawn as concentric arcs; current scale labeled.
+
+**Radar FOV visualization (the cranking-friendly part):**
+- The antenna's azimuth scan limits drawn as left/right wedge
+  edges, anchored at own-ship symbol. As the player turns / cranks,
+  the wedge sweeps relative to ground-stabilized contacts —
+  giving an immediate visual "am I about to lose this contact off
+  the right edge?" read.
+- Bar pattern: elevation lines drawn at the current bar's vertical
+  limits. Subtler — just enough to see "I'm scanning low" vs "I'm
+  scanning level" at a glance.
+- Designated-target gimbal indicator: a thin line from own-ship
+  through the designated track, with a dashed extension to the
+  scope's edge. When that line gets close to a wedge edge, a
+  `GIMBAL` warning blinks — you're about to crank yourself out of
+  your own missile's midcourse update.
+
+**Contact iconography:**
+- **Radar track** — filled square (own-radar contact). Locked = box
+  + corner ticks (existing AESA-lock visual mirrored from the HUD).
+- **Datalink track** — hollow square (friend's radar painted it,
+  fused into your picture).
+- **IRST / visual contact** — open circle (no range — drawn at
+  best-guess range from sensor-fusion or at maximum scope range
+  if range-unknown).
+- **RWR strobe** — bearing-only spike from own-ship, length ∝
+  signal strength. Reaches the scope's edge for max signal. Color
+  by emitter class (search/track/STT-lock — the same `lockType`
+  classification already exists on contact records).
+- **Jam strobe** (lands with 6e) — bearing-only with a noisy
+  cross-hatch fill, distinct from RWR strobes.
+- **Designated target** — bigger / brighter / pulsing highlight on
+  whichever track is in `weaponSystem.designatedTarget`.
+
+**RWR integration option:**
+The current RWR scope already exists as a separate panel. Two
+choices:
+1. Keep RWR separate; use its data to drive the new scope's
+   bearing-only strobes. (Simpler, less duplication.)
+2. Fold RWR into the new scope as a "passive layer" — strobes drawn
+   alongside radar tracks. Closer to real fighter SA displays
+   (F-35's MFD) but more complex.
+Recommend (2) — single pane of glass for SA, less HUD clutter,
+matches the user's "combine with RWR idk" intuition.
+
+**Mode/state row at scope bottom:**
+- Current radar mode (RWS / TWS / STT — placeholder until 6b lands)
+- Range scale (e.g. `40 NM`)
+- # of tracks held / max
+- Jam status (e.g. `JAM 045°` or `BURNTHROUGH 12 km` once 6e lands)
+- Mode label colored by aggression: cyan for RWS, amber for TWS,
+  red for STT (the "I'm committing" mode).
+
+**Files:** new `src/ui/radarScope.js` (DOM canvas + render loop),
+extends `src/ui/hud.js` (mount point + key handler), CSS additions.
+
+### 6b — Radar modes (RWS / TWS / STT)
+
+Mechanically simplest of the EW behaviors; player gets a knob they
+actively use, so the system is explicit, not invisible. Now has a
+display surface (6a) to render the choice into.
+
+- **RWS (Range While Scan)** — wide volume sweep, no firing-grade
+  tracks, low RWR signature on victims. Default cruise mode.
+- **TWS (Track While Scan)** — tracks N (≈ 6) targets simultaneously
+  with reduced update rate. AMRAAM in TWS = maddog (no midcourse
+  update; missile self-acquires).
+- **STT (Single Target Track)** — one target at high update rate,
+  full midcourse update, **but** the victim's RWR sees a distinct
+  STT-class lock spike. STT is committing — the bandit knows.
+
+The decision becomes "sneak the maddog (TWS, lower Pk, surprise)
+vs commit (STT, high Pk, the bandit knows you fired)."
+
+**Player UX:** dedicated `T` key cycles RWS → TWS → STT. Mode
+prominent in the new scope's bottom row + the RWR shows lock-type
+class. Strike planner toolbar shows current mode while the planner's
+open.
+
+### 6c — Emcon / radar-off discipline
+
+The player's radar is always on today. Real BVR doctrine: radar OFF
+during ingress, datalink-driven SA from AWACS / wingmen, paint short
+bursts only when needed.
+
+- Dedicated `O` key (or similar) toggles radar on/off.
+- Radar OFF → own scope shows ONLY datalink + RWR contacts. No
+  active scan.
+- Combined with terrain masking (already in sim) and wide-area ISR
+  (5j), enables real silent ingress to AMRAAM range.
+
+### 6d — IFF + unknown contact state
+
+The "perfect team filter" goes away. IFF interrogation can fail.
+
+- Replaces `team === team` with `identifyContact(observer, target)`
+  returning `'friendly' | 'hostile' | 'unknown'`.
+- Drivers: IFF interrogation success rate, visual-ID at close
+  range (auto-resolves), NCTR at high signal strength (resolves to
+  hostile if no friendly squawk).
+- New color on the scope + RWR + HUD: **amber** for unknown.
+- First unknown contact pops a brief `UNKNOWN — IFF FAIL` tag so
+  the player learns the system.
+- Shooting unknown carries blue-on-blue risk — adds real ROE
+  pressure to BVR shots.
+
+### 6e — Jamming (with full UX surface)
+
+Now safe to land — there's a scope to render the jam strobe into,
+modes to interact with (TWS-jamming vs STT-jamming behave
+differently in real radar physics), and a known mode display so
+state changes are visible.
+
+- `JammerSubsystem` on EA platforms (Growler, AWACS, dedicated EW
+  pods). Reduces victim's `detectRadar` range in ±10° cone toward
+  jammer; burn-through when range < `burnThroughRangeM`.
+- **What the player sees:**
+  - Jam strobe on the scope, distinct hatch pattern from RWR
+  - HUD callout `RDR: JAMMED ±10°` with affected cone shown
+  - Range-degradation indicator (effective range right now)
+  - On jam acquired: brief flash `JAM ACQUIRED → 045°`
+  - On burn-through: `BURNTHROUGH @ 12 km` callout
+- **Gameplay arc:** penetrate from a different direction, kill the
+  jammer, or push to burn-through.
+
+### 6f — Chaff (revisits deferred Phase 1.1 / 1.2 / 1.5)
+
+Now that 6e gives the player jamming as an inbound threat-class,
+chaff completes the player's defensive toolkit. Reuses the flare
+dispenser pattern.
+
+- New `C` key dispenses a chaff cloud. Active-radar seekers
+  (AIM-120 / future Meteor / NASAMS) probability-of-break-lock
+  function of seeker quality + chaff cloud doppler matched to
+  victim's beam direction.
+- HUD chaff counter, `CHAFF` callout on dispense, RWR shows
+  lock-loss when it works.
+- NPC AI (Phase 1.5 unblocked) dispenses chaff coordinated with
+  notching.
+
+### 6g — Datalink fusion upgrade
+
+Mostly invisible improvement to existing fused picture; ships last.
+
+- Publish IR + visual contacts too, not just radar.
+- Fuse N reports of the same bandit (within spatial proximity) into
+  one track.
+- One visible callout: tracks now carry a `source` decoration
+  (R/IR/EO/INTEL) on the strike planner so the player can tell
+  which sensor channel produced the data.
+
+### Sequencing
+
+```
+6a  Radar / SA scope            — foundational UI, ~1 day
+6b  Radar modes (RWS/TWS/STT)   — ~½ day, plugs into 6a
+6c  Emcon (radar OFF)           — ~3 hr, falls out of 6a/6b
+6d  IFF + unknown               — ~1 day, well-bounded UX
+6e  Jamming                     — ~2 days, biggest UX investment
+6f  Chaff (with NPC doctrine)   — ~1 day, reuses dispenser pattern
+6g  Datalink fusion             — ~½ day, mostly invisible
+```
+
+If you ship 6a + 6b + 6c + 6d and stop, you have ~80 % of Phase 6's
+gameplay benefit (explicit radar control + IFF-driven ROE pressure
++ silent ingress) with zero of the "the radar randomly got worse"
+frustration risk. 6e–6g add depth on top.
+
+**Files:** new `src/ui/radarScope.js`, new
+`src/systems/ew/jammerSubsystem.js`, new `src/systems/iff.js`,
+extends `src/systems/sensorSystem.js`, `src/systems/teamDatalink.js`,
+`src/ui/hud.js`.
 
 ---
 
