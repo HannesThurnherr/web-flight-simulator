@@ -1082,37 +1082,63 @@ The plumbing every later sub-phase needs.
   `RNG: 80 → 32 km · JAM 045°`.
 - HUD toast on jam-acquired / burnthrough state changes.
 
-#### 6e.2 — Player targeted jamming (weapon-style)
+#### 6e.2 — Player targeted jamming (offensive, sustained)
 
-Player jet gets an `AN/ALQ-218` jammer pod as a weapon-system slot.
+Player jet gets an `AN/ALQ-218`-class jammer pod.
 
-- Selectable via Q. Like the gun, "infinite ammo" but duty-cycle
-  limited (8 s sustained → 4 s cool-down, displayed as a heat bar
-  alongside gun heat).
+- Selectable via Q. **No artificial cooldown / ammo / heat-bar** —
+  real EW pods run continuously for the whole mission. The cost
+  isn't a duty cycle; it's HARM-attraction (see below).
 - Designation: with the jammer selected, Tab cycles through the
   RWR strobe list + AESA radar contacts. Designated emitter gets
   the energy when you press F/Enter.
 - Engagement: F/Enter held = sustained beam. Release = stop.
+  Stays on as long as you want. Toggle-mode (press once = on,
+  press again = off) is a UX option to consider once we test.
 - Visualization on scope: **narrow cone with animated diagonal
   stipple moving outward** from own-ship-center toward the
   designated victim's bearing. Color-coded by jam class:
   red-orange = radar-jam, magenta = comms-jam.
 - Effect: while engaged, the victim's radar gets a ~60 % range
   degradation against you AND any of their inbound active-radar
-  missiles get their midcourse update rate cut to ~5 Hz from 20.
+  missiles get their midcourse update rate cut hard.
 
-#### 6e.3 — Reactive jamming countermeasure (flare-style)
+**The cost (realistic, not arbitrary)**:
+- Every hostile unit with `seekerType === 'anti_radiation'` (HARM,
+  Vympel-class anti-radar AAMs) seeing you on RWR ranks you as a
+  high-priority target. Their pickTarget logic gets an "active EW
+  emitter" multiplier.
+- Your effective RCS for emcon purposes is broken: any hostile
+  whose radar can paint your direction now sees not just radar
+  return but an emitter signature too. Detect range against you
+  effectively doubles in cone toward the jammer beam.
+- Comms-jamming variant adds the LINK-16 degradation to your own
+  team if cone overlaps friendlies (don't shotgun blast).
 
-One-shot burst, dispenser pattern alongside flares + chaff.
+#### 6e.3 — Reactive defensive jamming (sustained, automatic)
 
-- New `J` key (or pickle-rebind alongside V). Press = 2 s broadband
-  burst.
-- Effect: every active-radar missile inbound within ~6 km rolls
-  break-lock probability based on jam quality + missile generation.
-  IR missiles unaffected.
-- Limits: 6 bursts per sortie, counter on HUD CMDS panel.
-- Visualization: brief expanding sphere from own-ship; all RWR
-  strobes momentarily double-spike (we're stomping back).
+Same pod, "DEFENSIVE" mode. Replaces the "burst-charges" model —
+real ECM stays on through a missile's full endgame, not a 2 s pulse.
+
+- Toggle key (e.g. `J`) flips DEFENSIVE on / off. While on, jammer
+  pod is broadcasting a wide-area protective bubble.
+- Effect: each active-radar missile inbound rolls a per-second
+  break-lock probability proportional to jam power vs missile
+  seeker generation. AMRAAM in terminal = ~10 % per second
+  break-lock; older Sparrow-class ~30 %; modern AIM-260 stiffer.
+  IR missiles entirely unaffected (different physics).
+- **No charge counter** — runs as long as toggled. Cost is the same
+  HARM-attraction as offensive mode; defensive mode is "always-on
+  bubble" doctrine.
+- Visualization: persistent faint shimmer pattern on the RWR scope
+  (we're emitting), plus a small `EW: DEFENSIVE` badge on the HUD
+  alongside the radar mode badge.
+
+**Open question for playtest**: should DEFENSIVE and OFFENSIVE be
+mutually exclusive (one mode at a time, like a real fighter pod
+power budget) or simultaneously available (Growler-class pod with
+multiple beam emitters)? Likely depends on platform: fighter =
+exclusive, dedicated EW asset = both.
 
 #### 6e.4 — Comms jamming → datalink degradation
 
