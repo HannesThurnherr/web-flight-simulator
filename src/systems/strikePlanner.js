@@ -732,6 +732,10 @@ export class StrikePlannerView {
 			const playerTeam = (playerState && playerState.team) || 'friendly';
 			for (const m of missiles) {
 				if (!m || !m.active) continue;
+				// Skip bullets — same projectile pool, but they don't
+				// belong on the strategic strike-planner map. Identify
+				// them by absence of a `type` label.
+				if (!m.type) continue;
 				const id = `m-${m.id || 'msl'}`;
 				const isHostile = (m.team || 'friendly') !== playerTeam;
 				const color = isHostile ? COLOR_MSL_HOSTILE : COLOR_MSL_FRIENDLY;

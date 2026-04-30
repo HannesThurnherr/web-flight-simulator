@@ -684,10 +684,15 @@ export class CommanderView {
 			// Color-coded by team: the player's own outgoing missiles stay
 			// amber, hostile inbound-threat missiles show in red. Easy to
 			// tell at a glance who fired what when the map has a dozen
-			// tracks on it.
+			// tracks on it. Bullets share the projectile pool but
+			// shouldn't clutter the strategic map — a CIWS that drains
+			// an autocannon belt would otherwise paint hundreds of
+			// markers in a few seconds. Skip anything without a `type`
+			// label (Bullet doesn't set one; every real missile does).
 			const playerTeam = (playerState && playerState.team) || 'friendly';
 			for (const m of missiles) {
 				if (!m || !m.active) continue;
+				if (!m.type) continue;
 				const id = `m-${m.id || (m.id = `m${seen.size}-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`)}`;
 				const typeTag = m.type || 'MSL';
 				const phaseTag = (typeof m.boostRemaining === 'number' && m.boostRemaining > 0) ? ' BOOST' : '';
