@@ -1103,17 +1103,34 @@ Player jet gets an `AN/ALQ-218`-class jammer pod.
   degradation against you AND any of their inbound active-radar
   missiles get their midcourse update rate cut hard.
 
-**The cost (realistic, not arbitrary)**:
-- Every hostile unit with `seekerType === 'anti_radiation'` (HARM,
-  Vympel-class anti-radar AAMs) seeing you on RWR ranks you as a
-  high-priority target. Their pickTarget logic gets an "active EW
-  emitter" multiplier.
-- Your effective RCS for emcon purposes is broken: any hostile
-  whose radar can paint your direction now sees not just radar
-  return but an emitter signature too. Detect range against you
-  effectively doubles in cone toward the jammer beam.
-- Comms-jamming variant adds the LINK-16 degradation to your own
-  team if cone overlaps friendlies (don't shotgun blast).
+**The cost (realistic — bearing-only revelation, HARM attraction)**:
+- **Bearing-only**, not position. Hostile RWRs see a strong
+  emission strobe from your direction but cannot determine range,
+  altitude, or specific aircraft. They know "something's jamming
+  from 045 deg" — they don't know if you're at 30 km or 200 km,
+  or whether it's one platform or four flying loose. Two F-35s
+  jamming on similar bearings look like one big strobe.
+- **HARM / anti-radiation attraction is the real threat.** Anti-
+  radiation seekers don't need range — they home on bearing
+  toward emission and self-acquire terminal. Every hostile unit
+  with `seekerType === 'anti_radiation'` (HARM, Vympel-class
+  anti-radar AAMs) sees you on RWR and ranks you priority target.
+  Their pickTarget gets an "active EW emitter" multiplier.
+- **You become harder to track on victim's radar, not easier.**
+  Jamming literally degrades the victim's ability to get a
+  return-based track — the whole point. So while you're more
+  visible to RWR (bearing-only) you're *less* visible to the
+  active-radar tracking systems that actually fire AAMs at you.
+  Net: HARMs are the threat, not regular AAMs.
+- **Triangulation by multiple receivers is the counter** — if
+  hostiles have multiple radar/RWR receivers along different
+  bearings cooperating via their own DL, they can resolve your
+  rough position. Worth modeling later as a per-coalition
+  "multi-bearing fix" capability if scenarios have N>1 ground EW
+  receivers; not in 6e.1.
+- **Comms-jamming variant additionally degrades LINK-16 to anyone
+  in cone** — friendlies in the cone get DL drops just like
+  hostiles, so don't shotgun blast.
 
 #### 6e.3 — Reactive defensive jamming (sustained, automatic)
 
