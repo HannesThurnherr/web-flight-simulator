@@ -177,6 +177,16 @@
 	"radarOverride": {
 		"nominalRange": 200000
 	},
+	"jammer": {
+		"type": "radar",
+		"power": 30000,
+		"beamCount": 1,
+		"coneHalfDeg": 60,
+		"burnThroughRangeM": 6000,
+		"attFloor": 0.5,
+		"maxEffectRangeM": 100000,
+		"breakLockBonus": 1.0
+	},
 	"specs": {
 		"role": "Multirole + EW",
 		"topSpeed": "Mach 1.8",

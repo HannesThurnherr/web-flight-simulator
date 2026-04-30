@@ -15,6 +15,7 @@
 // The main-menu picker treats both kinds identically.
 
 import { notchingTestScenario } from './notchingTest.js';
+import { jammingTestScenario } from './jammingTest.js';
 import { buildScenarioFromJson } from './scenarioRunner.js';
 
 // Auto-discover every JSON scenario.
@@ -34,6 +35,7 @@ export const SCENARIOS = {
 	// JS scenarios go last so they can override a JSON of the same id
 	// if someone's iterating on a data scenario with JS-side hooks.
 	notching: notchingTestScenario,
+	jamming:  jammingTestScenario,
 };
 
 // Default on first load. User's pick from the main-menu dropdown

@@ -1,0 +1,19 @@
+{
+	"id": "krasukha-jammer",
+	"name": "Krasukha-4 EW Jammer",
+	"kind": "ground",
+	"model": "/assets/models/kamaz-5330.glb",
+	"modelRotation": { "x": 0, "y": 0, "z": 0 },
+	"modelScale": 1.0,
+	"signature": "ewr",
+	"groundOffsetM": 0,
+	"jammer": {
+		"type": "radar",
+		"power": 80000,
+		"beamCount": 2,
+		"coneHalfDeg": 60,
+		"burnThroughRangeM": 12000
+	},
+	"pilot": { "type": "static-target" },
+	"physicsOverrides": { "mass": 16000, "wingArea": 1 }
+}

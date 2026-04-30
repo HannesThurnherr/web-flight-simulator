@@ -307,17 +307,143 @@ export class HUD {
 			}
 		}
 		if (s.countLabel) {
-			s.countLabel.textContent = total === 0
+			let txt = total === 0
 				? 'NO EMITTERS'
 				: `${total} EMITTER${total === 1 ? '' : 'S'}${stt > 0 ? ` — ${stt} STT` : ''}`;
+			// 6e.3 / 6e.2 — EW state line. Folded onto the same
+			// status row to avoid taking another vertical slot.
+			const jam = state && state.jammer;
+			if (jam) {
+				const off = jam.offensiveTargets && jam.offensiveTargets.size > 0;
+				if (off && jam.defensiveOn)   txt += '  EW:DEF+OFF';
+				else if (jam.defensiveOn)     txt += '  EW:DEF';
+				else if (off)                 txt += '  EW:OFF';
+				else                          txt += '  EW:STDBY';
+			}
+			s.countLabel.textContent = txt;
 		}
 
-		if (!rwr || rwr.size === 0) return;
-
 		const NS = 'http://www.w3.org/2000/svg';
+
+		// 6e.1 — jam strobes. Drawn before RWR chevrons so painted
+		// emitters end up on top. A jam strobe is a hatched radial
+		// wedge running from the scope centre outward in the jammer's
+		// bearing, length scaled by attenuation strength (stronger
+		// jam = longer strobe). Burn-through collapses the strobe so
+		// the player sees the radar punch through visually.
+		const jamStrobes = state && state.jamStrobes;
+		if (jamStrobes && jamStrobes.size > 0) {
+			for (const [, j] of jamStrobes) {
+				const ang = (j.bearing || 0) - Math.PI / 2;
+				// att: 1.0 = no jam, 0.4 = full jam. Strobe length
+				// keyed off (1 - att) so full jam = full radius.
+				const strength = Math.max(0, Math.min(1, (1 - j.att) / 0.6));
+				if (j.burnThrough || strength <= 0.01) continue;
+				const strobeLen = s.r * (0.55 + 0.45 * strength);
+				// Draw the line FROM the strobe tip (out at the
+				// jammer's bearing) INTO the scope centre. This way
+				// dashes that march "forward along the stroke" travel
+				// inward, matching the mental model of "jam noise
+				// coming at me from out there." Reversing path
+				// direction is simpler than fighting SVG's
+				// stroke-dashoffset sign convention.
+				const xTip = s.cx + Math.cos(ang) * strobeLen;
+				const yTip = s.cy + Math.sin(ang) * strobeLen;
+				// Hatched line: a fat semi-transparent base with a
+				// dashed bright stripe over the top. SVG strokes
+				// give us the moving-stipple look cheaply.
+				const base = document.createElementNS(NS, 'line');
+				base.setAttribute('x1', xTip); base.setAttribute('y1', yTip);
+				base.setAttribute('x2', s.cx); base.setAttribute('y2', s.cy);
+				base.setAttribute('stroke', 'rgba(255, 110, 60, 0.35)');
+				base.setAttribute('stroke-width', 6);
+				base.setAttribute('stroke-linecap', 'round');
+				s.contactGroup.appendChild(base);
+				const stripe = document.createElementNS(NS, 'line');
+				stripe.setAttribute('x1', xTip); stripe.setAttribute('y1', yTip);
+				stripe.setAttribute('x2', s.cx); stripe.setAttribute('y2', s.cy);
+				stripe.setAttribute('stroke', '#ff7030');
+				stripe.setAttribute('stroke-width', 2);
+				stripe.setAttribute('stroke-dasharray', '3 4');
+				// Negative offset advances the dash pattern along
+				// stroke direction (tip → centre) → dashes appear to
+				// flow inward, into the player's position.
+				const phase = (performance.now() / 600) % 1;
+				stripe.setAttribute('stroke-dashoffset', String(-phase * 7));
+				s.contactGroup.appendChild(stripe);
+				// Bearing label at the strobe tip.
+				const bearingDeg = Math.round(((j.bearing * 180 / Math.PI) % 360 + 360) % 360);
+				const lbl = document.createElementNS(NS, 'text');
+				lbl.setAttribute('x', xTip + Math.cos(ang) * 8);
+				lbl.setAttribute('y', yTip + Math.sin(ang) * 8 + 3);
+				lbl.setAttribute('fill', '#ff7030');
+				lbl.setAttribute('font-family', 'AceCombat, monospace');
+				lbl.setAttribute('font-size', '8');
+				lbl.setAttribute('text-anchor', 'middle');
+				lbl.textContent = `JAM ${String(bearingDeg).padStart(3, '0')}`;
+				s.contactGroup.appendChild(lbl);
+			}
+		}
+
 		const designatedEmitter = state && state.weaponSystem
 			&& state.weaponSystem.designatedEmitter;
-		for (const [src, c] of rwr) {
+		const designatedJam = state && state.weaponSystem
+			&& state.weaponSystem.designatedJamTarget;
+		const offensiveSet = state && state.jammer && state.jammer.offensiveTargets;
+
+		// 6e.2 — outgoing jam beams. For every victim the player is
+		// currently jamming offensively, draw a beam from scope
+		// centre out toward that victim's bearing. Uses contact data
+		// (radar/IR/visual fused bearing) rather than RWR, since the
+		// victim might not be radiating at us — we still know roughly
+		// where they are. Drawn separately from the receive-side
+		// strobes so it visually reads as "I'm sending" not "I'm
+		// being painted." The dashes flow OUTWARD here (centre → tip),
+		// the inverse of the inbound jam strobes.
+		if (offensiveSet && offensiveSet.size > 0 && state) {
+			for (const victim of offensiveSet) {
+				if (!victim) continue;
+				let bearing = null;
+				if (state.contacts && state.contacts.has(victim)) {
+					const c2 = state.contacts.get(victim);
+					if (c2 && c2.fused && c2.fused.bearing != null) bearing = c2.fused.bearing;
+				}
+				if (bearing == null && rwr && rwr.has(victim)) {
+					const r2 = rwr.get(victim);
+					if (r2) bearing = r2.bearing;
+				}
+				if (bearing == null) continue;
+				const ang = bearing - Math.PI / 2;
+				const tipLen = s.r * 0.85;
+				const xT = s.cx + Math.cos(ang) * tipLen;
+				const yT = s.cy + Math.sin(ang) * tipLen;
+				const base = document.createElementNS(NS, 'line');
+				base.setAttribute('x1', s.cx); base.setAttribute('y1', s.cy);
+				base.setAttribute('x2', xT);   base.setAttribute('y2', yT);
+				base.setAttribute('stroke', 'rgba(96, 220, 255, 0.30)');
+				base.setAttribute('stroke-width', 5);
+				base.setAttribute('stroke-linecap', 'round');
+				s.contactGroup.appendChild(base);
+				const stripe = document.createElementNS(NS, 'line');
+				stripe.setAttribute('x1', s.cx); stripe.setAttribute('y1', s.cy);
+				stripe.setAttribute('x2', xT);   stripe.setAttribute('y2', yT);
+				stripe.setAttribute('stroke', '#60dcff');
+				stripe.setAttribute('stroke-width', 2);
+				stripe.setAttribute('stroke-dasharray', '3 4');
+				const phase = (performance.now() / 600) % 1;
+				// Negative offset = dashes march along stroke direction
+				// (centre → tip) → reads as "outbound."
+				stripe.setAttribute('stroke-dashoffset', String(-phase * 7));
+				s.contactGroup.appendChild(stripe);
+			}
+		}
+
+		// Even with no inbound emitters, we still want to render the
+		// JAM-designation reticle for a passive (radar-off) victim
+		// (handled by the fallback at the end of this method), so we
+		// fall through instead of returning early like we used to.
+		const rwrIter = rwr || new Map();
+		for (const [src, c] of rwrIter) {
 			// Bearing is in the aircraft's body frame (0 = nose, +right).
 			// SVG angle = bearing - π/2 so nose goes to top of scope.
 			const ang = (c.bearing || 0) - Math.PI / 2;
@@ -373,6 +499,31 @@ export class HUD {
 				s.contactGroup.appendChild(tag);
 			}
 
+			// 6e.2 — JAM designation reticle. Same bracket visual as
+			// HARM but in the jammer-orange palette and with a solid
+			// fill if the beam is actually firing on this victim.
+			if (designatedJam && src === designatedJam) {
+				const isLit = offensiveSet && offensiveSet.has(src);
+				const ring = document.createElementNS(NS, 'circle');
+				ring.setAttribute('cx', x);
+				ring.setAttribute('cy', y);
+				ring.setAttribute('r', 14);
+				ring.setAttribute('fill', isLit ? 'rgba(255, 112, 48, 0.18)' : 'none');
+				ring.setAttribute('stroke', '#ff7030');
+				ring.setAttribute('stroke-width', 1.8);
+				ring.setAttribute('stroke-dasharray', isLit ? '6 2' : '3 2');
+				s.contactGroup.appendChild(ring);
+				const tag = document.createElementNS(NS, 'text');
+				tag.setAttribute('x', x);
+				tag.setAttribute('y', y - 18);
+				tag.setAttribute('fill', '#ff7030');
+				tag.setAttribute('font-family', 'AceCombat, monospace');
+				tag.setAttribute('font-size', '9');
+				tag.setAttribute('text-anchor', 'middle');
+				tag.textContent = isLit ? 'JAM ●' : 'JAM';
+				s.contactGroup.appendChild(tag);
+			}
+
 			// Small label showing lock type.
 			if (c.lockType === 'track') {
 				const lbl = document.createElementNS(NS, 'text');
@@ -384,6 +535,42 @@ export class HUD {
 				lbl.setAttribute('text-anchor', 'middle');
 				lbl.textContent = 'STT';
 				s.contactGroup.appendChild(lbl);
+			}
+		}
+
+		// 6e.2 — fall-through pass to show a JAM reticle when the
+		// designated victim isn't currently radiating at us (so they
+		// don't appear in the rwr Map above). We pull their bearing
+		// from the player's contact track instead. Without this, a
+		// player jamming a passive (radar-off) bogey sees no
+		// confirmation that their designation actually picked
+		// something — exactly the "I don't know how" failure mode.
+		if (designatedJam && state && state.contacts && !(rwr && rwr.has(designatedJam))) {
+			const c2 = state.contacts.get(designatedJam);
+			if (c2 && c2.fused && c2.fused.bearing != null) {
+				const ang = (c2.fused.bearing) - Math.PI / 2;
+				const radius = s.r * 0.6;
+				const x = s.cx + Math.cos(ang) * radius;
+				const y = s.cy + Math.sin(ang) * radius;
+				const isLit = offensiveSet && offensiveSet.has(designatedJam);
+				const ring = document.createElementNS(NS, 'circle');
+				ring.setAttribute('cx', x);
+				ring.setAttribute('cy', y);
+				ring.setAttribute('r', 14);
+				ring.setAttribute('fill', isLit ? 'rgba(255, 112, 48, 0.18)' : 'none');
+				ring.setAttribute('stroke', '#ff7030');
+				ring.setAttribute('stroke-width', 1.8);
+				ring.setAttribute('stroke-dasharray', isLit ? '6 2' : '3 2');
+				s.contactGroup.appendChild(ring);
+				const tag = document.createElementNS(NS, 'text');
+				tag.setAttribute('x', x);
+				tag.setAttribute('y', y - 18);
+				tag.setAttribute('fill', '#ff7030');
+				tag.setAttribute('font-family', 'AceCombat, monospace');
+				tag.setAttribute('font-size', '9');
+				tag.setAttribute('text-anchor', 'middle');
+				tag.textContent = isLit ? 'JAM ●' : 'JAM';
+				s.contactGroup.appendChild(tag);
 			}
 		}
 	}
@@ -3135,7 +3322,23 @@ export class HUD {
 		if (statusElem) {
 			let tag = '';
 			let col = '';
-			if (isActive && weapon.type && playerState) {
+			if (isActive && weapon.id === 'jammer' && playerState) {
+				// Show the current jam designation + beam state right
+				// next to the EW JAMMER weapon row, since this slot
+				// has no lock progress / ammo to read.
+				const ws  = weaponSystem;
+				const tgt = ws && ws.designatedJamTarget;
+				const off = playerState.jammer && playerState.jammer.offensiveTargets;
+				if (tgt) {
+					const lit = off && off.has(tgt);
+					tag = lit ? `JAMMING ${tgt.name || ''}`.trim()
+					          : `TGT ${tgt.name || ''}`.trim();
+					col = lit ? '#ff7030' : '#ffcc60';
+				} else {
+					tag = 'TAB TO DESIGNATE';
+					col = '#aa9070';
+				}
+			} else if (isActive && weapon.type && playerState) {
 				const munId = munitionIdForSimType(weapon.type);
 				const data  = munId ? MUNITIONS[munId] : null;
 				if (isStrikeWeapon(data)) {

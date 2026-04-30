@@ -23,6 +23,7 @@ import {
 	FIGHTER_EYEBALL_DEFAULT,
 } from './sensorSystem.js';
 import { createFighterPilot } from './ai/index.js';
+import { createJammer } from './ew/jammerSubsystem.js';
 
 // Apply the spec's `hideNodes` list to a freshly-cloned model. Each
 // entry can be a plain string (exact name match) or a regex
@@ -618,6 +619,7 @@ export class NPCSystem {
 			_groundOffsetM: (platform.groundOffsetM ?? 0) + centerAltOffsetM,
 			signature,
 			sensors,
+			jammer: platform.jammer ? createJammer(platform.jammer) : null,
 			contacts: new Map(),
 			rwr: new Map(),
 		};

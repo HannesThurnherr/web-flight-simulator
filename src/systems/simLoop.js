@@ -35,6 +35,7 @@ import {
 	setCameraToPlane, setCameraBehindUnit, getViewer,
 } from '../world/cesiumWorld';
 import { updateSensors, setSensorScene } from './sensorSystem';
+import { collectJamStrobes } from './ew/jammerSubsystem.js';
 import { getTeamDatalink } from './teamDatalink';
 import { getActiveScenario } from './scenarios';
 import { CommanderView } from './commanderView';
@@ -148,12 +149,52 @@ export function update(dt, ctx) {
 				const cur = weaponSystem.getCurrentWeapon && weaponSystem.getCurrentWeapon();
 				if (cur && cur.id === 'agm') {
 					weaponSystem.cycleDesignatedEmitter(state, dir);
+				} else if (cur && cur.id === 'jammer') {
+					const prev = weaponSystem.designatedJamTarget;
+					weaponSystem.cycleDesignatedJamTarget(state, dir);
+					const now = weaponSystem.designatedJamTarget;
+					if (!now && ctx.hud && ctx.hud.showRadarToast) {
+						ctx.hud.showRadarToast('NO JAMMABLE TARGETS',
+							'rgba(255, 200, 96, 0.85)', 1.2);
+					} else if (now && now !== prev && ctx.hud && ctx.hud.showRadarToast) {
+						ctx.hud.showRadarToast(`EW: TGT → ${now.name || 'BOGEY'}`,
+							'rgba(255, 200, 96, 0.95)', 1.0);
+					}
 				} else {
 					weaponSystem.cycleDesignatedTarget(dir);
 				}
 			}
-			if (input.fire)               weaponSystem.fire(state);
-			else                          weaponSystem.releaseFireHold();
+			// EW jammer fire path: edge-triggered toggle of the
+			// designated victim into state.jammer.offensiveTargets.
+			// Trigger only on the first frame the fire key is pressed
+			// so a held key doesn't oscillate the beam on/off every
+			// frame. ctx tracks the previous fire state for this
+			// edge-detection. Other weapons keep the held-fire model.
+			const fireEdge = !!input.fire && !ctx._jamFirePrev;
+			ctx._jamFirePrev = !!input.fire;
+			const cur = weaponSystem.getCurrentWeapon && weaponSystem.getCurrentWeapon();
+			if (cur && cur.id === 'jammer') {
+				if (fireEdge) {
+					const action = weaponSystem.toggleOffensiveJam(state);
+					if (ctx.hud && ctx.hud.showRadarToast) {
+						if (action === 'on') {
+							const tgt = weaponSystem.designatedJamTarget;
+							ctx.hud.showRadarToast(`EW: OFFENSIVE → ${(tgt && tgt.name) || 'TGT'}`,
+								'rgba(255, 140, 80, 0.95)', 1.6);
+						} else if (action === 'off') {
+							ctx.hud.showRadarToast('EW: BEAM OFF', 'rgba(180, 180, 180, 0.95)', 1.0);
+						} else if (action === 'no-target') {
+							ctx.hud.showRadarToast('EW: NO TARGET DESIGNATED',
+								'rgba(255, 200, 96, 0.85)', 1.2);
+						}
+					}
+				}
+				weaponSystem.releaseFireHold();
+			} else if (input.fire) {
+				weaponSystem.fire(state);
+			} else {
+				weaponSystem.releaseFireHold();
+			}
 			if (input.fireFlare)          weaponSystem.fireFlare(state);
 		}
 		weaponSystem.update(dt, state, isFlying ? input : null);
@@ -221,6 +262,46 @@ export function update(dt, ctx) {
 			if (anyStt && !wasStt) soundManager.play('rwr-spike-ping');
 		} catch (e) { /* sound stack timing-of-init quirks — non-fatal */ }
 		ctx._wasStt = anyStt;
+	}
+
+	// 6e.1 — receive-side jam-strobe pickup. Snapshot every hostile
+	// active jammer's bearing on us, plus current attenuation and
+	// burn-through state. Drives the HUD strobe overlay and one-shot
+	// `JAM ACQUIRED` / `BURNTHROUGH` toasts.
+	{
+		const strobes = collectJamStrobes(state);
+		state.jamStrobes = strobes;
+		if (!ctx._jamStrobeState) ctx._jamStrobeState = new WeakMap();
+		const seen = ctx._jamStrobeState;
+		for (const [src, str] of strobes) {
+			const prev = seen.get(src);
+			const bearingDeg = ((str.bearing * 180 / Math.PI) % 360 + 360) % 360;
+			const fivedeg = Math.round(bearingDeg / 5) * 5;
+			if (!prev) {
+				if (ctx.hud && ctx.hud.showRadarToast) {
+					ctx.hud.showRadarToast(`JAM ACQUIRED → ${String(fivedeg).padStart(3, '0')}°`,
+						'rgba(255, 140, 80, 0.95)', 2.0);
+				}
+			} else if (!prev.burnThrough && str.burnThrough) {
+				const km = Math.max(1, Math.round(str.range / 1000));
+				if (ctx.hud && ctx.hud.showRadarToast) {
+					ctx.hud.showRadarToast(`BURNTHROUGH @ ${km} km`,
+						'rgba(96, 255, 144, 0.95)', 2.0);
+				}
+			}
+			seen.set(src, { burnThrough: str.burnThrough, range: str.range });
+		}
+		// Drop entries for jammers no longer strobing so a re-acquire
+		// fires the toast again.
+		// (WeakMap auto-cleans destroyed jammer references; we only
+		// need to drop entries for jammers that went off-cone or
+		// out-of-range. Track via a side Set of currently-seen units.)
+		if (!ctx._jamStrobeKeys) ctx._jamStrobeKeys = new Set();
+		const nowKeys = ctx._jamStrobeKeys;
+		const fresh = new Set();
+		for (const src of strobes.keys()) fresh.add(src);
+		for (const old of nowKeys) if (!fresh.has(old)) seen.delete(old);
+		ctx._jamStrobeKeys = fresh;
 	}
 
 	// Mirror the friendly team datalink into state.datalinkContacts so

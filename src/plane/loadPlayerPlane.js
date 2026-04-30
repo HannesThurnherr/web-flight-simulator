@@ -20,6 +20,7 @@ import { PlanePhysics } from './planePhysics';
 import { JetFlame } from './jetFlame';
 import { SIGNATURES } from '../systems/signatures';
 import { FIGHTER_RADAR_DEFAULT, FIGHTER_IRST_DEFAULT } from '../systems/sensorSystem';
+import { createJammer } from '../systems/ew/jammerSubsystem.js';
 import { WeaponSystem } from '../systems/weaponSystem';
 import { getViewer } from '../world/cesiumWorld';
 import { soundManager } from '../utils/soundManager';
@@ -103,6 +104,18 @@ export function loadPlayerPlane(plane, ctx) {
 		Object.assign(state.sensors.ir, FIGHTER_IRST_DEFAULT);
 		if (plane.irOverride) {
 			Object.assign(state.sensors.ir, plane.irOverride);
+		}
+		// Phase 6e.3 — EW jammer pod. Built in for platforms that
+		// historically carry one (Rafale SPECTRA, Growler ALQ-99).
+		// Defensive bubble starts off; player toggles via J. The
+		// per-airframe block sets capacity (beamCount), how strong
+		// the jam is (attFloor), and how soon a closing radar
+		// punches through (burnThroughRangeM).
+		if (plane.jammer) {
+			state.jammer = createJammer(plane.jammer);
+			state.jammer.defensiveOn = false;
+		} else {
+			state.jammer = null;
 		}
 		// Replace the shared physics instance with one constructed
 		// from this plane's spec. PlanePhysics is strict — the spec

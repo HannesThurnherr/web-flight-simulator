@@ -93,6 +93,16 @@ export class WeaponSystem {
 			// per the munition JSON (MSL vs AGL altitude mode).
 			{ id: 'agm',     name: 'STORM SHADOW',      ammo: 0,  maxAmmo: 0,  fireRate: 0,
 			  lastFire: 0, type: 'STORM-SHADOW', lockRange: 0, lockCone: 0,    lockTime: 0 },
+			// 6e.2 — EW JAMMER pseudo-weapon. Not a projectile launcher;
+			// pressing fire toggles the currently-designated victim into
+			// state.jammer.offensiveTargets (sustained beam). `ammo` is
+			// effectively infinite when the airframe carries a pod
+			// (state.jammer != null) — _carriedWeapons() promotes it
+			// based on the player state, not the static `ammo` field.
+			// Tab-cycle picks the victim from RWR ∪ radar contacts via
+			// cycleDesignatedJamTarget().
+			{ id: 'jammer',  name: 'EW JAMMER',         ammo: 0,  maxAmmo: 0,  fireRate: 0,
+			  lastFire: 0, type: 'JAMMER',  lockRange: 0,      lockCone: 0,     lockTime: 0 },
 		];
 
 		this.flareWeapon = { id: 'flare', name: 'MJU-7A', ammo: 30, maxAmmo: 30, fireRate: 0.2, lastFire: 0 };
@@ -127,6 +137,15 @@ export class WeaponSystem {
 		// that specific unit at launch — the standard way real aircrews
 		// avoid every HARM piling onto the biggest emitter.
 		this.designatedEmitter = null;
+
+		// ---- Jammer designation (offensive EW) -----------------------
+		// Currently designated victim for offensive jamming. Cycled via
+		// Tab while EW JAMMER is the active weapon. Eligible candidates
+		// = (radar contacts ∪ RWR emitters) of opposing teams. Pressing
+		// fire toggles this unit into state.jammer.offensiveTargets;
+		// while present there, accumulateJamAttenuation applies a
+		// stronger corridor jam against that victim's radar.
+		this.designatedJamTarget = null;
 
 		// Back-compat alias used by fire() and legacy callers. Kept in
 		// sync with designatedTarget every update().
@@ -204,6 +223,15 @@ export class WeaponSystem {
 	_carriedWeapons() {
 		const list = [];
 		for (const w of this.weapons) {
+			// EW jammer is a pseudo-weapon — it has no ammo, the
+			// "carry" check is "does the airframe have a pod?" We
+			// stash a back-reference to the player state on the
+			// weapon system so this method can ask. If no pod, the
+			// slot is silently invisible to Q-cycle and number keys.
+			if (w.id === 'jammer') {
+				if (this._playerState && this._playerState.jammer) list.push(w);
+				continue;
+			}
 			if (w.ammo === Infinity || w.ammo > 0) list.push(w);
 		}
 		return list;
@@ -577,8 +605,26 @@ export class WeaponSystem {
 	}
 
 	update(dt, playerState, input = null) {
+		// Cache back-ref so _carriedWeapons() can ask whether the
+		// airframe is wearing a jammer pod (state.jammer != null) when
+		// deciding whether to expose the EW JAMMER slot to Q-cycle and
+		// the number-key shortcuts.
+		this._playerState = playerState;
 		const prevLockStatus = this.lockStatus;
 		const currentWeapon = this.getCurrentWeapon();
+
+		// Drop the jammer-designated victim if it's been killed.
+		// Defensive sweep — same pattern as designatedEmitter below.
+		if (this.designatedJamTarget
+			&& (this.designatedJamTarget.destroyed
+				|| this.designatedJamTarget.active === false)) {
+			this.designatedJamTarget = null;
+		}
+		// And if the player isn't wearing a pod (e.g. they swapped
+		// airframes), drop any leftover state.
+		if (!playerState || !playerState.jammer) {
+			this.designatedJamTarget = null;
+		}
 
 		// Drop the HARM-designated emitter if it's been killed or
 		// permanently disabled. Don't drop on radar shutdown alone —
@@ -948,6 +994,75 @@ export class WeaponSystem {
 		const next = (idx + step + emitters.length) % emitters.length;
 		this.designatedEmitter = emitters[idx < 0 ? 0 : next];
 		try { soundManager.play('weapon-switch'); } catch (e) {}
+	}
+
+	// 6e.2 — Cycle the designated jammer victim through the union of
+	// (active radar contacts) ∪ (RWR emitters). Tab uses this when the
+	// EW JAMMER is the active weapon. Same Map-keyed flat-list pattern
+	// as the HARM cycle, but the candidate pool is wider — you can jam
+	// a unit you're tracking on radar even if they're not radiating
+	// at you, and you can jam a unit lighting your RWR even if your
+	// own radar hasn't acquired them.
+	cycleDesignatedJamTarget(playerState, direction = 1) {
+		if (!playerState) { this.designatedJamTarget = null; return; }
+		const candidates = new Set();
+		// Radar contacts (anything alive on a different team that the
+		// player's radar is currently painting). iffStatus is consulted
+		// so we don't accidentally jam our own datalink-fused friendlies.
+		if (playerState.contacts) {
+			for (const [tgt, c] of playerState.contacts) {
+				if (!tgt || tgt.destroyed || tgt.active === false) continue;
+				if (tgt.team && playerState.team && tgt.team === playerState.team) continue;
+				if (c && c.iffStatus === 'friendly') continue;
+				candidates.add(tgt);
+			}
+		}
+		// RWR strobes (anyone painting us — they have a radar, so they
+		// have something to be jammed). Filter by team-mismatch as
+		// usual; identifyContact-style team comparison is enough here
+		// because RWR entries always have a `source` reference.
+		if (playerState.rwr) {
+			for (const [src] of playerState.rwr) {
+				if (!src || src.destroyed || src.active === false) continue;
+				if (src.team && playerState.team && src.team === playerState.team) continue;
+				candidates.add(src);
+			}
+		}
+		if (candidates.size === 0) { this.designatedJamTarget = null; return; }
+		const arr = [...candidates].sort((a, b) =>
+			(a.name || '').toString().localeCompare((b.name || '').toString()));
+		const idx = arr.indexOf(this.designatedJamTarget);
+		const step = direction > 0 ? 1 : -1;
+		const next = (idx + step + arr.length) % arr.length;
+		this.designatedJamTarget = arr[idx < 0 ? 0 : next];
+		try { soundManager.play('weapon-switch'); } catch (e) {}
+	}
+
+	// 6e.2 — Toggle the currently-designated jammer victim into / out
+	// of the player's offensiveTargets set. Capacity is gated by the
+	// pod's beamCount: a single-pod airframe can only sustain one
+	// offensive beam at a time (oldest beam drops if you exceed it).
+	// Returns the action taken so the keybind can toast the right
+	// message.
+	toggleOffensiveJam(playerState) {
+		if (!playerState || !playerState.jammer) return 'no-pod';
+		const j = playerState.jammer;
+		const tgt = this.designatedJamTarget;
+		if (!tgt) return 'no-target';
+		if (j.offensiveTargets.has(tgt)) {
+			j.offensiveTargets.delete(tgt);
+			return 'off';
+		}
+		// Beam-count exclusion: real fighter-pod jammers can only do
+		// one thing at a time. If we're at capacity, evict the oldest.
+		// JS Set preserves insertion order, so the first iterator
+		// value is the oldest entry.
+		if (j.offensiveTargets.size >= (j.beamCount || 1)) {
+			const oldest = j.offensiveTargets.values().next().value;
+			if (oldest) j.offensiveTargets.delete(oldest);
+		}
+		j.offensiveTargets.add(tgt);
+		return 'on';
 	}
 
 	calculateDotProduct(player, npc) {

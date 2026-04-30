@@ -4,6 +4,7 @@ import {
 	aspectAngleFromVectors,
 } from './signatures.js';
 import { identifyContact } from './iff.js';
+import { setJammerRegistry, accumulateJamAttenuation } from './ew/jammerSubsystem.js';
 
 // ============================================================================
 // Sensor system — three independent detection channels wired through a shared
@@ -468,7 +469,15 @@ export function detectRadar(observer, target, radar) {
 	// 3) 4th-root radar equation: detection range scales with RCS^0.25.
 	const ratio = effRcs / radar.referenceRcs;
 	const rangeLimit = radar.nominalRange * Math.pow(Math.max(1e-6, ratio), 0.25);
-	if (los.losLenMeters > rangeLimit) return null;
+
+	// 3a) Jamming attenuation. Hostile EW pods cut the effective
+	//     detection range against their host (self-protect) and along
+	//     their broadcast cone (corridor noise). Burn-through restores
+	//     full range when the observer closes inside the jammer's
+	//     burnThroughRangeM. See systems/ew/jammerSubsystem.js.
+	const jamAtt = accumulateJamAttenuation(observer, target);
+	const effectiveRange = rangeLimit * jamAtt;
+	if (los.losLenMeters > effectiveRange) return null;
 
 	// 4) Terrain LOS — a ridge in the way kills the return. Cached
 	//    per (observer, target) pair with a 250 ms TTL so dense
@@ -671,6 +680,12 @@ function scanVisual(observer, target, now) {
 // sensable thing (player, NPCs, missiles). `now` is a monotonic sim-time
 // scalar — same convention as commanderView uses.
 export function updateSensors(units, now, dt) {
+	// Snapshot the current set of active jammers so detectRadar can
+	// apply attenuation without threading the full units array
+	// through every call signature (seekers, AI, sensor scan all hit
+	// detectRadar).
+	setJammerRegistry(units);
+
 	// Scan step. A destroyed / inactive observer doesn't scan — its
 	// radar is off, its eyes are closed. Previously we only filtered
 	// out destroyed TARGETS, so a dead player's radar kept populating

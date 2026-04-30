@@ -6,6 +6,7 @@ import { soundManager } from '../utils/soundManager';
 import { Missile } from './missile';
 import { SIGNATURES } from '../systems/signatures';
 import { detectRadar } from '../systems/sensorSystem';
+import { rollJamBreakLock } from '../systems/ew/jammerSubsystem.js';
 import { pushKill } from '../systems/eventLog.js';
 import { airDensity, GRAVITY } from '../plane/aeroModel.js';
 import { getTeamDatalink } from '../systems/teamDatalink.js';
@@ -607,6 +608,23 @@ export class AIM120 extends Missile {
 	// permanent was the main reason the refactor broke kills entirely.
 	_checkLockIntegrity(allTargets, dt) {
 		if (!this.pitbullFired) return;
+
+		// 6e.3 — defensive jam break-lock. Before doing the geometric
+		// lock check, give the target's defensive jammer a per-second
+		// probability to scramble our seeker. Realistic numbers are
+		// modest (5-12%/s for modern AESA seekers, 30%/s for older
+		// pulse-Doppler), so jamming is a delaying tactic against
+		// modern AAMs, not an immunity. On a successful break we slam
+		// the lock-lost timer past the drop threshold so the missile
+		// goes maddog this frame instead of getting reacquired by the
+		// geometric check below.
+		if (rollJamBreakLock(this, dt)) {
+			this._lockLostTimer = (this.data.seeker.lockDropTimeoutS || 0) + 1;
+			this._reacqAttempt  = (this.data.seeker.reacquireMaxAttempts || 0) + 1;
+			this.maddog = true;
+			this.target = null;
+			return;
+		}
 
 		const observer = this._seekerObserver();
 

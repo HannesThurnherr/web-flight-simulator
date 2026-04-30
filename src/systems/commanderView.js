@@ -136,6 +136,7 @@ export class CommanderView {
 		// rather than diffed, which keeps the logic readable.
 		this.debugRadarEnabled    = false;
 		this.debugDatalinkEnabled = false;
+		this.debugJammerEnabled   = false;
 		// Show every team's mesh by default when datalink debug is on
 		// (hostile teams in their own colors, friendly in cyan). Flip
 		// to false to see only the player's team.
@@ -273,7 +274,8 @@ export class CommanderView {
 				<span style="opacity:0.85">SPACE</span> pause / resume<br>
 				<span style="opacity:0.85">T</span> trails<br>
 				<span style="opacity:0.85">R</span> radar debug<br>
-				<span style="opacity:0.85">D</span> datalink debug
+				<span style="opacity:0.85">D</span> datalink debug<br>
+				<span style="opacity:0.85">J</span> jammer debug
 			</div>
 		`;
 		document.body.appendChild(p);
@@ -309,6 +311,15 @@ export class CommanderView {
 					if (!v) this._clearDebugEntities();
 					this.viewer.scene.requestRender();
 					console.log('[CMDR] datalink debug', v ? 'ON' : 'OFF');
+				},
+			},
+			{
+				id: 'jammer', label: 'Jammer Debug', hotkey: 'J',
+				get: () => this.debugJammerEnabled,
+				set: (v) => {
+					this.debugJammerEnabled = v;
+					if (!v) this._clearDebugEntities();
+					this.viewer.scene.requestRender();
 				},
 			},
 		];
@@ -450,6 +461,14 @@ export class CommanderView {
 				// Reveals the fused picture each side has.
 				this.debugDatalinkEnabled = !this.debugDatalinkEnabled;
 				if (!this.debugDatalinkEnabled) this._clearDebugEntities();
+				this.viewer.scene.requestRender();
+			} else if (k === 'j' && this.active) {
+				// J toggles the jammer overlay: translucent cones from
+				// each active jammer toward every opposing-team observer
+				// it's degrading, plus a burn-through circle showing
+				// the radius inside which the radar punches through.
+				this.debugJammerEnabled = !this.debugJammerEnabled;
+				if (!this.debugJammerEnabled) this._clearDebugEntities();
 				this.viewer.scene.requestRender();
 			}
 		});
@@ -1447,6 +1466,7 @@ export class CommanderView {
 		this._clearDebugEntities();
 		if (this.debugRadarEnabled)    this._syncRadarDebug(playerState, units, missiles);
 		if (this.debugDatalinkEnabled) this._syncDatalinkDebug(playerState, units);
+		if (this.debugJammerEnabled)   this._syncJammerDebug(playerState, units);
 	}
 
 	_syncRadarDebug(playerState, units, missiles) {
@@ -1535,6 +1555,177 @@ export class CommanderView {
 				'filter=' + (hasFilter ? `${selected.size} selected` : 'all'),
 				'entities=' + this._debugEntities.length);
 		}
+	}
+
+	// ---- Jammer debug overlay ---------------------------------------------
+	//
+	// For each unit carrying an active jammer subsystem, draws:
+	//   - A burn-through ring at ground level around the jammer (radius
+	//     = jammer.burnThroughRangeM). Inside this radius the jam loses
+	//     to the radar; outside it the jam wins.
+	//   - A translucent triangular wedge from the jammer toward each
+	//     opposing-team observer it's degrading. Wedge half-angle = the
+	//     same 10° main-lobe used by accumulateJamAttenuation, so the
+	//     overlay matches the actual physics rather than the (wider)
+	//     coneHalfDeg broadcast pattern. Wedge length = LOS distance
+	//     to the victim, so it always terminates exactly on the
+	//     receiving radar.
+	//
+	// Color = the same orange family as the receive-side scope strobes,
+	// so the player can correlate "this is the cone they're getting"
+	// (commander view) with "this is what I see on my scope" (cockpit).
+
+	_syncJammerDebug(playerState, units) {
+		const all = [playerState, ...(units || [])];
+		const jammers = [];
+		for (const u of all) {
+			if (!u || u.destroyed || u.active === false) continue;
+			if (!u.jammer || u.jammer.defensiveOn === false) continue;
+			jammers.push(u);
+		}
+		if (jammers.length === 0) return;
+
+		// Potential victims: anything alive on a different team with a
+		// radar suite. The cone gets directed at each one — visualises
+		// "this corridor of noise reaches that radar."
+		const victims = [];
+		for (const u of all) {
+			if (!u || u.destroyed || u.active === false) continue;
+			if (!u.sensors || !u.sensors.radar) continue;
+			victims.push(u);
+		}
+
+		const jamColor  = Cesium.Color.fromCssColorString('#ff7030').withAlpha(0.16);
+		const edgeColor = Cesium.Color.fromCssColorString('#ff7030').withAlpha(0.55);
+		const ringColor = Cesium.Color.fromCssColorString('#ff7030').withAlpha(0.85);
+		// Match the corridor main-lobe used by accumulateJamAttenuation
+		// (1.5° half-angle at the victim). The cone visualises the
+		// "blind corridor" punched through the victim's scope —
+		// narrow because a real fighter APG main lobe is only ~3°
+		// wide; outside that the radar still works. Geometrically:
+		// at 50 km range the cone is only ±1.3 km cross-range wide,
+		// which is why a striker hugging the jammer survives but a
+		// jet a few km off-axis still gets seen.
+		const HALF_RAD = 1.5 * Math.PI / 180;
+
+		for (const jam of jammers) {
+			const burn = jam.jammer.burnThroughRangeM || 8000;
+			this._drawJammerRing(jam, burn, ringColor);
+
+			for (const v of victims) {
+				if (v === jam) continue;
+				if (v.team === jam.team) continue;
+				// Jam noise doesn't politely stop at the victim — it
+				// keeps going until it falls off the radar's noise
+				// floor at much greater range. Draw out to the
+				// jammer's configured maxEffectRangeM so the cone
+				// actually represents the volume of jam-soaked sky.
+				const maxLen = jam.jammer.maxEffectRangeM || 150000;
+				this._drawJammerCone(jam, v, HALF_RAD, maxLen, jamColor, edgeColor);
+			}
+		}
+	}
+
+	// Tessellated translucent 3D cone, apex at `from`, axis pointing
+	// from `from` toward `to`, opening to `halfRad`, length `lenM`.
+	// Built from `SEGMENTS` triangle "petals" (apex + two adjacent
+	// rim points) on the lateral surface, plus matching rim wireframe
+	// for an outline. The cone runs past the victim — `to` only
+	// supplies the axis direction.
+	_drawJammerCone(from, to, halfRad, lenM, fillColor, edgeColor) {
+		const SEGMENTS = 18;
+
+		// Build the cone-axis direction in a local ENU frame at `from`.
+		// Then construct two perpendicular basis vectors on the rim
+		// plane via Gram-Schmidt against world-up. This works for any
+		// axis orientation including straight up/down.
+		const latRad = from.lat * Math.PI / 180;
+		const axisE = (to.lon - from.lon) * 111320 * Math.cos(latRad);
+		const axisN = (to.lat - from.lat) * 111320;
+		const axisU = (to.alt - from.alt);
+		const axisLen = Math.hypot(axisE, axisN, axisU);
+		if (axisLen < 1) return;
+		const ax = axisE / axisLen, ay = axisN / axisLen, az = axisU / axisLen;
+
+		// Pick a seed not parallel to the axis.
+		let sx = 0, sy = 0, sz = 1;
+		if (Math.abs(az) > 0.95) { sx = 1; sy = 0; sz = 0; }
+		// u = axis × seed, v = axis × u — orthonormal basis on rim plane.
+		let ux = ay * sz - az * sy;
+		let uy = az * sx - ax * sz;
+		let uz = ax * sy - ay * sx;
+		const ulen = Math.hypot(ux, uy, uz) || 1;
+		ux /= ulen; uy /= ulen; uz /= ulen;
+		const vx = ay * uz - az * uy;
+		const vy = az * ux - ax * uz;
+		const vz = ax * uy - ay * ux;
+
+		// Cone geometry: rim sits at distance lenM along the axis,
+		// radius = lenM * tan(halfRad).
+		const tipE = ax * lenM;
+		const tipN = ay * lenM;
+		const tipU = az * lenM;
+		const r = lenM * Math.tan(halfRad);
+
+		// Gather rim points in world ENU offsets from `from`.
+		const rim = [];
+		for (let i = 0; i < SEGMENTS; i++) {
+			const a = (i / SEGMENTS) * Math.PI * 2;
+			const ca = Math.cos(a), sa = Math.sin(a);
+			rim.push({
+				dE: tipE + r * (ca * ux + sa * vx),
+				dN: tipN + r * (ca * uy + sa * vy),
+				dU: tipU + r * (ca * uz + sa * vz),
+			});
+		}
+
+		// Convert offsets to lon/lat/alt around `from`.
+		const enuToGeo = (dE, dN, dU) => ({
+			lon: from.lon + dE / (111320 * Math.cos(latRad)),
+			lat: from.lat + dN / 111320,
+			alt: from.alt + dU,
+		});
+		const apexGeo = { lon: from.lon, lat: from.lat, alt: from.alt };
+		const rimGeo = rim.map(p => enuToGeo(p.dE, p.dN, p.dU));
+
+		// Lateral surface as a single tessellated mesh (apex + rim).
+		// Index 0 is the apex; rim points are 1..SEGMENTS. Triangles:
+		// (0, i, i+1).
+		const positions = [apexGeo, ...rimGeo];
+		const indices = [];
+		for (let i = 0; i < SEGMENTS; i++) {
+			const a = i + 1;
+			const b = ((i + 1) % SEGMENTS) + 1;
+			indices.push(0, a, b);
+		}
+		this._addDebugMesh(positions, indices, fillColor);
+
+		// Rim outline so the cone reads as a volume even from above.
+		const ringPts = [...rimGeo, rimGeo[0]];
+		this._addDebugPolyline(ringPts, edgeColor, 1.5);
+		// A few axis-to-rim spokes (every ~45°) to suggest 3D shape.
+		for (let i = 0; i < SEGMENTS; i += Math.max(1, Math.floor(SEGMENTS / 4))) {
+			this._addDebugPolyline([apexGeo, rimGeo[i]], edgeColor.withAlpha(0.35), 1);
+		}
+	}
+
+	// Burn-through ring at jammer position. Drawn as a flat circle on
+	// the ground (alt + 5 m so it isn't z-fighting with terrain).
+	_drawJammerRing(jam, radiusM, color) {
+		const SAMPLES = 36;
+		const latRad = jam.lat * Math.PI / 180;
+		const pts = [];
+		for (let i = 0; i <= SAMPLES; i++) {
+			const a = (i / SAMPLES) * Math.PI * 2;
+			const dE = radiusM * Math.sin(a);
+			const dN = radiusM * Math.cos(a);
+			pts.push({
+				lon: jam.lon + dE / (111320 * Math.cos(latRad)),
+				lat: jam.lat + dN / 111320,
+				alt: jam.alt + 5,
+			});
+		}
+		this._addDebugPolyline(pts, color, 2);
 	}
 
 	// ---- Datalink debug overlay -------------------------------------------

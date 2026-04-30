@@ -379,6 +379,38 @@ export function setupGlobalKeybinds(ctx) {
 			return;
 		}
 
+		// 6e.3 — defensive EW jammer toggle. Press once = start
+		// broadcasting protective noise around your aircraft;
+		// press again = stop. Each frame, every active-radar
+		// missile inbound on the player rolls a per-second
+		// break-lock probability. No charges, no cooldown — runs
+		// as long as toggled. Only fires if the airframe has a
+		// jammer pod attached (state.jammer set in loadPlayerPlane).
+		if (key === 'j' && ctx.currentState === 'FLYING' &&
+			!(ctx.commanderView && ctx.commanderView.active) &&
+			!(ctx.strikePlannerView && ctx.strikePlannerView.active)) {
+			if (state.jammer) {
+				state.jammer.defensiveOn = !state.jammer.defensiveOn;
+				if (ctx.hud && ctx.hud.showRadarToast) {
+					if (state.jammer.defensiveOn) {
+						ctx.hud.showRadarToast('EW: DEFENSIVE',
+							'rgba(255, 140, 80, 0.95)', 1.6);
+					} else {
+						ctx.hud.showRadarToast('EW: STANDBY',
+							'rgba(180, 180, 180, 0.95)', 1.2);
+					}
+				}
+			} else if (ctx.hud && ctx.hud.showRadarToast) {
+				// Tell the player they're flying an airframe without
+				// a jammer pod, rather than silently swallowing the J
+				// press. Common confusion source.
+				ctx.hud.showRadarToast('NO JAMMER POD ON THIS AIRFRAME',
+					'rgba(180, 180, 180, 0.85)', 1.2);
+			}
+			e.preventDefault();
+			return;
+		}
+
 		// 6a — radar / SA scope mode toggles, cockpit-only.
 		//   '  (apostrophe) → toggle Cesium terrain background under the
 		//                     scope (map mode ON ↔ pure tactical scope)

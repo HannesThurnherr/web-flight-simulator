@@ -57,6 +57,13 @@
 			"platformId": "zsu-23-shilka",
 			"team": "hostile-red",
 			"origin": { "relTo": "player", "bearingDeg": 2,   "rangeM": 59500, "altOffsetM": -3000 }
+		},
+		{
+			"type": "platform",
+			"platformId": "krasukha-jammer",
+			"team": "hostile-red",
+			"origin": { "relTo": "player", "bearingDeg": 5,   "rangeM": 58000, "altOffsetM": -3000 },
+			"intel":  { "level": "suspected", "uncertaintyM": 6000 }
 		}
 	]
 }
