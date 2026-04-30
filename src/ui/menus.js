@@ -316,15 +316,28 @@ export function setupGlobalKeybinds(ctx) {
 			}
 		}
 
-		// Radar emitter toggle (silent-running test). Bound to 'r' in
-		// cockpit flight only. Commander view also binds 'r' (debug
-		// overlay) but gates on commanderView.active, so the two
-		// don't collide. Flips state.sensors.radar.active, which the
-		// unified detectRadar() reads as the emitter-on check.
+		// Radar emitter toggle (silent-running / emcon). Bound to 'r'
+		// in cockpit flight only. Commander view also binds 'r'
+		// (debug overlay) but gates on commanderView.active, so the
+		// two don't collide. Flips state.sensors.radar.active, which
+		// the unified detectRadar() reads as the emitter-on check;
+		// going SILENT means bandits' RWRs no longer see your search
+		// or track emissions, but you also stop painting them and
+		// have to fly the air picture from datalink + IRST + RWR.
 		if (key === 'r' && ctx.currentState === 'FLYING' &&
-			!(ctx.commanderView && ctx.commanderView.active)) {
+			!(ctx.commanderView && ctx.commanderView.active) &&
+			!(ctx.strikePlannerView && ctx.strikePlannerView.active)) {
 			if (state.sensors && state.sensors.radar) {
 				state.sensors.radar.active = !state.sensors.radar.active;
+				if (ctx.hud && ctx.hud.showRadarToast) {
+					if (state.sensors.radar.active) {
+						const pm = (state.sensors.radar.playerMode || 'tws').toUpperCase();
+						ctx.hud.showRadarToast(`RADAR ACTIVE — ${pm}`, 'rgba(96, 255, 144, 0.95)');
+					} else {
+						ctx.hud.showRadarToast('RADAR SILENT — DATALINK / RWR ONLY',
+							'rgba(180, 180, 180, 0.95)');
+					}
+				}
 			}
 			e.preventDefault();
 			return;
@@ -347,6 +360,13 @@ export function setupGlobalKeybinds(ctx) {
 				state.sensors.radar.playerMode = next;
 				if (ctx.hud && ctx.hud._flashScopeMode) {
 					ctx.hud._flashScopeMode(next);
+				}
+				// Toast only when committing to STT — that's the
+				// "I'm shooting" mode the player needs to consciously
+				// notice. RWS/TWS swaps are routine, scope flash alone
+				// is enough.
+				if (next === 'stt' && ctx.hud && ctx.hud.showRadarToast) {
+					ctx.hud.showRadarToast('STT — COMMIT', 'rgba(255, 96, 96, 0.95)', 1.5);
 				}
 			}
 			e.preventDefault();

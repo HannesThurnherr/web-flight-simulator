@@ -1244,6 +1244,43 @@ export class HUD {
 	_flashScopeMode(_mode) {
 		this._scopeModeFlashUntil = performance.now() + 600;
 	}
+
+	// 6c — transient banner across the centre of the HUD for radar /
+	// EW state changes. Used by the R-key emcon toggle and by the
+	// T-key mode cycle when the change is consequential (RADAR
+	// ACTIVE / RADAR SILENT, etc.). Self-clears after durationS.
+	showRadarToast(message, color = 'rgba(255, 220, 96, 0.95)', durationS = 2.0) {
+		let el = document.getElementById('radar-toast');
+		if (!el) {
+			el = document.createElement('div');
+			el.id = 'radar-toast';
+			el.style.cssText = `
+				position: absolute;
+				top: 70px;
+				left: 50%;
+				transform: translateX(-50%);
+				z-index: 60;
+				padding: 6px 18px;
+				background: rgba(0, 25, 0, 0.65);
+				border: 1px solid currentColor;
+				font-family: 'AceCombat', monospace;
+				font-size: 14px;
+				letter-spacing: 2px;
+				text-shadow: 0 0 8px currentColor;
+				pointer-events: none;
+				transition: opacity 0.3s ease;
+				opacity: 0;
+			`;
+			document.body.appendChild(el);
+		}
+		el.textContent = message;
+		el.style.color = color;
+		el.style.opacity = '1';
+		clearTimeout(this._radarToastTimer);
+		this._radarToastTimer = setTimeout(() => {
+			el.style.opacity = '0';
+		}, durationS * 1000);
+	}
 	toggleRadarExpanded() {
 		this.radarExpanded = !this.radarExpanded;
 		this._applyRadarMode();
@@ -2122,14 +2159,32 @@ export class HUD {
 	update(state, npcs = []) {
 		const lerpFactor = 0.5;
 
-		// Radar emitter state badge. Green "ON" when the player's set is
-		// radiating (normal), amber "OFF" when silenced via the \ key.
-		// Makes "am I actually silent running right now" visible at a
-		// glance.
+		// 6c — radar emitter state badge. Shows the active mode so the
+		// player can read their own EW posture at a glance:
+		//   SILENT  — radar.active=false (R-key emcon). Player is
+		//             passive: own scope/HUD shows only datalink + RWR
+		//             + IRST contacts. Bandits don't see your search
+		//             emissions.
+		//   RWS     — search-only, no firing-grade tracks for AAMs.
+		//   TWS     — track-while-scan, default BVR mode.
+		//   STT     — single-target track, victim RWR spikes.
+		// Color graded by aggression: green RWS (non-spike), amber TWS
+		// (active scan), red STT (committed lock), grey SILENT.
 		if (this.radarStateElem && this.radarStatusElem) {
-			const on = !!(state.sensors && state.sensors.radar && state.sensors.radar.active);
-			this.radarStateElem.textContent = on ? 'ON' : 'OFF';
-			this.radarStatusElem.style.color = on ? '#0f0' : '#fa0';
+			const r = state.sensors && state.sensors.radar;
+			const on = !!(r && r.active);
+			let text, color;
+			if (!on) {
+				text = 'SILENT'; color = 'rgba(180, 180, 180, 0.85)';
+			} else {
+				const pm = (r.playerMode || 'tws').toUpperCase();
+				text = pm;
+				color = pm === 'RWS' ? '#80e8ff'
+					: pm === 'STT' ? '#ff7070'
+					: '#ffd060';
+			}
+			this.radarStateElem.textContent = text;
+			this.radarStatusElem.style.color = color;
 		}
 
 		const lerpAngle = (current, target, factor) => {

@@ -964,7 +964,7 @@ Slot this AFTER 6e (jamming forces TWS-fired AMRAAMs to lose
 midcourse mid-flight, exercising the lost-DL path) and 6g (datalink
 fusion formalizes launcher↔missile DL as a publishable channel).
 
-### 6c — Emcon / radar-off discipline
+### 6c — Emcon / radar-off discipline  ✅ implemented
 
 The player's radar is always on today. Real BVR doctrine: radar OFF
 during ingress, datalink-driven SA from AWACS / wingmen, paint short
