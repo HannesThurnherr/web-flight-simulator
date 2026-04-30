@@ -914,28 +914,55 @@ with the new overlays), CSS additions for the Cesium-background
 toggle and the expanded-mode pop-out, new key handlers in
 `src/systems/inputHandlers.js`.
 
-### 6b — Radar modes (RWS / TWS / STT)
+### 6b — Radar modes (RWS / TWS / STT)  ✅ implemented (MVP)
 
-Mechanically simplest of the EW behaviors; player gets a knob they
-actively use, so the system is explicit, not invisible. Now has a
-display surface (6a) to render the choice into.
+Player gets a knob they actively use, explicit not invisible. Plugs
+into 6a's display surface.
 
-- **RWS (Range While Scan)** — wide volume sweep, no firing-grade
-  tracks, low RWR signature on victims. Default cruise mode.
-- **TWS (Track While Scan)** — tracks N (≈ 6) targets simultaneously
-  with reduced update rate. AMRAAM in TWS = maddog (no midcourse
-  update; missile self-acquires).
-- **STT (Single Target Track)** — one target at high update rate,
-  full midcourse update, **but** the victim's RWR sees a distinct
-  STT-class lock spike. STT is committing — the bandit knows.
+- **RWS (Range While Scan)** — wide volume sweep. AESA lock pipeline
+  is suspended (no firing-grade tracks form for active-radar AAMs),
+  victim RWR sees TWS-class search emission. IR missiles (AIM-9
+  family) bypass the mode gate — their lock pipeline is shared
+  target-designation infrastructure independent of the radar.
+- **TWS (Track While Scan)** — tracks all in-envelope contacts at
+  standard rate, designated target cycles via Tab. Victim RWR sees
+  TWS-class search emission (no STT spike → bandit AI doesn't break).
+- **STT (Single Target Track)** — focuses on a single target at 2×
+  the standard rate; other contacts stay at SEARCHING. Picks the
+  existing designated target if still in envelope, else the nearest
+  hostile. Victim RWR sees STT spike → bandit AI commits to evasion.
 
-The decision becomes "sneak the maddog (TWS, lower Pk, surprise)
-vs commit (STT, high Pk, the bandit knows you fired)."
+The decision becomes "sneak (TWS or STT-only-at-the-last-second,
+lower Pk, surprise) vs commit (STT early, full lock, bandit knows)."
 
 **Player UX:** dedicated `T` key cycles RWS → TWS → STT. Mode
-prominent in the new scope's bottom row + the RWR shows lock-type
-class. Strike planner toolbar shows current mode while the planner's
-open.
+prominent in the scope's bottom row, color-coded (cyan/amber/red),
+600 ms glow flash on cycle.
+
+#### Follow-up: track-quality launch + midcourse-update gradient
+
+Currently the sim only has one launch-quality bucket: LOCKED required
+to fire. Real AMRAAM doctrine has three:
+- RWS-fired (HOJ / maddog cued) — fire on a search hit, no formal
+  track; missile gets rough INS handoff and self-acquires terminal
+- TWS-fired — fire from track-while-scan file; missile gets periodic
+  DL midcourse updates while launcher's TWS sweep stays on the bandit
+- STT-fired — full single-target track; missile gets continuous
+  high-quality midcourse the whole way, smaller terminal acq volume
+
+Implementing this requires touching the missile-launcher coupling and
+the midcourse-update path in `aim120.js` to add a track-quality flag
+that affects:
+1. Initial INS error / launch geometry
+2. Midcourse update frequency (RWS-fire: none; TWS-fire: low rate;
+   STT-fire: high rate)
+3. Terminal seeker acquisition cone (smaller if STT, wider if RWS)
+4. Lost-DL-during-flight handling (stale-track extrapolation +
+   terminal seeker auto-acquire)
+
+Slot this AFTER 6e (jamming forces TWS-fired AMRAAMs to lose
+midcourse mid-flight, exercising the lost-DL path) and 6g (datalink
+fusion formalizes launcher↔missile DL as a publishable channel).
 
 ### 6c — Emcon / radar-off discipline
 

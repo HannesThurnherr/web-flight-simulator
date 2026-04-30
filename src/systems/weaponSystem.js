@@ -616,21 +616,32 @@ export class WeaponSystem {
 		if (currentWeapon.id === 'missile') {
 			const lockTimeReq = currentWeapon.lockTime || this.lockRequiredTime;
 			const inEnvelope = this.findTargetsInEnvelope(playerState);
-			// 6b — radar mode gates the lock pipeline.
+			// 6b — radar mode gates the lock pipeline ONLY for
+			// active-radar missiles (AIM-120, METEOR). IR missiles
+			// (AIM-9M, AIM-9X) acquire via their own IR seekers and
+			// the AESA-style "lock" pipeline here is just shared
+			// target-designation infrastructure — independent of
+			// what the radar's playerMode is. So we look up the
+			// current weapon's seekerType and only apply the
+			// rws/tws/stt modal behavior when it's radar-guided.
+			//
+			// Modes:
 			//   rws → no firing-grade tracks form. Drop everything to
-			//         search-only state. The scope still shows contacts
-			//         (visibility is in the radar pipeline, not lock
-			//         pipeline) but no LOCKED status, so AAMs can't
-			//         fire — passive observation only.
+			//         search-only state. Scope still shows contacts;
+			//         no LOCKED status → no AAM fire. Passive scan.
 			//   tws → tracks progress as before; designated target gets
 			//         the standard rate.
 			//   stt → only the designated target progresses; everyone
-			//         else stays at SEARCHING. Lock time on the
-			//         designated halves so STT commits feel snappy.
+			//         else stays at SEARCHING. Lock time halved on
+			//         the designated so STT commits feel snappy.
 			const radar    = playerState.sensors && playerState.sensors.radar;
 			const playerMode = (radar && radar.playerMode) || 'tws';
+			const munId    = munitionIdForSimType(currentWeapon.type);
+			const munData  = munId ? MUNITIONS[munId] : null;
+			const isRadarMissile = munData && munData.seekerType === 'active_radar';
+			const effectiveMode = isRadarMissile ? playerMode : 'tws';
 
-			if (playerMode === 'rws') {
+			if (effectiveMode === 'rws') {
 				// Drop any in-progress / locked entries — no
 				// firing-grade tracks in RWS.
 				for (const [npc, entry] of this.locks) {
@@ -649,7 +660,7 @@ export class WeaponSystem {
 				// TWS / STT — locks progress. STT focuses on a single
 				// target at a higher rate; TWS spreads attention
 				// equally across all in-envelope contacts.
-				const sttFocus = (playerMode === 'stt');
+				const sttFocus = (effectiveMode === 'stt');
 				const sttRate  = 2.0;  // STT halves lock time
 
 				// In STT, choose the focused target. Prefer the
