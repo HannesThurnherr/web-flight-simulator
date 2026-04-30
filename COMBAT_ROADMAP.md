@@ -1818,6 +1818,171 @@ on 6) → NFAC.7 (cognitive pilot) → NFAC.8 (scenario hooks).
 
 ---
 
+## Phase 11 — Multiplayer (2-player coop / PvP, hosted relay)
+
+Today the sim is single-player: one `state` object, one HUD, all NPCs
+and projectiles owned locally. Phase 11 extends this to a small number
+of human players (target: 2, design clean enough to scale to 4–8 with
+a bigger host) sharing the same world via a thin relay server hosted
+on Google Cloud (or any small VM).
+
+The goal is **co-op flying first** — two pilots flying the same
+scenario, sharing the air picture, calling targets — and **PvP as a
+free side-effect** of the same sync layer once the team/IFF plumbing
+flips.
+
+### Architecture
+
+- **Tiny WebSocket relay** on a $5/mo Cloud Run / Compute Engine
+  micro-instance. Pure relay + lobby + room management; **no game
+  logic, no physics**. Probably ~300 lines of Node.js / uWebSockets.
+  This avoids the operational cost of an authoritative game server
+  and matches the sim's existing client-heavy architecture.
+- **One client is the "scenario host"** for each room. Owns:
+  - All NPCs (AI tick, position integration, weapon firing)
+  - All platform jammers and sensor-equipped emitters
+  - Scenario-level events (spawns, satellite refreshes, briefing
+    state)
+  - Broadcasts NPC + platform state at 10–20 Hz; events as discrete
+    messages.
+- **Each player is authoritative for their own plane and their own
+  projectiles**. Broadcasts plane state at 30 Hz (interpolated by
+  peers); missile spawns + hits as events. Hit decisions are
+  shooter-authoritative for fairness — "my missile says it hit you"
+  is final unless the receiver's last-known position disagrees by a
+  large margin (anti-cheat is out of scope; we trust both clients).
+- **Sensor scans run on every client independently** against the
+  shared units array. This is why the existing `accumulateJamAttenuation`,
+  RWR, and contact pipeline drops in cleanly: they read from a
+  units array, they don't care which entries are "remote players"
+  vs "local NPCs."
+
+### Sub-phases
+
+#### 11.1 — Spectator mode (proof of pipe)
+
+The smallest fun thing. One player flies as today; the second client
+connects as a passive observer:
+
+- Server lobby: create / join rooms by code.
+- Host streams its `state` snapshot at 30 Hz over WebSocket.
+- Spectator client renders the host's plane as a remote unit
+  (existing NPC rendering path), follows with the spectator camera.
+- Validates: serialization format, snapshot cadence, interpolation
+  buffer, lobby UX.
+
+Ships standalone. Useful even after the rest of multiplayer lands
+(streaming a sortie to a friend's screen).
+
+#### 11.2 — Two flyable players, co-op only
+
+- Second client also publishes its own plane state.
+- Each client renders the other as a "remote player" unit (same path
+  as NPCs, but without local AI tick).
+- Both planes share `team: 'friendly'` so existing IFF / datalink
+  treats them as wingmen.
+- AWACS datalink already fuses friendly contacts — once both
+  planes are in the units array, the datalink picture **just works**
+  with no further code.
+- No projectiles yet — gun and AAMs disabled or lobbed without
+  hit checking. Validates: dual-publisher sync, IFF, datalink fusion.
+
+#### 11.3 — Projectile replication (shooter authority)
+
+- Player A fires a missile; A simulates it locally as today.
+- A broadcasts: spawn event (lon/lat/alt/heading/pitch/speed,
+  munition type, target reference); state at 10 Hz; hit/miss event.
+- Player B reconstructs the missile as a "remote projectile" (visual
+  only, no local guidance, interpolated from A's snapshots) so B
+  sees A's missile flying through the world.
+- Hit handling: A computes damage, broadcasts kill event, B applies
+  it locally to whichever unit (NPC or B itself) was hit.
+- Same for guns / flares / chaff / jammer beams.
+
+#### 11.4 — NPC authority (scenario host model)
+
+- One client is elected host on room creation (creator by default).
+- Host runs the scenario's `update()`, including NPC AI, NPC
+  weapons, satellite intel, scenario events.
+- Host broadcasts NPC state at 15 Hz, NPC events on edge (spawn,
+  fire, die).
+- Non-host clients render NPCs as "remote NPCs" — same display
+  path, no local AI.
+- Host migration on disconnect: simplest version is "host quits =
+  scenario ends." Full migration is a 11.6 follow-up.
+
+#### 11.5 — Lag compensation polish
+
+- Snapshot interpolation buffer (~100 ms) on remote entities so
+  positions are smooth, not jittery.
+- Local prediction + reconciliation for own plane (already smooth
+  client-side; just needs to handle authoritative correction
+  packets if/when they exist).
+- Time-sync handshake so all clients agree on `simTime` to within
+  ~5 ms — important for missile + jam timing alignment.
+
+#### 11.6 — Optional follow-ups
+
+- Host migration on disconnect.
+- PvP teaming (per-room team assignment; two friendlies on the
+  same datalink, two hostiles on a different one — IFF + jamming
+  effects fall out of the existing team filter for free).
+- Voice (WebRTC peer-to-peer once the WebSocket has done the
+  signaling).
+- Reduced-cadence networking for distant players (5 Hz at >100 km)
+  to keep the bandwidth budget tight if the room scales beyond 2.
+
+### Wire format
+
+Single binary protocol over WebSocket. Per-client outbound message
+shape:
+
+```
+PlaneSnapshot:
+  unit_id (uint16)
+  lon, lat, alt (float32)
+  heading, pitch, roll (int16, deg×100)
+  speed (float32)
+  jammer_state (uint8 bitfield: defensiveOn, offensive_count, ...)
+  weapon_status (uint8: selected_weapon, locked_target_id)
+
+ProjectileSpawn (event):
+  proj_id, type, launcher_id, target_id, lon/lat/alt, ...
+
+KillEvent:
+  attacker_id, victim_id, weapon_type
+```
+
+JSON works fine for v1; binary becomes worth it only if the room
+scales past 4 players or the host is on a slow connection.
+
+### Sequencing
+
+11.1 → 11.2 → 11.3 → 11.4 → 11.5. Each is independently shippable
+and gives a working demo. 11.1 alone is "watch a friend fly"; 11.4
+is "play the SEAD scenario together." 11.6 is whenever.
+
+Phase 11 doesn't depend on any specific other phase — it can land
+any time after the architectural cleanup of Phase F.15 / F.16 (HUD
+and commander splits), which would help isolate "local player" vs
+"remote unit" rendering paths. Nothing else blocks it.
+
+### Cost estimate
+
+Working with AI-paired development as established cadence (the rest
+of the sim got built in evenings, not weeks): 11.1 is one evening.
+11.2 is one. 11.3 is two. 11.4 is two. 11.5 is one. ~7 evenings to
+a co-op flyable build that feels solid at typical home-broadband
+latencies (30–80 ms RTT). The dragons are mostly in 11.4 (the host
+authority refactor — many "the player" assumptions need to become
+"this client's player") and 11.5 (interpolation tuning), neither of
+which is novel work, just careful work.
+
+Hosting cost: one $5–10/month VM is enough for a handful of
+concurrent rooms. WebSocket relay is bandwidth-trivial.
+
+---
+
 ## Suggested sequencing
 
 | Block | Focus |
@@ -1837,6 +2002,7 @@ on 6) → NFAC.7 (cognitive pilot) → NFAC.8 (scenario hooks).
 | 13–15 | Phase 10a + 10b + 10c (scenario editor — schema + map placement + per-unit panels) — slot **after** Phase 4 ground units exist so the editor has interesting unit types to place, but **before** Phase 5 strike munitions so SEAD scenarios can be authored as soon as the munitions land |
 | 16–17 | Phase 10d + 10e (triggers + save/load) — once the basic editor is in shape and you know which actions you actually need |
 | late  | Phase 10f + 10g + 10h (test mode + briefing + campaign) — polish layer; ship after the editor is feature-complete for one-off missions |
+| any   | Phase 11 (multiplayer) — independent of every other phase. 11.1 (spectator) can slot in any time as a quick proof. Full co-op (11.4) wants F.15/F.16 HUD/commander splits done first so "local player" vs "remote unit" rendering is cleanly separable. |
 
 Phases are decoupled enough that the sequence can shift based on what's
 fun-broken vs fun-missing in playtest.
