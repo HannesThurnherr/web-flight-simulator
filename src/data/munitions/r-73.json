@@ -1,0 +1,40 @@
+{
+	"id": "r-73",
+	"name": "R-73 (Vympel)",
+	"shortName": "R-73",
+	"category": "AAM",
+	"tags": ["aam", "wvr", "ir", "fox-2", "hobs", "tv", "russian"],
+	"massKg": 105,
+	"rcsContributionM2": 0.01,
+	"description": "Russian short-range IR dogfight missile (NATO: AA-11 Archer). The missile that, paired with helmet-mounted sights on late-Soviet MiG-29s, gave Russian fighters a decisive WVR off-boresight advantage through the 1990s — pre-AIM-9X this was the best dogfight missile in the world. Cooled IR seeker with ±60° off-boresight cuing, thrust-vectoring tail vanes for high-G turns post-launch. Less flare-resistant than IIR seekers (AIM-9X) but a much harder target than AIM-9M to spoof. Carried by every Russian/Soviet-derived fighter from MiG-29 onward.",
+	"simType": "R-73",
+	"signature": "missile_ir",
+	"seekerType": "ir",
+	"modelTemplate": "r-73",
+	"flight": {
+		"launchSpeedOffset": 45,
+		"boostDurationS": 4.0,
+		"boostAccel": 250,
+		"peakSpeed": 850,
+		"minSpeed": 75,
+		"maxLifeS": 50,
+		"maxTurnDegPerSec": 80,
+		"pnGain": 4.0,
+		"dragRef": 18,
+		"dragRefSpeed": 750,
+		"dragRefAltitude": 5000,
+		"vManeuverRef": 500,
+		"gAvailFloor": 0.15
+	},
+	"warhead": {
+		"killRadiusM": 11,
+		"fuzeSenseRadiusM": 22
+	},
+	"seeker": {
+		"coneHalfAngleDeg": 60,
+		"maxG": 40,
+		"flareResistance": 0.45,
+		"trackRangeM": 18000,
+		"aspectIrEnabled": true
+	}
+}

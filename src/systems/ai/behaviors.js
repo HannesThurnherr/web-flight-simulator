@@ -398,7 +398,7 @@ export class CrankBehavior extends Behavior {
 			// midcourse datalink). IR Sidewinders are fire-and-forget
 			// — no support needed, keep the nose on the bandit.
 			const t = p.type;
-			if (t !== 'AIM-120' && t !== 'METEOR' && t !== 'NASAMS-MSL') continue;
+			if (t !== 'AIM-120' && t !== 'METEOR' && t !== 'NASAMS-MSL' && t !== 'TOR-MSL' && t !== 'R-77' && t !== 'R-37M') continue;
 			return p;
 		}
 		return null;
@@ -626,7 +626,10 @@ export class EngageBehavior extends Behavior {
 		// in (Engage steers nose-on) or, if pre-launch, just close.
 		const isRadarAam = weapon.type === 'AIM-120'
 			|| weapon.type === 'METEOR'
-			|| weapon.type === 'NASAMS-MSL';
+			|| weapon.type === 'NASAMS-MSL'
+			|| weapon.type === 'TOR-MSL'
+			|| weapon.type === 'R-77'
+			|| weapon.type === 'R-37M';
 		if (isRadarAam) {
 			// aspectCos was computed above for the gun-aspect check.
 			// +1 = bandit pointing at us (head-on); -1 = bandit cold.

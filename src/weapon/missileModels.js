@@ -301,6 +301,70 @@ _loader.load('/assets/models/gbu-39-sdb.glb', (gltf) => {
 	console.warn('[missileModels] gbu-39-sdb model failed to load', err);
 });
 
+// R-37M (RVV-BD, AA-13 Axehead) — Russian very-long-range AAM, 4.06 m,
+// Mach 6 peak, the Su-35 / MiG-31 long-arm. Asset is a low-poly R-33
+// model (its predecessor; very similar silhouette — both are long
+// thin bodies with cruciform mid-fins and a small seeker dome).
+_loader.load('/assets/models/r-37m.glb', (gltf) => {
+	_templates['r-37m'] = _normalizeMissileModel(gltf.scene, 4.06);
+	_templates['r-37m'].traverse((child) => {
+		if (child.isMesh) {
+			child.castShadow = true;
+			child.receiveShadow = true;
+		}
+	});
+}, undefined, (err) => {
+	console.warn('[missileModels] r-37m model failed to load', err);
+});
+
+// R-77 (RVV-AE, AA-12 Adder) — Russian medium-range active-radar AAM,
+// 3.6 m. The defining visual: lattice / grid tail fins (vs AMRAAM's
+// solid trapezoidal fins). Should be obviously not-AMRAAM in flight.
+_loader.load('/assets/models/r-77.glb', (gltf) => {
+	_templates['r-77'] = _normalizeMissileModel(gltf.scene, 3.60);
+	_templates['r-77'].traverse((child) => {
+		if (child.isMesh) {
+			child.castShadow = true;
+			child.receiveShadow = true;
+		}
+	});
+}, undefined, (err) => {
+	console.warn('[missileModels] r-77 model failed to load', err);
+});
+
+// R-73 (AA-11 Archer) — Russian short-range IR dogfight missile, 2.9 m.
+// Distinctive: large forward canards plus TVC vanes, much busier
+// silhouette than a Sidewinder. Reads as Russian-WVR at sim distance.
+_loader.load('/assets/models/r-73.glb', (gltf) => {
+	_templates['r-73'] = _normalizeMissileModel(gltf.scene, 2.90);
+	_templates['r-73'].traverse((child) => {
+		if (child.isMesh) {
+			child.castShadow = true;
+			child.receiveShadow = true;
+		}
+	});
+}, undefined, (err) => {
+	console.warn('[missileModels] r-73 model failed to load', err);
+});
+
+// Tamir (Iron Dome interceptor) — used as a visual stand-in for the
+// Russian 9M338 (SA-15 Tor missile). Both are short, fat single-tube
+// SHORAD-class interceptors at sim distance, ~3 m long. The real
+// 9M338 has no public asset in our pipeline; the Tamir GLB looks
+// the part. If this ever flies tail-first or sideways, add a
+// rotation flip here once we know the source GLB's native axis.
+_loader.load('/assets/models/tamir-irondome.glb', (gltf) => {
+	_templates.tamir = _normalizeMissileModel(gltf.scene, 3.0);
+	_templates.tamir.traverse((child) => {
+		if (child.isMesh) {
+			child.castShadow = true;
+			child.receiveShadow = true;
+		}
+	});
+}, undefined, (err) => {
+	console.warn('[missileModels] tamir model failed to load', err);
+});
+
 // Storm Shadow / SCALP-EG — JASSM-class stealth cruise missile,
 // ~5.1 m long. The source GLB lands belly-up after normalize;
 // roll +90° about the long axis (+Y after normalize) to right

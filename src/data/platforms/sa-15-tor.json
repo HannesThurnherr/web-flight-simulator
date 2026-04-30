@@ -22,12 +22,12 @@
 	"pilot": {
 		"type": "static-sam",
 		"defaultParams": {
-			"missileType": "NASAMS-MSL",
+			"missileType": "TOR-MSL",
 			"magazine": 8,
 			"salvoSize": 1,
 			"conserveLastN": 2,
 			"intraSalvoGapS": 1.5,
-			"perTargetReengageS": 14,
+			"perTargetReengageS": 12,
 			"maxInFlight": 4,
 			"minRangeM": 1500,
 			"maxRangeM": 12000,

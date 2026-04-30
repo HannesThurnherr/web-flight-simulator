@@ -1,0 +1,53 @@
+{
+	"id": "r-37m",
+	"name": "R-37M (RVV-BD)",
+	"shortName": "R-37M",
+	"category": "AAM",
+	"tags": ["aam", "vlr", "active-radar", "fox-3", "russian"],
+	"massKg": 510,
+	"rcsContributionM2": 0.06,
+	"description": "Russian very-long-range air-to-air missile (NATO: AA-13 Axehead). Mach 6 peak, ~398 km published range, active-radar terminal homing with two-way datalink. Carried by MiG-31BM and Su-35/Su-57 to threaten high-value support aircraft (AWACS, tankers, JSTARS) at ranges no Western fighter can match. Heavy (~510 kg) with a big sustained-burn motor — exceptional energy at long range, but slow to turn against a maneuvering fighter. Visual stand-in: R-33 GLB (the R-37's direct predecessor; very similar long thin silhouette).",
+	"simType": "R-37M",
+	"signature": "missile_radar",
+	"seekerType": "active_radar",
+	"modelTemplate": "r-37m",
+	"flight": {
+		"launchSpeedOffset": 60,
+		"boostDurationS": 14.0,
+		"boostAccel": 180,
+		"peakSpeed": 1900,
+		"minSpeed": 80,
+		"maxLifeS": 200,
+		"maxTurnDegPerSec": 20,
+		"pnGain": 4.0,
+		"dragRef": 9,
+		"dragRefSpeed": 1400,
+		"dragRefAltitude": 15000,
+		"vManeuverRef": 800,
+		"gAvailFloor": 0.05
+	},
+	"warhead": {
+		"killRadiusM": 22,
+		"fuzeSenseRadiusM": 40,
+		"missAbortRadiusMul": 2
+	},
+	"loft": {
+		"terminalRangeM": 25000,
+		"maxLoftRangeM": 150000,
+		"maxLoftDeg": 35
+	},
+	"seeker": {
+		"activeRangeM": 28000,
+		"fovHalfAngleDeg": 30,
+		"nominalDetectRangeM": 40000,
+		"referenceRcs": 5,
+		"notchThresholdAcquire": 35,
+		"notchThresholdTrack": 28,
+		"lockDropTimeoutS": 3.0,
+		"reacquireIntervalS": 0.25,
+		"reacquireBackoffMul": 2.0,
+		"reacquireMaxIntervalS": 5.0,
+		"reacquireMaxAttempts": 6,
+		"datalink": true
+	}
+}

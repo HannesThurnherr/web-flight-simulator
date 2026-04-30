@@ -1,0 +1,53 @@
+{
+	"id": "r-77",
+	"name": "R-77 (RVV-AE)",
+	"shortName": "R-77",
+	"category": "AAM",
+	"tags": ["aam", "bvr", "active-radar", "fox-3", "russian"],
+	"massKg": 175,
+	"rcsContributionM2": 0.04,
+	"description": "Russian medium-range active-radar BVR missile (NATO: AA-12 Adder). The Russian equivalent of the AIM-120 — same role, same fox-3 active-radar+datalink doctrine, slightly heavier. R-77M variant (modeled here) extends range to ~110 km via dual-pulse motor. Distinctive lattice / grid tail fins make it instantly identifiable in flight vs AMRAAM's solid trapezoidal fins. Standard BVR load on Su-35, Su-57, MiG-29M, MiG-35.",
+	"simType": "R-77",
+	"signature": "missile_radar",
+	"seekerType": "active_radar",
+	"modelTemplate": "r-77",
+	"flight": {
+		"launchSpeedOffset": 50,
+		"boostDurationS": 7.0,
+		"boostAccel": 175,
+		"peakSpeed": 1250,
+		"minSpeed": 60,
+		"maxLifeS": 95,
+		"maxTurnDegPerSec": 45,
+		"pnGain": 4.0,
+		"dragRef": 10,
+		"dragRefSpeed": 1000,
+		"dragRefAltitude": 10000,
+		"vManeuverRef": 600,
+		"gAvailFloor": 0.05
+	},
+	"warhead": {
+		"killRadiusM": 14,
+		"fuzeSenseRadiusM": 28,
+		"missAbortRadiusMul": 2
+	},
+	"loft": {
+		"terminalRangeM": 14000,
+		"maxLoftRangeM": 80000,
+		"maxLoftDeg": 30
+	},
+	"seeker": {
+		"activeRangeM": 18000,
+		"fovHalfAngleDeg": 30,
+		"nominalDetectRangeM": 24000,
+		"referenceRcs": 5,
+		"notchThresholdAcquire": 30,
+		"notchThresholdTrack": 25,
+		"lockDropTimeoutS": 2.5,
+		"reacquireIntervalS": 0.25,
+		"reacquireBackoffMul": 2.0,
+		"reacquireMaxIntervalS": 4.0,
+		"reacquireMaxAttempts": 5,
+		"datalink": true
+	}
+}

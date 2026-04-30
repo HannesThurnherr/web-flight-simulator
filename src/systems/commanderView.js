@@ -869,7 +869,7 @@ export class CommanderView {
 			if (dbg.mode) mode = dbg.mode;
 			else if (ref.lostLock) mode = 'LOST';
 			else if (ref.pitbullFired || ref.seekerActive) mode = 'ACT';
-			else if (ref.type === 'AIM-120') mode = 'DL';
+			else if (ref.type === 'AIM-120' || ref.type === 'METEOR' || ref.type === 'R-77' || ref.type === 'R-37M' || ref.type === 'NASAMS-MSL' || ref.type === 'TOR-MSL') mode = 'DL';
 			else mode = '—';
 			const rng     = typeof dbg.rangeToTarget === 'number'
 				? `${(dbg.rangeToTarget / 1000).toFixed(2)} km` : '—';
@@ -1509,7 +1509,7 @@ export class CommanderView {
 		if (missiles) {
 			for (const m of missiles) {
 				if (!m || !m.active) continue;
-				if (m.type !== 'AIM-120') continue;
+				if (m.type !== 'AIM-120' && m.type !== 'METEOR' && m.type !== 'R-77' && m.type !== 'R-37M') continue;
 				if (!m.pitbullFired || m.maddog) continue;
 				const t = m.target;
 				if (!t || t.destroyed || t.active === false) continue;

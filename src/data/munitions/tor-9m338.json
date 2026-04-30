@@ -1,0 +1,53 @@
+{
+	"id": "tor-9m338",
+	"name": "9M338 (SA-15 Tor)",
+	"shortName": "9M338",
+	"category": "SAM",
+	"tags": ["sam", "shorad", "active-radar", "short-range"],
+	"massKg": 165,
+	"rcsContributionM2": 0.04,
+	"description": "Russian short-range vertical-launch SHORAD missile fired by the SA-15 Tor system. Real 9M338 is command-guided through midcourse with active-radar terminal; for sim purposes we run it as a short-range AMRAAM-class active radar (the visual + envelope distinction matters more than the seeker philosophy until Phase 6e adds command-link severance). ~16 km kinematic range, Mach 2.8 peak, 15 kg blast-frag warhead. Visual stand-in: Tamir Iron Dome interceptor model — both ~3 m, similar SHORAD silhouette.",
+	"simType": "TOR-MSL",
+	"signature": "missile_sam",
+	"seekerType": "active_radar",
+	"modelTemplate": "tamir",
+	"flight": {
+		"launchSpeedOffset": 25,
+		"boostDurationS": 4.0,
+		"boostAccel": 260,
+		"peakSpeed": 950,
+		"minSpeed": 50,
+		"maxLifeS": 28,
+		"maxTurnDegPerSec": 90,
+		"pnGain": 4.5,
+		"dragRef": 16,
+		"dragRefSpeed": 800,
+		"dragRefAltitude": 1500,
+		"vManeuverRef": 500,
+		"gAvailFloor": 0.05
+	},
+	"warhead": {
+		"killRadiusM": 9,
+		"fuzeSenseRadiusM": 18,
+		"missAbortRadiusMul": 2
+	},
+	"loft": {
+		"terminalRangeM": 4000,
+		"maxLoftRangeM": 14000,
+		"maxLoftDeg": 25
+	},
+	"seeker": {
+		"activeRangeM": 9000,
+		"fovHalfAngleDeg": 35,
+		"nominalDetectRangeM": 14000,
+		"referenceRcs": 5,
+		"notchThresholdAcquire": 30,
+		"notchThresholdTrack": 25,
+		"lockDropTimeoutS": 2.0,
+		"reacquireIntervalS": 0.25,
+		"reacquireBackoffMul": 2.0,
+		"reacquireMaxIntervalS": 3.0,
+		"reacquireMaxAttempts": 4,
+		"datalink": true
+	}
+}

@@ -226,7 +226,7 @@ export function npcSystemUpdate(sys, dt, playerState, simTime = 0) {
 				for (const p of ctxProjectiles) {
 					if (!p || !p.active) continue;
 					if (p.launcher !== npc) continue;
-					if (p.type === 'AIM-120' || p.type === 'METEOR' || p.type === 'NASAMS-MSL') {
+					if (p.type === 'AIM-120' || p.type === 'METEOR' || p.type === 'NASAMS-MSL' || p.type === 'TOR-MSL' || p.type === 'R-77' || p.type === 'R-37M') {
 						hasLiveRadarMsl = true;
 						break;
 					}
