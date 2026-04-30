@@ -30,7 +30,8 @@ modifiers list them inline (e.g. `Shift+Tab`).
 | `Tab` | Cycle designated AESA target forward | planeController.js |
 | `Shift+Tab` | Cycle designated AESA target backward | planeController.js |
 | `R` | Toggle own radar emitter (emcon / silent running) | menus.js |
-| `'` (apostrophe) | Cycle radar/SA scope display modes (normal → no-bg → no-bg+expanded) | menus.js |
+| `'` (apostrophe) | Toggle radar scope map background (Cesium terrain on/off) | menus.js |
+| `;` (semicolon) | Toggle radar scope size (compact ↔ expanded) | menus.js |
 | `Z` | Skip dialogue | menus.js |
 | `B` | Open / close strike planner | strikePlanner.js |
 | `M` | Open / close commander god-eye view | commanderView.js |
@@ -90,7 +91,7 @@ These are conventionally avoided so the UX stays predictable:
 ## Free keys (cockpit, currently unbound)
 
 `G`, `H`, `I`, `J`, `K`, `N`, `O`, `U`, `X`, `Y`,
-`,`, `.`, `;`, `/`, `\`, `[`, `]`, `=`, `-`, `0`, `7`, `8`, `9`,
+`,`, `.`, `/`, `\`, `[`, `]`, `=`, `-`, `0`, `7`, `8`, `9`,
 function keys `F1`–`F12`, `Insert`, `Delete`, `Home`, `End`,
 `PgUp`, `PgDn`.
 

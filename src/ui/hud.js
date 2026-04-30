@@ -1230,21 +1230,16 @@ export class HUD {
 		this.minimapRange = range;
 	}
 
-	// 6a — radar/SA scope mode cycle. Three states, advanced by the '
-	// keybind (see src/ui/menus.js / KEYBINDS.md):
-	//
-	//   0 = normal             (background ON,  compact)  — default minimap
-	//   1 = scope-only compact (background OFF, compact)  — F-16 MFD look
-	//   2 = scope-only expanded(background OFF, expanded) — full-screen scope
-	//
-	// `radarBackground` and `radarExpanded` are derived from the cycle
-	// index, then pushed into the DOM via _applyRadarMode(). The
-	// container's classList drives the styling (CSS handles the layout).
-	cycleRadarMode() {
-		const idx = (this._radarModeIndex || 0) + 1;
-		this._radarModeIndex = idx % 3;
-		this.radarBackground = (this._radarModeIndex === 0);
-		this.radarExpanded   = (this._radarModeIndex === 2);
+	// 6a — radar/SA scope toggles. Two independent flags advanced by '
+	// (background) and ; (expand) — see src/ui/menus.js / KEYBINDS.md.
+	// Container classList drives layout; we just flip the JS state and
+	// push it into the DOM via _applyRadarMode().
+	toggleRadarBackground() {
+		this.radarBackground = !this.radarBackground;
+		this._applyRadarMode();
+	}
+	toggleRadarExpanded() {
+		this.radarExpanded = !this.radarExpanded;
 		this._applyRadarMode();
 	}
 	_applyRadarMode() {
@@ -1254,8 +1249,11 @@ export class HUD {
 		container.classList.toggle('radar-no-bg',    !this.radarBackground);
 		container.classList.toggle('radar-expanded',  this.radarExpanded);
 		if (cesium) cesium.style.display = this.radarBackground ? '' : 'none';
-		// Force a canvas resize so the higher-DPI expanded mode draws
-		// at native pixel density.
+		// Resize the canvas backing buffer to match the new container
+		// size — without this the canvas stays at its old pixel
+		// dimensions and CSS scales it visually, producing the blurry
+		// upscaled look the user reported. Also fires the Cesium
+		// viewer.resize so its WebGL context follows along.
 		this.resizeMinimap();
 	}
 
@@ -2689,7 +2687,7 @@ export class HUD {
 			ctx.textAlign = 'center';
 			ctx.fillStyle = 'rgba(0, 255, 0, 0.55)';
 			ctx.font = '9px AceCombat, monospace';
-			ctx.fillText("' cycle scope · R emcon", w / 2, h - 4);
+			ctx.fillText("' map · ; size · R emcon", w / 2, h - 4);
 		}
 		ctx.restore();
 	}
