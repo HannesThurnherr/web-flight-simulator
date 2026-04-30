@@ -596,8 +596,14 @@ export function update(dt, ctx) {
 		// it.
 		const crashMenu = document.getElementById('crashMenu');
 		if (currentState === 'CRASHED' && crashMenu) {
-			crashMenu.classList.toggle('hidden', cmdActive);
-			if (cmdActive) {
+			// Hide crash menu while EITHER the commander map is open OR
+			// the player is spectating someone (chase-cam on an NPC /
+			// missile). Without the spectator clause this block re-
+			// asserted display:'' every frame and undid the one-shot
+			// hide we do on spectator-request.
+			const hideCrash = cmdActive || !!ctx.spectatorTarget;
+			crashMenu.classList.toggle('hidden', hideCrash);
+			if (hideCrash) {
 				crashMenu.style.display = 'none';
 				crashMenu.style.pointerEvents = 'none';
 			} else {
