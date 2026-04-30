@@ -86,7 +86,6 @@ export function update(dt, ctx) {
 			input.boost = false;
 			input.fire  = false;
 			input.fireFlare    = false;
-			input.forceStt     = false;
 			input.toggleWeapon = false;
 			input.weaponIndex  = -1;
 			input.cycleTargetFwd  = false;
@@ -176,17 +175,24 @@ export function update(dt, ctx) {
 	const npcProjectiles    = (npcSystem && npcSystem.projectiles)       || [];
 	const allProjectiles = playerProjectiles.concat(npcProjectiles).filter(p => p && p.active);
 
-	// Phase 3c — player radar mode. Auto: STT when we have any AESA
-	// track LOCKED (i.e. we're committed to a fire solution); TWS
-	// otherwise. Manual override (input.forceStt = T-key while held)
-	// forces STT even without a lock — useful for the "spike them
-	// to read their break-turn" play. The mode flag drives the
-	// `lockType` written into bandit RWR records by sensorSystem,
-	// which is what makes their evasion fire on time.
+	// 6b — player radar mode is now explicitly chosen by the player
+	// via the T keybind (rws / tws / stt). This block translates the
+	// player-facing playerMode into the internal `radar.mode` field
+	// the rest of the system already speaks ('search' / 'track' /
+	// 'off'):
+	//   rws / tws → 'search' — no STT spike on victim RWR
+	//   stt       → 'track'  — STT-class RWR spike, midcourse path
+	// 'off' is preserved if the radar's own active flag is false
+	// (R-key emcon). Older auto-mode-on-lock logic removed —
+	// commits are explicit now.
 	if (state.sensors && state.sensors.radar) {
-		const hasLock = weaponSystem && weaponSystem.lockStatus === 'LOCKED';
-		const forceStt = !!(input && input.forceStt);
-		state.sensors.radar.mode = (hasLock || forceStt) ? 'track' : 'search';
+		const r = state.sensors.radar;
+		if (!r.active) {
+			r.mode = 'off';
+		} else {
+			const pm = r.playerMode || 'tws';
+			r.mode = (pm === 'stt') ? 'track' : 'search';
+		}
 	}
 
 	updateSensors([state, ...npcList, ...allProjectiles], simTime, dt);

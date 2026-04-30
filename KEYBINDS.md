@@ -26,7 +26,7 @@ modifiers list them inline (e.g. `Shift+Tab`).
 | `1` … `6` | Direct weapon select (gun, AIM-9M, AIM-9X, AIM-120, METEOR, HARM) | planeController.js |
 | `F` / `Enter` | Fire selected weapon | planeController.js |
 | `V` | Release flares | planeController.js |
-| `T` | Force STT lock (held while fired) | planeController.js |
+| `T` | Cycle radar mode (RWS → TWS → STT) | menus.js |
 | `Tab` | Cycle designated AESA target forward | planeController.js |
 | `Shift+Tab` | Cycle designated AESA target backward | planeController.js |
 | `R` | Toggle own radar emitter (emcon / silent running) | menus.js |

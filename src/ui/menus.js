@@ -330,6 +330,29 @@ export function setupGlobalKeybinds(ctx) {
 			return;
 		}
 
+		// 6b — radar mode cycle. T cycles RWS → TWS → STT → RWS for
+		// the player. RWS = no firing-grade locks (passive scan); TWS
+		// = locks progress, victim RWR shows TWS class (no STT spike);
+		// STT = locks fast on the designated target, victim RWR shows
+		// STT spike. The mode-manager in simLoop.js translates the
+		// player choice into the internal radar.mode flag the rest
+		// of the system already speaks. See KEYBINDS.md.
+		if (key === 't' && ctx.currentState === 'FLYING' &&
+			!(ctx.commanderView && ctx.commanderView.active) &&
+			!(ctx.strikePlannerView && ctx.strikePlannerView.active)) {
+			if (state.sensors && state.sensors.radar) {
+				const order = ['rws', 'tws', 'stt'];
+				const cur   = state.sensors.radar.playerMode || 'tws';
+				const next  = order[(order.indexOf(cur) + 1) % order.length];
+				state.sensors.radar.playerMode = next;
+				if (ctx.hud && ctx.hud._flashScopeMode) {
+					ctx.hud._flashScopeMode(next);
+				}
+			}
+			e.preventDefault();
+			return;
+		}
+
 		// 6a — radar / SA scope mode toggles, cockpit-only.
 		//   '  (apostrophe) → toggle Cesium terrain background under the
 		//                     scope (map mode ON ↔ pure tactical scope)

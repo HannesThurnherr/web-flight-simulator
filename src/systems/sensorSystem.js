@@ -34,7 +34,21 @@ import {
 export const FIGHTER_RADAR_DEFAULT = {
 	enabled: true,
 	active: true,
+	// Internal radar mode used by sensorSystem + RWR — written by the
+	// per-frame mode-manager in simLoop. 'search' produces a TWS-class
+	// RWR cue on victims; 'track' produces an STT-class spike. 'off'
+	// suppresses emissions entirely (R-key emcon).
 	mode: 'search',         // 'search' | 'track' | 'off'
+	// 6b — player-facing radar mode. Independent from the internal
+	// `mode` field above; this is what the player chooses via the T
+	// keybind, and the simLoop mode-manager translates it into the
+	// internal `mode` flag plus RWS-specific behavior (lock-progression
+	// suppression).
+	//   rws — Range While Scan. No firing-grade locks; AAMs can't fire.
+	//   tws — Track While Scan. Locks progress; victim RWR sees TWS.
+	//   stt — Single Target Track. Locks fast on designated only;
+	//         victim RWR sees STT spike.
+	playerMode: 'tws',
 	nominalRange: 150000,   // m, at referenceRcs
 	referenceRcs: 5,        // m²
 	fovH: Math.PI / 3,      // ±60° azimuth

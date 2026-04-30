@@ -1238,6 +1238,12 @@ export class HUD {
 		this.radarBackground = !this.radarBackground;
 		this._applyRadarMode();
 	}
+	// 6b — kicked by the T-key handler in setupGlobalKeybinds when the
+	// player cycles RWS/TWS/STT. Stamps a 600 ms peripheral-vision
+	// glow on the scope's mode label so the change is hard to miss.
+	_flashScopeMode(_mode) {
+		this._scopeModeFlashUntil = performance.now() + 600;
+	}
 	toggleRadarExpanded() {
 		this.radarExpanded = !this.radarExpanded;
 		this._applyRadarMode();
@@ -2662,15 +2668,24 @@ export class HUD {
 		ctx.arc(centerX, centerY, sweepTime * circleRadius, 0, Math.PI * 2);
 		ctx.stroke();
 
-		// 6a — status row at bottom of the scope. Range scale (km), radar
-		// mode placeholder (RWS until 6b lands; OFF when radar.active
-		// is false — already wired by the existing R-key emcon).
-		// Drawn AFTER the rotated/translated draw block ends so the text
-		// is screen-axis-aligned regardless of player heading.
+		// 6a/6b — status row at bottom of the scope. Range scale (km),
+		// radar mode (RWS / TWS / STT or OFF), color-coded by
+		// aggression: cyan RWS (passive), amber TWS (search + track),
+		// red STT (committing). Mode flashes briefly when the player
+		// cycles via T (see _flashScopeMode below).
 		const radar2 = state.sensors && state.sensors.radar;
 		const rdrOn = !!(radar2 && radar2.enabled !== false && radar2.active && radar2.mode !== 'off');
-		const modeText = rdrOn ? 'RWS' : 'OFF';
-		const modeColor = rdrOn ? '#80ffaa' : 'rgba(255, 100, 100, 0.85)';
+		let modeText, modeColor;
+		if (!rdrOn) {
+			modeText = 'OFF';
+			modeColor = 'rgba(255, 100, 100, 0.85)';
+		} else {
+			const pm = (radar2.playerMode || 'tws').toUpperCase();
+			modeText = pm;
+			modeColor = pm === 'RWS' ? '#80e8ff'
+				: pm === 'STT' ? '#ff7070'
+				: '#ffd060';   // TWS amber
+		}
 		const rangeKm = this.minimapRange * 5;  // matches the 5000-m range gate
 		ctx.save();
 		ctx.font = '11px AceCombat, monospace';
@@ -2679,15 +2694,28 @@ export class HUD {
 		ctx.fillStyle = 'rgba(0, 255, 0, 0.85)';
 		ctx.textAlign = 'left';
 		ctx.fillText(`${rangeKm} KM`, 6, h - 4);
+		// Mode label, with a brief glow flash on cycle so the player
+		// catches the change in their peripheral vision.
+		const flashT = this._scopeModeFlashUntil
+			? Math.max(0, this._scopeModeFlashUntil - performance.now())
+			: 0;
+		const flashing = flashT > 0;
 		ctx.textAlign = 'right';
 		ctx.fillStyle = modeColor;
+		if (flashing) {
+			ctx.shadowColor = modeColor;
+			ctx.shadowBlur  = 12 * (flashT / 600);
+			ctx.font = 'bold 12px AceCombat, monospace';
+		}
 		ctx.fillText(modeText, w - 6, h - 4);
+		ctx.shadowBlur = 0;
+		ctx.font = '11px AceCombat, monospace';
 		// Center cue when expanded: shows the toggles available.
 		if (this.radarExpanded) {
 			ctx.textAlign = 'center';
 			ctx.fillStyle = 'rgba(0, 255, 0, 0.55)';
 			ctx.font = '9px AceCombat, monospace';
-			ctx.fillText("' map · ; size · R emcon", w / 2, h - 4);
+			ctx.fillText("' map · ; size · T mode · R emcon", w / 2, h - 4);
 		}
 		ctx.restore();
 	}

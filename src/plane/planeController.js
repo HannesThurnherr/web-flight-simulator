@@ -109,7 +109,6 @@ export class PlaneController {
 			isDragging: false,
 			fire: false,
 			fireFlare: false,
-			forceStt: false,
 			weaponIndex: -1,
 			toggleWeapon: false,
 			// One-shot pulses (true only on the frame the key was pressed,
@@ -136,13 +135,11 @@ export class PlaneController {
 
 		this.input.fire = !!this.keys['enter'] || !!this.keys['f'] || !!this.mouseFireHeld;
 		this.input.fireFlare = !!this.keys['v'];
-		// Phase 3c — manual STT override. Forces the radar from TWS to
-		// STT while held, advertising hard to the bandit's RWR. Useful
-		// for the "spike them to bait a break-turn" play without
-		// actually firing a missile. Auto-mode in simLoop already flips
-		// to STT once a lock is held, so the average player never needs
-		// this key.
-		this.input.forceStt = !!this.keys['t'];
+		// 6b — T was previously "hold to force STT". Replaced by the
+		// explicit player-chosen radar mode (rws/tws/stt) cycled via T
+		// in setupGlobalKeybinds (one-shot, edge-triggered). The
+		// held-T-force-STT semantics are subsumed by "cycle to STT
+		// mode" and stay there until cycled away.
 
 		this.input.toggleWeapon = (!!this.keys['q'] && !this.prevKeys['q']);
 

@@ -616,29 +616,84 @@ export class WeaponSystem {
 		if (currentWeapon.id === 'missile') {
 			const lockTimeReq = currentWeapon.lockTime || this.lockRequiredTime;
 			const inEnvelope = this.findTargetsInEnvelope(playerState);
+			// 6b — radar mode gates the lock pipeline.
+			//   rws → no firing-grade tracks form. Drop everything to
+			//         search-only state. The scope still shows contacts
+			//         (visibility is in the radar pipeline, not lock
+			//         pipeline) but no LOCKED status, so AAMs can't
+			//         fire — passive observation only.
+			//   tws → tracks progress as before; designated target gets
+			//         the standard rate.
+			//   stt → only the designated target progresses; everyone
+			//         else stays at SEARCHING. Lock time on the
+			//         designated halves so STT commits feel snappy.
+			const radar    = playerState.sensors && playerState.sensors.radar;
+			const playerMode = (radar && radar.playerMode) || 'tws';
 
-			// Age / advance / drop. First pass: drop any existing track
-			// whose NPC is no longer in envelope or has been destroyed.
-			for (const [npc, entry] of this.locks) {
-				if (!inEnvelope.has(npc) || npc.destroyed) {
-					this.locks.delete(npc);
-				} else {
-					// Still in cone + range; progress toward full lock.
-					if (entry.status !== 'LOCKED') {
-						entry.progress += dt / lockTimeReq;
-						if (entry.progress >= 1) {
-							entry.progress = 1;
-							entry.status = 'LOCKED';
-							newLockAcquired = true;
+			if (playerMode === 'rws') {
+				// Drop any in-progress / locked entries — no
+				// firing-grade tracks in RWS.
+				for (const [npc, entry] of this.locks) {
+					if (!inEnvelope.has(npc) || npc.destroyed) {
+						this.locks.delete(npc);
+					} else if (entry.status !== 'SEARCHING') {
+						entry.status = 'SEARCHING';
+						entry.progress = 0;
+					}
+				}
+				for (const npc of inEnvelope) {
+					if (this.locks.has(npc)) continue;
+					this.locks.set(npc, { progress: 0, status: 'SEARCHING' });
+				}
+			} else {
+				// TWS / STT — locks progress. STT focuses on a single
+				// target at a higher rate; TWS spreads attention
+				// equally across all in-envelope contacts.
+				const sttFocus = (playerMode === 'stt');
+				const sttRate  = 2.0;  // STT halves lock time
+
+				// In STT, choose the focused target. Prefer the
+				// existing designatedTarget if it's still in
+				// envelope; otherwise pick the nearest. This means
+				// "switch to STT and you immediately start locking
+				// the closest threat" — no need to manually
+				// pre-designate before cycling modes.
+				let sttTarget = null;
+				if (sttFocus) {
+					if (this.designatedTarget &&
+						inEnvelope.has(this.designatedTarget) &&
+						!this.designatedTarget.destroyed) {
+						sttTarget = this.designatedTarget;
+					} else {
+						let bestDist = Infinity;
+						for (const npc of inEnvelope) {
+							const d = this.calculateDist(playerState, npc);
+							if (d < bestDist) { bestDist = d; sttTarget = npc; }
 						}
 					}
 				}
-			}
-			// Second pass: new tracks — anyone in envelope we aren't
-			// already tracking.
-			for (const npc of inEnvelope) {
-				if (this.locks.has(npc)) continue;
-				this.locks.set(npc, { progress: 0, status: 'LOCKING' });
+
+				for (const [npc, entry] of this.locks) {
+					if (!inEnvelope.has(npc) || npc.destroyed) {
+						this.locks.delete(npc);
+					} else {
+						if (entry.status !== 'LOCKED') {
+							const rate = sttFocus
+								? (npc === sttTarget ? sttRate : 0)
+								: 1;
+							entry.progress += rate * dt / lockTimeReq;
+							if (entry.progress >= 1) {
+								entry.progress = 1;
+								entry.status = 'LOCKED';
+								newLockAcquired = true;
+							}
+						}
+					}
+				}
+				for (const npc of inEnvelope) {
+					if (this.locks.has(npc)) continue;
+					this.locks.set(npc, { progress: 0, status: 'LOCKING' });
+				}
 			}
 		} else {
 			// Gun selected: drop every radar track. Real jets keep the
