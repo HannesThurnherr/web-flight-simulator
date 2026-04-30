@@ -172,6 +172,30 @@ html {
 	overflow: hidden;
 	box-sizing: border-box;
 	box-shadow: 0 0 15px rgba(0, 255, 0, 0.25);
+	transition: width 0.15s ease, height 0.15s ease, bottom 0.15s ease, left 0.15s ease;
+}
+
+/* 6a — radar/SA scope: pure-tactical mode, no Cesium terrain
+   substrate. Canvas overlay alone renders on a dark backdrop with
+   the existing grid lines, giving an F-16-MFD / F-35-PCD look.
+   Toggled via M from the cockpit. */
+#minimap-container.radar-no-bg {
+	background: rgba(0, 12, 0, 0.85);
+	box-shadow: 0 0 18px rgba(0, 255, 0, 0.35);
+}
+
+/* 6a — expanded mode: full-overlay scope sized for dense pictures.
+   Dimensions chosen so it fits on a 1080p display with a margin and
+   doesn't overlap the central cockpit reticle. Toggled via ` from
+   the cockpit. */
+#minimap-container.radar-expanded {
+	width: 700px;
+	height: 700px;
+	bottom: 50%;
+	left: 50%;
+	transform: translate(-50%, 50%);
+	box-shadow: 0 0 40px rgba(0, 255, 0, 0.55);
+	z-index: 90;
 }
 
 #coords {

@@ -94,6 +94,18 @@ export class HUD {
 		this.currentShakeY = 0;
 
 		this.minimapRange = 1;
+		// 6a — radar/SA scope display modes layered onto the existing
+		// minimap. Two independent toggles:
+		//   radarBackground   — when false, the Cesium terrain
+		//     substrate (#minimapCesium) is hidden and the canvas
+		//     overlay renders on a dark grid backdrop. Pure tactical
+		//     scope; everything is icons + strobes, no map context.
+		//   radarExpanded     — when true, the whole minimap-container
+		//     scales up to a full-screen ~700 × 700 px overlay so the
+		//     player can read dense pictures during a busy fight.
+		// Both default OFF so the existing minimap UX is unchanged.
+		this.radarBackground = true;
+		this.radarExpanded   = false;
 
 		this.npcMarkers = new Map();
 		this.npcContainer = document.createElement('div');
@@ -1216,6 +1228,29 @@ export class HUD {
 
 	setMinimapRange(range) {
 		this.minimapRange = range;
+	}
+
+	// 6a — radar/SA scope mode toggles. The container's classList drives
+	// the styling (CSS handles the layout); we just flip the JS state and
+	// call _applyRadarMode() to push the change into the DOM.
+	toggleRadarBackground() {
+		this.radarBackground = !this.radarBackground;
+		this._applyRadarMode();
+	}
+	toggleRadarExpanded() {
+		this.radarExpanded = !this.radarExpanded;
+		this._applyRadarMode();
+	}
+	_applyRadarMode() {
+		const container = document.getElementById('minimap-container');
+		const cesium    = document.getElementById('minimapCesium');
+		if (!container) return;
+		container.classList.toggle('radar-no-bg',    !this.radarBackground);
+		container.classList.toggle('radar-expanded',  this.radarExpanded);
+		if (cesium) cesium.style.display = this.radarBackground ? '' : 'none';
+		// Force a canvas resize so the higher-DPI expanded mode draws
+		// at native pixel density.
+		this.resizeMinimap();
 	}
 
 	// Discrete zoom levels cycled by the on-screen +/- buttons. `1` is
@@ -2363,7 +2398,11 @@ export class HUD {
 		const heading = this.smoothedHeading;
 		ctx.rotate(-heading * Math.PI / 180);
 
-		ctx.strokeStyle = 'rgba(0, 255, 0, 0.35)';
+		// Grid intensity is dialed up when the Cesium terrain background is
+		// off — without the map underneath, the canvas needs a stronger
+		// reference grid to read as "tactical scope" and not "empty box."
+		ctx.strokeStyle = this.radarBackground
+			? 'rgba(0, 255, 0, 0.35)' : 'rgba(0, 255, 0, 0.18)';
 		ctx.lineWidth = 1.0;
 
 		const metersPerGrid = this.minimapRange * 1000;
@@ -2389,6 +2428,62 @@ export class HUD {
 				ctx.beginPath();
 				ctx.moveTo(-limit, -y); ctx.lineTo(limit, -y); ctx.stroke();
 			}
+		}
+
+		// 6a — concentric range arcs at every grid step, so the player
+		// can read distance-to-contact at a glance without measuring
+		// off the rectangular grid. Quartered (only an arc per
+		// quadrant) so the arcs don't trip on the rectangular grid
+		// lines visually.
+		ctx.strokeStyle = this.radarBackground
+			? 'rgba(0, 255, 0, 0.30)' : 'rgba(0, 255, 0, 0.45)';
+		for (let r = gridSize; r < radius; r += gridSize) {
+			ctx.beginPath();
+			ctx.arc(0, 0, r, 0, Math.PI * 2);
+			ctx.stroke();
+		}
+
+		// 6a — radar FOV wedge. Anchored at own-ship (canvas center),
+		// projected forward in the body frame. Because the canvas is
+		// already counter-rotated by the leader's heading at the top
+		// of drawMinimap, the wedge is simply two rays extending
+		// upward (north-up in the rotated frame) from the center,
+		// fanning out by ±radar.fovH. Sweeps relative to ground-
+		// stabilized contacts as the player turns / cranks — gives an
+		// immediate "is the bandit drifting toward the gimbal edge"
+		// read, which is the whole point of having this scope.
+		const radar = state.sensors && state.sensors.radar;
+		if (radar && radar.enabled !== false && radar.active && radar.fovH != null) {
+			const fovH = radar.fovH;
+			const wedgeR = radius * 0.95;
+			const fovOn  = !!radar.active;
+			ctx.save();
+			ctx.strokeStyle = fovOn ? 'rgba(0, 255, 80, 0.55)' : 'rgba(120, 200, 120, 0.25)';
+			ctx.fillStyle   = fovOn ? 'rgba(0, 255, 80, 0.06)' : 'rgba(120, 200, 120, 0.02)';
+			ctx.lineWidth = 1.2;
+			ctx.beginPath();
+			ctx.moveTo(0, 0);
+			// Negative Y is forward in the rotated frame (the canvas
+			// uses screen-Y-down, and drawMinimap rotates by -heading
+			// so own forward points up). FOV opens symmetric around
+			// straight-up.
+			ctx.lineTo(-Math.sin(fovH) * wedgeR, -Math.cos(fovH) * wedgeR);
+			ctx.arc(0, 0, wedgeR,
+				-Math.PI / 2 - fovH, -Math.PI / 2 + fovH, false);
+			ctx.lineTo(0, 0);
+			ctx.fill();
+			ctx.stroke();
+			// Boresight line — solid down the middle of the wedge so
+			// the antenna's "look-here" direction is unambiguous.
+			ctx.beginPath();
+			ctx.strokeStyle = fovOn ? 'rgba(0, 255, 80, 0.85)' : 'rgba(120, 200, 120, 0.4)';
+			ctx.lineWidth = 1.0;
+			ctx.setLineDash([4, 4]);
+			ctx.moveTo(0, 0);
+			ctx.lineTo(0, -wedgeR);
+			ctx.stroke();
+			ctx.setLineDash([]);
+			ctx.restore();
 		}
 
 		npcs.forEach(npc => {
@@ -2553,6 +2648,35 @@ export class HUD {
 		ctx.beginPath();
 		ctx.arc(centerX, centerY, sweepTime * circleRadius, 0, Math.PI * 2);
 		ctx.stroke();
+
+		// 6a — status row at bottom of the scope. Range scale (km), radar
+		// mode placeholder (RWS until 6b lands; OFF when radar.active
+		// is false — already wired by the existing R-key emcon).
+		// Drawn AFTER the rotated/translated draw block ends so the text
+		// is screen-axis-aligned regardless of player heading.
+		const radar2 = state.sensors && state.sensors.radar;
+		const rdrOn = !!(radar2 && radar2.enabled !== false && radar2.active && radar2.mode !== 'off');
+		const modeText = rdrOn ? 'RWS' : 'OFF';
+		const modeColor = rdrOn ? '#80ffaa' : 'rgba(255, 100, 100, 0.85)';
+		const rangeKm = this.minimapRange * 5;  // matches the 5000-m range gate
+		ctx.save();
+		ctx.font = '11px AceCombat, monospace';
+		ctx.textBaseline = 'bottom';
+		ctx.shadowBlur = 0;
+		ctx.fillStyle = 'rgba(0, 255, 0, 0.85)';
+		ctx.textAlign = 'left';
+		ctx.fillText(`${rangeKm} KM`, 6, h - 4);
+		ctx.textAlign = 'right';
+		ctx.fillStyle = modeColor;
+		ctx.fillText(modeText, w - 6, h - 4);
+		// Center cue when expanded: shows the toggles available.
+		if (this.radarExpanded) {
+			ctx.textAlign = 'center';
+			ctx.fillStyle = 'rgba(0, 255, 0, 0.55)';
+			ctx.font = '9px AceCombat, monospace';
+			ctx.fillText('M: bg · `: collapse · R: emcon', w / 2, h - 4);
+		}
+		ctx.restore();
 	}
 
 	// Player-visible check: unit appears in the player's own sensor

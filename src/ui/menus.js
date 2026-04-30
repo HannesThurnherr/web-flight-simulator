@@ -330,6 +330,28 @@ export function setupGlobalKeybinds(ctx) {
 			return;
 		}
 
+		// 6a — radar / SA scope mode toggles, cockpit-only. M flips the
+		// minimap's Cesium terrain background; with it off the canvas
+		// overlay alone renders on a dark grid for a "pure tactical
+		// scope" look. ` (backtick) flips the expanded full-screen
+		// pop-out. Strike planner has its own L/R/A/C bindings; since
+		// these only fire when the planner is INACTIVE, the two don't
+		// collide.
+		if (ctx.currentState === 'FLYING' && ctx.hud &&
+			!(ctx.commanderView && ctx.commanderView.active) &&
+			!(ctx.strikePlannerView && ctx.strikePlannerView.active)) {
+			if (key === 'm') {
+				ctx.hud.toggleRadarBackground();
+				e.preventDefault();
+				return;
+			}
+			if (key === '`') {
+				ctx.hud.toggleRadarExpanded();
+				e.preventDefault();
+				return;
+			}
+		}
+
 		// Space toggles pause while the commander view is open.
 		// Lighter-weight than Escape/P: no pause menu overlay, just
 		// freezes the world so you can survey the battlefield without
