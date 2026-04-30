@@ -37,5 +37,8 @@
 	"physicsOverrides": {
 		"mass": 18000,
 		"wingArea": 46.5
-	}
+	},
+	"hideNodes": [
+		{ "type": "regex", "pattern": "landingOn(?:Light)?_", "flags": "i" }
+	]
 }

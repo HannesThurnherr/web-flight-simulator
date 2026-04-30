@@ -1,9 +1,13 @@
 {
 	"id": "f-35",
 	"name": "F-35A LIGHTNING II",
-	"description": "Single-engine stealth multirole. Low RCS and cooled exhaust — you see them much later, they see you the same.",
+	"description": "Single-engine stealth multirole. Low RCS and cooled exhaust \u2014 you see them much later, they see you the same.",
 	"model": "/assets/models/f-35a-lightning-ii.glb",
-	"modelRotation": { "x": 0, "y": 90, "z": 0 },
+	"modelRotation": {
+		"x": 0,
+		"y": 90,
+		"z": 0
+	},
 	"realLengthM": 15.67,
 	"signature": "stealth_fighter",
 	"engineCount": 1,
@@ -12,43 +16,159 @@
 		"wingArea": 42.7,
 		"cdZero": 0.019,
 		"thrustDryMax": 125000,
-		"thrustABMax":  191000,
-		"controlCoef":  { "pitch": 7.5,    "roll": 8.5,   "yaw": 2.5  },
-		"dampingCoef":  { "pitch": 2400,   "roll": 550,   "yaw": 2700 },
-		"inertia":      { "pitch": 150000, "roll": 24000, "yaw": 170000 },
-		"controlAuthorityFloor": { "pitch": 1500, "roll": 1200, "yaw": 600 },
+		"thrustABMax": 191000,
+		"controlCoef": {
+			"pitch": 7.5,
+			"roll": 8.5,
+			"yaw": 2.5
+		},
+		"dampingCoef": {
+			"pitch": 2400,
+			"roll": 550,
+			"yaw": 2700
+		},
+		"inertia": {
+			"pitch": 150000,
+			"roll": 24000,
+			"yaw": 170000
+		},
+		"controlAuthorityFloor": {
+			"pitch": 1500,
+			"roll": 1200,
+			"yaw": 600
+		},
 		"gSoftLimit": 9.0,
 		"gHardLimit": 10.0,
 		"pitchStabilityCoef": 0.3,
-		"yawStabilityCoef":   0.5,
+		"yawStabilityCoef": 0.5,
 		"alphaStallDeg": 19,
 		"clMaxStall": 1.65,
 		"postStallPlateau": 1.0,
 		"stallBlendDeg": 5,
 		"departureSusceptibility": 0.55
 	},
-	"irOverride": { "fov": 3.14159, "nominalRange": 50000 },
+	"irOverride": {
+		"fov": 3.14159,
+		"nominalRange": 50000
+	},
 	"hardpoints": [
-		{ "id": "bay-L-main",  "label": "Left Bay Main",       "type": "internal", "accepts": ["AAM", "AGM", "GBU"] },
-		{ "id": "bay-L-side",  "label": "Left Bay Side",       "type": "internal", "accepts": ["AAM"] },
-		{ "id": "bay-R-main",  "label": "Right Bay Main",      "type": "internal", "accepts": ["AAM", "AGM", "GBU"] },
-		{ "id": "bay-R-side",  "label": "Right Bay Side",      "type": "internal", "accepts": ["AAM"] },
-		{ "id": "wing-1-L",    "label": "Wing Station 1 L",    "type": "external", "accepts": ["AAM", "AGM", "GBU", "TANK"], "stealthBreak": true },
-		{ "id": "wing-1-R",    "label": "Wing Station 1 R",    "type": "external", "accepts": ["AAM", "AGM", "GBU", "TANK"], "stealthBreak": true },
-		{ "id": "wing-2-L",    "label": "Wing Station 2 L",    "type": "external", "accepts": ["AAM", "AGM", "GBU"], "stealthBreak": true },
-		{ "id": "wing-2-R",    "label": "Wing Station 2 R",    "type": "external", "accepts": ["AAM", "AGM", "GBU"], "stealthBreak": true },
-		{ "id": "wing-tip-L",  "label": "Wingtip L",           "type": "external", "accepts": ["AAM"], "stealthBreak": true },
-		{ "id": "wing-tip-R",  "label": "Wingtip R",           "type": "external", "accepts": ["AAM"], "stealthBreak": true }
+		{
+			"id": "bay-L-main",
+			"label": "Left Bay Main",
+			"type": "internal",
+			"accepts": [
+				"AAM",
+				"AGM",
+				"GBU"
+			]
+		},
+		{
+			"id": "bay-L-side",
+			"label": "Left Bay Side",
+			"type": "internal",
+			"accepts": [
+				"AAM"
+			]
+		},
+		{
+			"id": "bay-R-main",
+			"label": "Right Bay Main",
+			"type": "internal",
+			"accepts": [
+				"AAM",
+				"AGM",
+				"GBU"
+			]
+		},
+		{
+			"id": "bay-R-side",
+			"label": "Right Bay Side",
+			"type": "internal",
+			"accepts": [
+				"AAM"
+			]
+		},
+		{
+			"id": "wing-1-L",
+			"label": "Wing Station 1 L",
+			"type": "external",
+			"accepts": [
+				"AAM",
+				"AGM",
+				"GBU",
+				"TANK"
+			],
+			"stealthBreak": true
+		},
+		{
+			"id": "wing-1-R",
+			"label": "Wing Station 1 R",
+			"type": "external",
+			"accepts": [
+				"AAM",
+				"AGM",
+				"GBU",
+				"TANK"
+			],
+			"stealthBreak": true
+		},
+		{
+			"id": "wing-2-L",
+			"label": "Wing Station 2 L",
+			"type": "external",
+			"accepts": [
+				"AAM",
+				"AGM",
+				"GBU"
+			],
+			"stealthBreak": true
+		},
+		{
+			"id": "wing-2-R",
+			"label": "Wing Station 2 R",
+			"type": "external",
+			"accepts": [
+				"AAM",
+				"AGM",
+				"GBU"
+			],
+			"stealthBreak": true
+		},
+		{
+			"id": "wing-tip-L",
+			"label": "Wingtip L",
+			"type": "external",
+			"accepts": [
+				"AAM"
+			],
+			"stealthBreak": true
+		},
+		{
+			"id": "wing-tip-R",
+			"label": "Wingtip R",
+			"type": "external",
+			"accepts": [
+				"AAM"
+			],
+			"stealthBreak": true
+		}
 	],
 	"maxLoadoutKg": 8100,
 	"specs": {
 		"role": "Stealth Multirole",
 		"topSpeed": "Mach 1.6",
 		"combatRadius": "1 100 km",
-		"rcs": "~0.05 m²",
+		"rcs": "~0.05 m\u00b2",
 		"irSig": "Low",
 		"radarRange": "180 km (APG-81)",
 		"agility": 7,
 		"supercruise": false
-	}
+	},
+	"hideNodes": [
+		{
+			"type": "regex",
+			"pattern": "landingOn(?:Light)?_",
+			"flags": "i"
+		}
+	]
 }

@@ -23,6 +23,36 @@ import {
 	FIGHTER_EYEBALL_DEFAULT,
 } from './sensorSystem.js';
 import { createFighterPilot } from './ai/index.js';
+
+// Apply the spec's `hideNodes` list to a freshly-cloned model. Each
+// entry can be a plain string (exact name match) or a regex
+// descriptor `{type:'regex', pattern, flags}` per the convention
+// used in plane/platform JSONs. Mirrors the player loader's
+// per-node visibility logic so NPCs / platforms render in the same
+// configuration as the player (e.g. landing gear retracted).
+function _applyHideNodes(root, hideNodes) {
+	if (!root || !Array.isArray(hideNodes) || hideNodes.length === 0) return 0;
+	const matchers = hideNodes.map((h) => {
+		if (typeof h === 'string') return (name) => name === h;
+		if (h && h.type === 'regex' && h.pattern) {
+			const re = new RegExp(h.pattern, h.flags || '');
+			return (name) => re.test(name);
+		}
+		if (h instanceof RegExp) return (name) => h.test(name);
+		// {type:'exact', name} shape from planes.js postProcess
+		if (h && h.name) return (name) => name === h.name;
+		return null;
+	}).filter(Boolean);
+	if (matchers.length === 0) return 0;
+	let hidden = 0;
+	root.traverse((child) => {
+		if (!child.name) return;
+		for (const m of matchers) {
+			if (m(child.name)) { child.visible = false; hidden++; break; }
+		}
+	});
+	return hidden;
+}
 // Flare / particles / soundManager / advanceLonLatAlt / Bullet /
 // createMunition / getTeamDatalink / tickAllDatalinks moved with the
 // update-loop + spawn-helpers to the sibling modules listed below.
@@ -293,6 +323,13 @@ export class NPCSystem {
 		} catch (e) { /* keep default 1.0 */ }
 		model.scale.set(scaleFactor, scaleFactor, scaleFactor);
 
+		// Hide gear / nodes the F-15 spec lists in hideNodes. Mirror of
+		// the player loader's logic, but operating on the raw JSON
+		// descriptors (npcSystem imports the raw plane JSON, not the
+		// post-processed form). Matches landing-gear-deployed and
+		// landing-light nodes so NPCs always render in flight config.
+		_applyHideNodes(model, f15Plane.hideNodes);
+
 		group.add(model);
 		group.matrixAutoUpdate = false;
 		this.scene.add(group);
@@ -431,6 +468,11 @@ export class NPCSystem {
 		model.rotation.z = (platform.modelRotation?.z || 0);
 		const s = platform.modelScale ?? 1.0;
 		model.scale.set(s, s, s);
+		// Apply the platform spec's hideNodes (e.g. EA-18G hides gear
+		// + landing lights to render in flight config). Same helper +
+		// regex-descriptor convention as the player loader and the
+		// fighter NPC path.
+		_applyHideNodes(model, platform.hideNodes);
 		group.add(model);
 
 		// Ground anchor. Two related problems to solve:

@@ -3,7 +3,11 @@
 	"name": "F-22A RAPTOR",
 	"description": "Twin-engine stealth air dominance. Supercruises Mach 1.8 without afterburner. Thrust-vectoring post-stall. Lowest signature in the roster.",
 	"model": "/assets/models/f-22-raptor.glb",
-	"modelRotation": { "x": 0, "y": 90, "z": 0 },
+	"modelRotation": {
+		"x": 0,
+		"y": 90,
+		"z": 0
+	},
 	"realLengthM": 18.92,
 	"signature": "stealth_fighter_hi",
 	"engineCount": 2,
@@ -12,47 +16,166 @@
 		"wingArea": 78.0,
 		"cdZero": 0.014,
 		"thrustDryMax": 232000,
-		"thrustABMax":  312000,
-		"controlCoef":  { "pitch": 8.5,    "roll": 10.0,  "yaw": 3.2  },
-		"dampingCoef":  { "pitch": 2800,   "roll": 700,   "yaw": 3000 },
-		"inertia":      { "pitch": 200000, "roll": 36000, "yaw": 220000 },
-		"controlAuthorityFloor": { "pitch": 2500, "roll": 1500, "yaw": 1000 },
+		"thrustABMax": 312000,
+		"controlCoef": {
+			"pitch": 8.5,
+			"roll": 10.0,
+			"yaw": 3.2
+		},
+		"dampingCoef": {
+			"pitch": 2800,
+			"roll": 700,
+			"yaw": 3000
+		},
+		"inertia": {
+			"pitch": 200000,
+			"roll": 36000,
+			"yaw": 220000
+		},
+		"controlAuthorityFloor": {
+			"pitch": 2500,
+			"roll": 1500,
+			"yaw": 1000
+		},
 		"gSoftLimit": 9.0,
 		"gHardLimit": 10.5,
 		"pitchStabilityCoef": 0.25,
-		"yawStabilityCoef":   0.45,
+		"yawStabilityCoef": 0.45,
 		"alphaStallDeg": 22,
 		"clMaxStall": 1.85,
 		"postStallPlateau": 1.35,
 		"stallBlendDeg": 8,
 		"departureSusceptibility": 0.15,
-		"tv": { "axes": "pitchYaw", "authority": 2.2, "vMax": 220, "fadeBand": 80 }
+		"tv": {
+			"axes": "pitchYaw",
+			"authority": 2.2,
+			"vMax": 220,
+			"fadeBand": 80
+		}
 	},
-	"radarOverride": { "nominalRange": 200000 },
-	"irOverride": { "fov": 0, "nominalRange": 25000 },
+	"radarOverride": {
+		"nominalRange": 200000
+	},
+	"irOverride": {
+		"fov": 0,
+		"nominalRange": 25000
+	},
 	"hideNodes": [
-		{ "type": "exact", "name": "F-22-landingOn_6" },
-		{ "type": "exact", "name": "F-22-landingOnLight_7" }
+		{
+			"type": "regex",
+			"pattern": "landingOn(?:Light)?_",
+			"flags": "i"
+		}
 	],
-	"nozzle": { "xRatio": 0.035, "yRatio": -0.10, "zRatio": 0.75 },
+	"nozzle": {
+		"xRatio": 0.035,
+		"yRatio": -0.1,
+		"zRatio": 0.75
+	},
 	"hardpoints": [
-		{ "id": "main-bay-L-fwd", "label": "Main Bay Left Fwd",   "type": "internal", "accepts": ["AAM", "AGM", "GBU"] },
-		{ "id": "main-bay-L-aft", "label": "Main Bay Left Aft",   "type": "internal", "accepts": ["AAM", "AGM", "GBU"] },
-		{ "id": "main-bay-R-fwd", "label": "Main Bay Right Fwd",  "type": "internal", "accepts": ["AAM", "AGM", "GBU"] },
-		{ "id": "main-bay-R-aft", "label": "Main Bay Right Aft",  "type": "internal", "accepts": ["AAM", "AGM", "GBU"] },
-		{ "id": "side-bay-L",     "label": "Side Bay Left",       "type": "internal", "accepts": ["AAM"] },
-		{ "id": "side-bay-R",     "label": "Side Bay Right",      "type": "internal", "accepts": ["AAM"] },
-		{ "id": "wing-1-L",       "label": "Wing Station 1 L",    "type": "external", "accepts": ["AAM", "TANK"], "stealthBreak": true },
-		{ "id": "wing-1-R",       "label": "Wing Station 1 R",    "type": "external", "accepts": ["AAM", "TANK"], "stealthBreak": true },
-		{ "id": "wing-2-L",       "label": "Wing Station 2 L",    "type": "external", "accepts": ["AAM", "TANK"], "stealthBreak": true },
-		{ "id": "wing-2-R",       "label": "Wing Station 2 R",    "type": "external", "accepts": ["AAM", "TANK"], "stealthBreak": true }
+		{
+			"id": "main-bay-L-fwd",
+			"label": "Main Bay Left Fwd",
+			"type": "internal",
+			"accepts": [
+				"AAM",
+				"AGM",
+				"GBU"
+			]
+		},
+		{
+			"id": "main-bay-L-aft",
+			"label": "Main Bay Left Aft",
+			"type": "internal",
+			"accepts": [
+				"AAM",
+				"AGM",
+				"GBU"
+			]
+		},
+		{
+			"id": "main-bay-R-fwd",
+			"label": "Main Bay Right Fwd",
+			"type": "internal",
+			"accepts": [
+				"AAM",
+				"AGM",
+				"GBU"
+			]
+		},
+		{
+			"id": "main-bay-R-aft",
+			"label": "Main Bay Right Aft",
+			"type": "internal",
+			"accepts": [
+				"AAM",
+				"AGM",
+				"GBU"
+			]
+		},
+		{
+			"id": "side-bay-L",
+			"label": "Side Bay Left",
+			"type": "internal",
+			"accepts": [
+				"AAM"
+			]
+		},
+		{
+			"id": "side-bay-R",
+			"label": "Side Bay Right",
+			"type": "internal",
+			"accepts": [
+				"AAM"
+			]
+		},
+		{
+			"id": "wing-1-L",
+			"label": "Wing Station 1 L",
+			"type": "external",
+			"accepts": [
+				"AAM",
+				"TANK"
+			],
+			"stealthBreak": true
+		},
+		{
+			"id": "wing-1-R",
+			"label": "Wing Station 1 R",
+			"type": "external",
+			"accepts": [
+				"AAM",
+				"TANK"
+			],
+			"stealthBreak": true
+		},
+		{
+			"id": "wing-2-L",
+			"label": "Wing Station 2 L",
+			"type": "external",
+			"accepts": [
+				"AAM",
+				"TANK"
+			],
+			"stealthBreak": true
+		},
+		{
+			"id": "wing-2-R",
+			"label": "Wing Station 2 R",
+			"type": "external",
+			"accepts": [
+				"AAM",
+				"TANK"
+			],
+			"stealthBreak": true
+		}
 	],
 	"maxLoadoutKg": 8000,
 	"specs": {
 		"role": "Stealth Air Dominance",
 		"topSpeed": "Mach 2.25",
 		"combatRadius": "850 km",
-		"rcs": "~0.008 m²",
+		"rcs": "~0.008 m\u00b2",
 		"irSig": "Very Low",
 		"radarRange": "200 km (APG-77)",
 		"agility": 9,

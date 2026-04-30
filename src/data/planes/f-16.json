@@ -3,25 +3,49 @@
 	"name": "F-16C VIPER",
 	"description": "Single-engine multirole. Lighter than the Eagle, much higher T/W ratio at combat weight, and a 9-G FBW fly-by-wire envelope. The 'Flying Brick' that turns better than anything its size. AN/APG-83 SABR AESA gives it modern BVR teeth despite the older airframe.",
 	"model": "/assets/models/f-16c.glb",
-	"modelRotation": { "x": 0, "y": 90, "z": 0 },
+	"modelRotation": {
+		"x": 0,
+		"y": 90,
+		"z": 0
+	},
 	"realLengthM": 15.06,
 	"signature": "fighter",
 	"engineCount": 1,
-	"nozzle": { "xRatio": 0.0, "yRatio": -0.10, "zRatio": 0.85 },
+	"nozzle": {
+		"xRatio": 0.0,
+		"yRatio": -0.1,
+		"zRatio": 0.85
+	},
 	"physicsOverrides": {
 		"mass": 12000,
 		"wingArea": 27.87,
 		"cdZero": 0.024,
 		"thrustDryMax": 76000,
-		"thrustABMax":  129000,
-		"controlCoef":  { "pitch": 9.5,    "roll": 12.0,  "yaw": 2.5  },
-		"dampingCoef":  { "pitch": 1900,   "roll": 420,   "yaw": 2100 },
-		"inertia":      { "pitch": 95000,  "roll": 16000, "yaw": 105000 },
-		"controlAuthorityFloor": { "pitch": 1300, "roll": 1100, "yaw": 550 },
+		"thrustABMax": 129000,
+		"controlCoef": {
+			"pitch": 9.5,
+			"roll": 12.0,
+			"yaw": 2.5
+		},
+		"dampingCoef": {
+			"pitch": 1900,
+			"roll": 420,
+			"yaw": 2100
+		},
+		"inertia": {
+			"pitch": 95000,
+			"roll": 16000,
+			"yaw": 105000
+		},
+		"controlAuthorityFloor": {
+			"pitch": 1300,
+			"roll": 1100,
+			"yaw": 550
+		},
 		"gSoftLimit": 9.0,
 		"gHardLimit": 10.0,
 		"pitchStabilityCoef": 0.25,
-		"yawStabilityCoef":   0.5,
+		"yawStabilityCoef": 0.5,
 		"alphaStallDeg": 26,
 		"clMaxStall": 1.7,
 		"postStallPlateau": 0.85,
@@ -29,28 +53,123 @@
 		"departureSusceptibility": 0.7
 	},
 	"hardpoints": [
-		{ "id": "wing-tip-L",   "label": "Wingtip L",          "type": "external", "accepts": ["AAM"] },
-		{ "id": "wing-tip-R",   "label": "Wingtip R",          "type": "external", "accepts": ["AAM"] },
-		{ "id": "wing-1-L",     "label": "Wing Station 1 L",   "type": "external", "accepts": ["AAM"] },
-		{ "id": "wing-1-R",     "label": "Wing Station 1 R",   "type": "external", "accepts": ["AAM"] },
-		{ "id": "wing-2-L",     "label": "Wing Station 2 L",   "type": "external", "accepts": ["AAM", "AGM", "GBU"] },
-		{ "id": "wing-2-R",     "label": "Wing Station 2 R",   "type": "external", "accepts": ["AAM", "AGM", "GBU"] },
-		{ "id": "wing-3-L",     "label": "Wing Station 3 L",   "type": "external", "accepts": ["AGM", "GBU", "TANK"] },
-		{ "id": "wing-3-R",     "label": "Wing Station 3 R",   "type": "external", "accepts": ["AGM", "GBU", "TANK"] },
-		{ "id": "centerline",   "label": "Centerline",         "type": "centerline", "accepts": ["AGM", "TANK"] },
-		{ "id": "cheek-L",      "label": "Fuselage Cheek L",   "type": "fuselage", "accepts": ["AAM"] },
-		{ "id": "cheek-R",      "label": "Fuselage Cheek R",   "type": "fuselage", "accepts": ["AAM"] }
+		{
+			"id": "wing-tip-L",
+			"label": "Wingtip L",
+			"type": "external",
+			"accepts": [
+				"AAM"
+			]
+		},
+		{
+			"id": "wing-tip-R",
+			"label": "Wingtip R",
+			"type": "external",
+			"accepts": [
+				"AAM"
+			]
+		},
+		{
+			"id": "wing-1-L",
+			"label": "Wing Station 1 L",
+			"type": "external",
+			"accepts": [
+				"AAM"
+			]
+		},
+		{
+			"id": "wing-1-R",
+			"label": "Wing Station 1 R",
+			"type": "external",
+			"accepts": [
+				"AAM"
+			]
+		},
+		{
+			"id": "wing-2-L",
+			"label": "Wing Station 2 L",
+			"type": "external",
+			"accepts": [
+				"AAM",
+				"AGM",
+				"GBU"
+			]
+		},
+		{
+			"id": "wing-2-R",
+			"label": "Wing Station 2 R",
+			"type": "external",
+			"accepts": [
+				"AAM",
+				"AGM",
+				"GBU"
+			]
+		},
+		{
+			"id": "wing-3-L",
+			"label": "Wing Station 3 L",
+			"type": "external",
+			"accepts": [
+				"AGM",
+				"GBU",
+				"TANK"
+			]
+		},
+		{
+			"id": "wing-3-R",
+			"label": "Wing Station 3 R",
+			"type": "external",
+			"accepts": [
+				"AGM",
+				"GBU",
+				"TANK"
+			]
+		},
+		{
+			"id": "centerline",
+			"label": "Centerline",
+			"type": "centerline",
+			"accepts": [
+				"AGM",
+				"TANK"
+			]
+		},
+		{
+			"id": "cheek-L",
+			"label": "Fuselage Cheek L",
+			"type": "fuselage",
+			"accepts": [
+				"AAM"
+			]
+		},
+		{
+			"id": "cheek-R",
+			"label": "Fuselage Cheek R",
+			"type": "fuselage",
+			"accepts": [
+				"AAM"
+			]
+		}
 	],
 	"maxLoadoutKg": 7700,
-	"radarOverride": { "nominalRange": 90000 },
+	"radarOverride": {
+		"nominalRange": 90000
+	},
 	"specs": {
 		"role": "Multirole Fighter",
 		"topSpeed": "Mach 2.0",
 		"combatRadius": "550 km",
-		"rcs": "~5 m²",
+		"rcs": "~5 m\u00b2",
 		"irSig": "Medium",
 		"radarRange": "90 km (APG-83)",
 		"agility": 9,
 		"supercruise": false
-	}
+	},
+	"hideNodes": [
+		{
+			"type": "regex",
+			"pattern": "landingOn(?:Light)?_",
+			"flags": "i"
+		}
+	]
 }

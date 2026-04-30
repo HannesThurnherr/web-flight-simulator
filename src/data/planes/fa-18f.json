@@ -3,25 +3,49 @@
 	"name": "F/A-18F SUPER HORNET",
 	"description": "Twin-seat carrier-based multirole. Lower top-end speed than the Strike Eagle but designed around the boat: short approach speed, robust airframe, AN/APG-79 AESA. Workhorse of US Navy CVW airpower; the EW-pod variant becomes the Growler.",
 	"model": "/assets/models/fa-18f-super-hornet.glb",
-	"modelRotation": { "x": 0, "y": 90, "z": 0 },
+	"modelRotation": {
+		"x": 0,
+		"y": 90,
+		"z": 0
+	},
 	"realLengthM": 18.31,
 	"signature": "fighter",
 	"engineCount": 2,
-	"nozzle": { "xRatio": 0.045, "yRatio": -0.12, "zRatio": 0.82 },
+	"nozzle": {
+		"xRatio": 0.045,
+		"yRatio": -0.12,
+		"zRatio": 0.82
+	},
 	"physicsOverrides": {
 		"mass": 18000,
 		"wingArea": 46.5,
 		"cdZero": 0.025,
 		"thrustDryMax": 124000,
-		"thrustABMax":  196000,
-		"controlCoef":  { "pitch": 7.0,    "roll": 8.0,   "yaw": 2.4  },
-		"dampingCoef":  { "pitch": 2400,   "roll": 580,   "yaw": 2600 },
-		"inertia":      { "pitch": 165000, "roll": 28000, "yaw": 185000 },
-		"controlAuthorityFloor": { "pitch": 1400, "roll": 1100, "yaw": 580 },
+		"thrustABMax": 196000,
+		"controlCoef": {
+			"pitch": 7.0,
+			"roll": 8.0,
+			"yaw": 2.4
+		},
+		"dampingCoef": {
+			"pitch": 2400,
+			"roll": 580,
+			"yaw": 2600
+		},
+		"inertia": {
+			"pitch": 165000,
+			"roll": 28000,
+			"yaw": 185000
+		},
+		"controlAuthorityFloor": {
+			"pitch": 1400,
+			"roll": 1100,
+			"yaw": 580
+		},
 		"gSoftLimit": 7.5,
 		"gHardLimit": 8.5,
 		"pitchStabilityCoef": 0.3,
-		"yawStabilityCoef":   0.5,
+		"yawStabilityCoef": 0.5,
 		"alphaStallDeg": 35,
 		"clMaxStall": 1.85,
 		"postStallPlateau": 1.0,
@@ -29,28 +53,127 @@
 		"departureSusceptibility": 0.45
 	},
 	"hardpoints": [
-		{ "id": "wing-tip-L",   "label": "Wingtip L",          "type": "external", "accepts": ["AAM"] },
-		{ "id": "wing-tip-R",   "label": "Wingtip R",          "type": "external", "accepts": ["AAM"] },
-		{ "id": "wing-1-L",     "label": "Wing Station 1 L",   "type": "external", "accepts": ["AAM", "AGM", "GBU"] },
-		{ "id": "wing-1-R",     "label": "Wing Station 1 R",   "type": "external", "accepts": ["AAM", "AGM", "GBU"] },
-		{ "id": "wing-2-L",     "label": "Wing Station 2 L",   "type": "external", "accepts": ["AAM", "AGM", "GBU", "TANK"] },
-		{ "id": "wing-2-R",     "label": "Wing Station 2 R",   "type": "external", "accepts": ["AAM", "AGM", "GBU", "TANK"] },
-		{ "id": "wing-3-L",     "label": "Wing Station 3 L",   "type": "external", "accepts": ["AGM", "GBU"] },
-		{ "id": "wing-3-R",     "label": "Wing Station 3 R",   "type": "external", "accepts": ["AGM", "GBU"] },
-		{ "id": "centerline",   "label": "Centerline",         "type": "centerline", "accepts": ["AGM", "TANK"] },
-		{ "id": "cheek-L",      "label": "Fuselage Cheek L",   "type": "fuselage", "accepts": ["AAM"] },
-		{ "id": "cheek-R",      "label": "Fuselage Cheek R",   "type": "fuselage", "accepts": ["AAM"] }
+		{
+			"id": "wing-tip-L",
+			"label": "Wingtip L",
+			"type": "external",
+			"accepts": [
+				"AAM"
+			]
+		},
+		{
+			"id": "wing-tip-R",
+			"label": "Wingtip R",
+			"type": "external",
+			"accepts": [
+				"AAM"
+			]
+		},
+		{
+			"id": "wing-1-L",
+			"label": "Wing Station 1 L",
+			"type": "external",
+			"accepts": [
+				"AAM",
+				"AGM",
+				"GBU"
+			]
+		},
+		{
+			"id": "wing-1-R",
+			"label": "Wing Station 1 R",
+			"type": "external",
+			"accepts": [
+				"AAM",
+				"AGM",
+				"GBU"
+			]
+		},
+		{
+			"id": "wing-2-L",
+			"label": "Wing Station 2 L",
+			"type": "external",
+			"accepts": [
+				"AAM",
+				"AGM",
+				"GBU",
+				"TANK"
+			]
+		},
+		{
+			"id": "wing-2-R",
+			"label": "Wing Station 2 R",
+			"type": "external",
+			"accepts": [
+				"AAM",
+				"AGM",
+				"GBU",
+				"TANK"
+			]
+		},
+		{
+			"id": "wing-3-L",
+			"label": "Wing Station 3 L",
+			"type": "external",
+			"accepts": [
+				"AGM",
+				"GBU"
+			]
+		},
+		{
+			"id": "wing-3-R",
+			"label": "Wing Station 3 R",
+			"type": "external",
+			"accepts": [
+				"AGM",
+				"GBU"
+			]
+		},
+		{
+			"id": "centerline",
+			"label": "Centerline",
+			"type": "centerline",
+			"accepts": [
+				"AGM",
+				"TANK"
+			]
+		},
+		{
+			"id": "cheek-L",
+			"label": "Fuselage Cheek L",
+			"type": "fuselage",
+			"accepts": [
+				"AAM"
+			]
+		},
+		{
+			"id": "cheek-R",
+			"label": "Fuselage Cheek R",
+			"type": "fuselage",
+			"accepts": [
+				"AAM"
+			]
+		}
 	],
 	"maxLoadoutKg": 8050,
-	"radarOverride": { "nominalRange": 110000 },
+	"radarOverride": {
+		"nominalRange": 110000
+	},
 	"specs": {
 		"role": "Carrier Multirole",
 		"topSpeed": "Mach 1.8",
 		"combatRadius": "720 km",
-		"rcs": "~3 m²",
+		"rcs": "~3 m\u00b2",
 		"irSig": "High",
 		"radarRange": "110 km (APG-79)",
 		"agility": 8,
 		"supercruise": false
-	}
+	},
+	"hideNodes": [
+		{
+			"type": "regex",
+			"pattern": "landingOn(?:Light)?_",
+			"flags": "i"
+		}
+	]
 }

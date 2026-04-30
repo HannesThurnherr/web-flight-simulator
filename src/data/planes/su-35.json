@@ -1,58 +1,186 @@
 {
 	"id": "su-35",
 	"name": "Su-35S FLANKER-E",
-	"description": "Russian heavy air superiority. 2× thrust-vectoring AL-41F1S, the longest-ranged radar of any 4th-gen+ fighter (Irbis-E PESA, ~350 km vs 3 m²), and a 9-G-rated airframe with post-stall maneuvering envelope. Heavy and not stealth, but in a knife-fight nothing turns harder.",
+	"description": "Russian heavy air superiority. 2\u00d7 thrust-vectoring AL-41F1S, the longest-ranged radar of any 4th-gen+ fighter (Irbis-E PESA, ~350 km vs 3 m\u00b2), and a 9-G-rated airframe with post-stall maneuvering envelope. Heavy and not stealth, but in a knife-fight nothing turns harder.",
 	"model": "/assets/models/su-35.glb",
-	"modelRotation": { "x": 0, "y": 90, "z": 0 },
+	"modelRotation": {
+		"x": 0,
+		"y": 90,
+		"z": 0
+	},
 	"realLengthM": 21.9,
 	"signature": "fighter",
 	"engineCount": 2,
-	"nozzle": { "xRatio": 0.060, "yRatio": -0.15, "zRatio": 0.80 },
+	"nozzle": {
+		"xRatio": 0.06,
+		"yRatio": -0.15,
+		"zRatio": 0.8
+	},
 	"physicsOverrides": {
 		"mass": 25000,
 		"wingArea": 62.0,
 		"cdZero": 0.022,
 		"thrustDryMax": 172000,
-		"thrustABMax":  284000,
-		"controlCoef":  { "pitch": 9.0,    "roll": 9.5,   "yaw": 3.0  },
-		"dampingCoef":  { "pitch": 3000,   "roll": 700,   "yaw": 3200 },
-		"inertia":      { "pitch": 230000, "roll": 38000, "yaw": 260000 },
-		"controlAuthorityFloor": { "pitch": 1700, "roll": 1300, "yaw": 700 },
+		"thrustABMax": 284000,
+		"controlCoef": {
+			"pitch": 9.0,
+			"roll": 9.5,
+			"yaw": 3.0
+		},
+		"dampingCoef": {
+			"pitch": 3000,
+			"roll": 700,
+			"yaw": 3200
+		},
+		"inertia": {
+			"pitch": 230000,
+			"roll": 38000,
+			"yaw": 260000
+		},
+		"controlAuthorityFloor": {
+			"pitch": 1700,
+			"roll": 1300,
+			"yaw": 700
+		},
 		"gSoftLimit": 9.0,
 		"gHardLimit": 10.0,
 		"pitchStabilityCoef": 0.25,
-		"yawStabilityCoef":   0.5,
+		"yawStabilityCoef": 0.5,
 		"alphaStallDeg": 28,
 		"clMaxStall": 1.75,
 		"postStallPlateau": 1.1,
 		"stallBlendDeg": 5,
 		"departureSusceptibility": 0.4,
-		"tv": { "pitchRateBoost": 1.5, "yawRateBoost": 1.3 }
+		"tv": {
+			"pitchRateBoost": 1.5,
+			"yawRateBoost": 1.3
+		}
 	},
 	"hardpoints": [
-		{ "id": "wing-tip-L",   "label": "Wingtip L",          "type": "external", "accepts": ["AAM"] },
-		{ "id": "wing-tip-R",   "label": "Wingtip R",          "type": "external", "accepts": ["AAM"] },
-		{ "id": "wing-1-L",     "label": "Wing Station 1 L",   "type": "external", "accepts": ["AAM"] },
-		{ "id": "wing-1-R",     "label": "Wing Station 1 R",   "type": "external", "accepts": ["AAM"] },
-		{ "id": "wing-2-L",     "label": "Wing Station 2 L",   "type": "external", "accepts": ["AAM", "AGM"] },
-		{ "id": "wing-2-R",     "label": "Wing Station 2 R",   "type": "external", "accepts": ["AAM", "AGM"] },
-		{ "id": "wing-3-L",     "label": "Wing Station 3 L",   "type": "external", "accepts": ["AGM", "GBU"] },
-		{ "id": "wing-3-R",     "label": "Wing Station 3 R",   "type": "external", "accepts": ["AGM", "GBU"] },
-		{ "id": "fuselage-1",   "label": "Fuselage Station 1", "type": "fuselage",  "accepts": ["AAM", "AGM"] },
-		{ "id": "fuselage-2",   "label": "Fuselage Station 2", "type": "fuselage",  "accepts": ["AAM", "AGM"] },
-		{ "id": "centerline-1", "label": "Centerline 1",       "type": "centerline","accepts": ["AGM", "TANK"] },
-		{ "id": "centerline-2", "label": "Centerline 2",       "type": "centerline","accepts": ["AGM", "TANK"] }
+		{
+			"id": "wing-tip-L",
+			"label": "Wingtip L",
+			"type": "external",
+			"accepts": [
+				"AAM"
+			]
+		},
+		{
+			"id": "wing-tip-R",
+			"label": "Wingtip R",
+			"type": "external",
+			"accepts": [
+				"AAM"
+			]
+		},
+		{
+			"id": "wing-1-L",
+			"label": "Wing Station 1 L",
+			"type": "external",
+			"accepts": [
+				"AAM"
+			]
+		},
+		{
+			"id": "wing-1-R",
+			"label": "Wing Station 1 R",
+			"type": "external",
+			"accepts": [
+				"AAM"
+			]
+		},
+		{
+			"id": "wing-2-L",
+			"label": "Wing Station 2 L",
+			"type": "external",
+			"accepts": [
+				"AAM",
+				"AGM"
+			]
+		},
+		{
+			"id": "wing-2-R",
+			"label": "Wing Station 2 R",
+			"type": "external",
+			"accepts": [
+				"AAM",
+				"AGM"
+			]
+		},
+		{
+			"id": "wing-3-L",
+			"label": "Wing Station 3 L",
+			"type": "external",
+			"accepts": [
+				"AGM",
+				"GBU"
+			]
+		},
+		{
+			"id": "wing-3-R",
+			"label": "Wing Station 3 R",
+			"type": "external",
+			"accepts": [
+				"AGM",
+				"GBU"
+			]
+		},
+		{
+			"id": "fuselage-1",
+			"label": "Fuselage Station 1",
+			"type": "fuselage",
+			"accepts": [
+				"AAM",
+				"AGM"
+			]
+		},
+		{
+			"id": "fuselage-2",
+			"label": "Fuselage Station 2",
+			"type": "fuselage",
+			"accepts": [
+				"AAM",
+				"AGM"
+			]
+		},
+		{
+			"id": "centerline-1",
+			"label": "Centerline 1",
+			"type": "centerline",
+			"accepts": [
+				"AGM",
+				"TANK"
+			]
+		},
+		{
+			"id": "centerline-2",
+			"label": "Centerline 2",
+			"type": "centerline",
+			"accepts": [
+				"AGM",
+				"TANK"
+			]
+		}
 	],
 	"maxLoadoutKg": 8000,
-	"radarOverride": { "nominalRange": 280000 },
+	"radarOverride": {
+		"nominalRange": 280000
+	},
 	"specs": {
 		"role": "Heavy Air Superiority",
 		"topSpeed": "Mach 2.25",
 		"combatRadius": "1 600 km",
-		"rcs": "~3 m²",
+		"rcs": "~3 m\u00b2",
 		"irSig": "High",
 		"radarRange": "280 km (Irbis-E)",
 		"agility": 9,
 		"supercruise": false
-	}
+	},
+	"hideNodes": [
+		{
+			"type": "regex",
+			"pattern": "landingOn(?:Light)?_",
+			"flags": "i"
+		}
+	]
 }

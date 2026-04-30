@@ -1,27 +1,51 @@
 {
 	"id": "rafale-m",
 	"name": "DASSAULT RAFALE M",
-	"description": "French naval multirole. Twin M88-2 turbofans, RBE2 AESA, SPECTRA EW suite — Rafale's defining feature is the integrated EW (jamming + DRFM decoy). Smaller than the Hornet, more agile than the Eagle, and the EW suite alone is closer to a Growler than a fighter.",
+	"description": "French naval multirole. Twin M88-2 turbofans, RBE2 AESA, SPECTRA EW suite \u2014 Rafale's defining feature is the integrated EW (jamming + DRFM decoy). Smaller than the Hornet, more agile than the Eagle, and the EW suite alone is closer to a Growler than a fighter.",
 	"model": "/assets/models/rafale-m.glb",
-	"modelRotation": { "x": 0, "y": 90, "z": 0 },
+	"modelRotation": {
+		"x": 0,
+		"y": 90,
+		"z": 0
+	},
 	"realLengthM": 15.27,
 	"signature": "fighter",
 	"engineCount": 2,
-	"nozzle": { "xRatio": 0.040, "yRatio": -0.12, "zRatio": 0.85 },
+	"nozzle": {
+		"xRatio": 0.04,
+		"yRatio": -0.12,
+		"zRatio": 0.85
+	},
 	"physicsOverrides": {
 		"mass": 14500,
 		"wingArea": 45.7,
-		"cdZero": 0.020,
+		"cdZero": 0.02,
 		"thrustDryMax": 100000,
-		"thrustABMax":  150000,
-		"controlCoef":  { "pitch": 8.5,    "roll": 10.5,  "yaw": 2.8  },
-		"dampingCoef":  { "pitch": 2200,   "roll": 500,   "yaw": 2500 },
-		"inertia":      { "pitch": 130000, "roll": 21000, "yaw": 145000 },
-		"controlAuthorityFloor": { "pitch": 1450, "roll": 1200, "yaw": 620 },
+		"thrustABMax": 150000,
+		"controlCoef": {
+			"pitch": 8.5,
+			"roll": 10.5,
+			"yaw": 2.8
+		},
+		"dampingCoef": {
+			"pitch": 2200,
+			"roll": 500,
+			"yaw": 2500
+		},
+		"inertia": {
+			"pitch": 130000,
+			"roll": 21000,
+			"yaw": 145000
+		},
+		"controlAuthorityFloor": {
+			"pitch": 1450,
+			"roll": 1200,
+			"yaw": 620
+		},
 		"gSoftLimit": 9.0,
 		"gHardLimit": 11.0,
 		"pitchStabilityCoef": 0.2,
-		"yawStabilityCoef":   0.45,
+		"yawStabilityCoef": 0.45,
 		"alphaStallDeg": 32,
 		"clMaxStall": 1.95,
 		"postStallPlateau": 1.05,
@@ -29,30 +53,145 @@
 		"departureSusceptibility": 0.5
 	},
 	"hardpoints": [
-		{ "id": "wing-tip-L",   "label": "Wingtip L",          "type": "external", "accepts": ["AAM"] },
-		{ "id": "wing-tip-R",   "label": "Wingtip R",          "type": "external", "accepts": ["AAM"] },
-		{ "id": "wing-1-L",     "label": "Wing Station 1 L",   "type": "external", "accepts": ["AAM", "AGM", "GBU"] },
-		{ "id": "wing-1-R",     "label": "Wing Station 1 R",   "type": "external", "accepts": ["AAM", "AGM", "GBU"] },
-		{ "id": "wing-2-L",     "label": "Wing Station 2 L",   "type": "external", "accepts": ["AGM", "GBU"] },
-		{ "id": "wing-2-R",     "label": "Wing Station 2 R",   "type": "external", "accepts": ["AGM", "GBU"] },
-		{ "id": "wing-3-L",     "label": "Wing Station 3 L",   "type": "external", "accepts": ["AGM", "GBU", "TANK"] },
-		{ "id": "wing-3-R",     "label": "Wing Station 3 R",   "type": "external", "accepts": ["AGM", "GBU", "TANK"] },
-		{ "id": "fuselage-L",   "label": "Fuselage L",         "type": "fuselage",  "accepts": ["AAM", "AGM"] },
-		{ "id": "fuselage-R",   "label": "Fuselage R",         "type": "fuselage",  "accepts": ["AAM", "AGM"] },
-		{ "id": "fuselage-C-1", "label": "Fuselage Center 1",  "type": "fuselage",  "accepts": ["AGM", "GBU"] },
-		{ "id": "fuselage-C-2", "label": "Fuselage Center 2",  "type": "fuselage",  "accepts": ["AGM", "GBU"] },
-		{ "id": "centerline",   "label": "Centerline",         "type": "centerline","accepts": ["AGM", "TANK"] }
+		{
+			"id": "wing-tip-L",
+			"label": "Wingtip L",
+			"type": "external",
+			"accepts": [
+				"AAM"
+			]
+		},
+		{
+			"id": "wing-tip-R",
+			"label": "Wingtip R",
+			"type": "external",
+			"accepts": [
+				"AAM"
+			]
+		},
+		{
+			"id": "wing-1-L",
+			"label": "Wing Station 1 L",
+			"type": "external",
+			"accepts": [
+				"AAM",
+				"AGM",
+				"GBU"
+			]
+		},
+		{
+			"id": "wing-1-R",
+			"label": "Wing Station 1 R",
+			"type": "external",
+			"accepts": [
+				"AAM",
+				"AGM",
+				"GBU"
+			]
+		},
+		{
+			"id": "wing-2-L",
+			"label": "Wing Station 2 L",
+			"type": "external",
+			"accepts": [
+				"AGM",
+				"GBU"
+			]
+		},
+		{
+			"id": "wing-2-R",
+			"label": "Wing Station 2 R",
+			"type": "external",
+			"accepts": [
+				"AGM",
+				"GBU"
+			]
+		},
+		{
+			"id": "wing-3-L",
+			"label": "Wing Station 3 L",
+			"type": "external",
+			"accepts": [
+				"AGM",
+				"GBU",
+				"TANK"
+			]
+		},
+		{
+			"id": "wing-3-R",
+			"label": "Wing Station 3 R",
+			"type": "external",
+			"accepts": [
+				"AGM",
+				"GBU",
+				"TANK"
+			]
+		},
+		{
+			"id": "fuselage-L",
+			"label": "Fuselage L",
+			"type": "fuselage",
+			"accepts": [
+				"AAM",
+				"AGM"
+			]
+		},
+		{
+			"id": "fuselage-R",
+			"label": "Fuselage R",
+			"type": "fuselage",
+			"accepts": [
+				"AAM",
+				"AGM"
+			]
+		},
+		{
+			"id": "fuselage-C-1",
+			"label": "Fuselage Center 1",
+			"type": "fuselage",
+			"accepts": [
+				"AGM",
+				"GBU"
+			]
+		},
+		{
+			"id": "fuselage-C-2",
+			"label": "Fuselage Center 2",
+			"type": "fuselage",
+			"accepts": [
+				"AGM",
+				"GBU"
+			]
+		},
+		{
+			"id": "centerline",
+			"label": "Centerline",
+			"type": "centerline",
+			"accepts": [
+				"AGM",
+				"TANK"
+			]
+		}
 	],
 	"maxLoadoutKg": 9500,
-	"radarOverride": { "nominalRange": 200000 },
+	"radarOverride": {
+		"nominalRange": 200000
+	},
 	"specs": {
 		"role": "Multirole + EW",
 		"topSpeed": "Mach 1.8",
 		"combatRadius": "1 850 km",
-		"rcs": "~1 m²",
+		"rcs": "~1 m\u00b2",
 		"irSig": "Medium",
 		"radarRange": "200 km (RBE2 AESA)",
 		"agility": 9,
 		"supercruise": true
-	}
+	},
+	"hideNodes": [
+		{
+			"type": "regex",
+			"pattern": "landingOn(?:Light)?_",
+			"flags": "i"
+		}
+	]
 }

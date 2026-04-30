@@ -1,27 +1,51 @@
 {
 	"id": "f-15",
 	"name": "F-15EX EAGLE II",
-	"description": "Latest-generation Strike Eagle derivative. Same F-15 platform but with AMBER racks giving up to 16 AMRAAMs — the 'Raptor Eagle' air-dominance loadout. No stealth, but unmatched BVR magazine depth.",
+	"description": "Latest-generation Strike Eagle derivative. Same F-15 platform but with AMBER racks giving up to 16 AMRAAMs \u2014 the 'Raptor Eagle' air-dominance loadout. No stealth, but unmatched BVR magazine depth.",
 	"model": "/assets/models/f-15-strike-eagle.glb",
-	"modelRotation": { "x": 0, "y": 90, "z": 0 },
+	"modelRotation": {
+		"x": 0,
+		"y": 90,
+		"z": 0
+	},
 	"realLengthM": 19.43,
 	"signature": "fighter",
 	"engineCount": 2,
-	"nozzle": { "xRatio": 0.055, "yRatio": -0.18, "zRatio": 0.80 },
+	"nozzle": {
+		"xRatio": 0.055,
+		"yRatio": -0.18,
+		"zRatio": 0.8
+	},
 	"physicsOverrides": {
 		"mass": 20000,
 		"wingArea": 56.5,
 		"cdZero": 0.022,
 		"thrustDryMax": 158000,
-		"thrustABMax":  258000,
-		"controlCoef":  { "pitch": 8.0,    "roll": 9.0,   "yaw": 2.5  },
-		"dampingCoef":  { "pitch": 2600,   "roll": 600,   "yaw": 2800 },
-		"inertia":      { "pitch": 180000, "roll": 30000, "yaw": 200000 },
-		"controlAuthorityFloor": { "pitch": 1500, "roll": 1200, "yaw": 600 },
+		"thrustABMax": 258000,
+		"controlCoef": {
+			"pitch": 8.0,
+			"roll": 9.0,
+			"yaw": 2.5
+		},
+		"dampingCoef": {
+			"pitch": 2600,
+			"roll": 600,
+			"yaw": 2800
+		},
+		"inertia": {
+			"pitch": 180000,
+			"roll": 30000,
+			"yaw": 200000
+		},
+		"controlAuthorityFloor": {
+			"pitch": 1500,
+			"roll": 1200,
+			"yaw": 600
+		},
 		"gSoftLimit": 8.0,
 		"gHardLimit": 10.0,
 		"pitchStabilityCoef": 0.3,
-		"yawStabilityCoef":   0.5,
+		"yawStabilityCoef": 0.5,
 		"alphaStallDeg": 18,
 		"clMaxStall": 1.55,
 		"postStallPlateau": 0.9,
@@ -29,34 +53,179 @@
 		"departureSusceptibility": 0.85
 	},
 	"hardpoints": [
-		{ "id": "cheek-L1",     "label": "Fuselage Cheek L-1", "type": "fuselage", "accepts": ["AAM"] },
-		{ "id": "cheek-L2",     "label": "Fuselage Cheek L-2", "type": "fuselage", "accepts": ["AAM"] },
-		{ "id": "cheek-R1",     "label": "Fuselage Cheek R-1", "type": "fuselage", "accepts": ["AAM"] },
-		{ "id": "cheek-R2",     "label": "Fuselage Cheek R-2", "type": "fuselage", "accepts": ["AAM"] },
-		{ "id": "wing-tip-L",   "label": "Wingtip L (LAU-128)", "type": "external", "accepts": ["AAM"] },
-		{ "id": "wing-tip-R",   "label": "Wingtip R (LAU-128)", "type": "external", "accepts": ["AAM"] },
-		{ "id": "wing-inner-L", "label": "Wing Inner L",       "type": "external", "accepts": ["AAM", "AGM"] },
-		{ "id": "wing-inner-R", "label": "Wing Inner R",       "type": "external", "accepts": ["AAM", "AGM"] },
-		{ "id": "wing-outer-L", "label": "Wing Outer L",       "type": "external", "accepts": ["AAM", "AGM"] },
-		{ "id": "wing-outer-R", "label": "Wing Outer R",       "type": "external", "accepts": ["AAM", "AGM"] },
-		{ "id": "centerline",   "label": "Centerline",         "type": "centerline", "accepts": ["AGM", "TANK"] },
-		{ "id": "amber-L-1",    "label": "AMBER L-1 (CFT)",    "type": "external", "accepts": ["AAM", "AGM", "GBU"] },
-		{ "id": "amber-L-2",    "label": "AMBER L-2 (CFT)",    "type": "external", "accepts": ["AAM", "AGM", "GBU"] },
-		{ "id": "amber-L-3",    "label": "AMBER L-3 (CFT)",    "type": "external", "accepts": ["AAM", "AGM", "GBU"] },
-		{ "id": "amber-R-1",    "label": "AMBER R-1 (CFT)",    "type": "external", "accepts": ["AAM", "AGM", "GBU"] },
-		{ "id": "amber-R-2",    "label": "AMBER R-2 (CFT)",    "type": "external", "accepts": ["AAM", "AGM", "GBU"] },
-		{ "id": "amber-R-3",    "label": "AMBER R-3 (CFT)",    "type": "external", "accepts": ["AAM", "AGM", "GBU"] }
+		{
+			"id": "cheek-L1",
+			"label": "Fuselage Cheek L-1",
+			"type": "fuselage",
+			"accepts": [
+				"AAM"
+			]
+		},
+		{
+			"id": "cheek-L2",
+			"label": "Fuselage Cheek L-2",
+			"type": "fuselage",
+			"accepts": [
+				"AAM"
+			]
+		},
+		{
+			"id": "cheek-R1",
+			"label": "Fuselage Cheek R-1",
+			"type": "fuselage",
+			"accepts": [
+				"AAM"
+			]
+		},
+		{
+			"id": "cheek-R2",
+			"label": "Fuselage Cheek R-2",
+			"type": "fuselage",
+			"accepts": [
+				"AAM"
+			]
+		},
+		{
+			"id": "wing-tip-L",
+			"label": "Wingtip L (LAU-128)",
+			"type": "external",
+			"accepts": [
+				"AAM"
+			]
+		},
+		{
+			"id": "wing-tip-R",
+			"label": "Wingtip R (LAU-128)",
+			"type": "external",
+			"accepts": [
+				"AAM"
+			]
+		},
+		{
+			"id": "wing-inner-L",
+			"label": "Wing Inner L",
+			"type": "external",
+			"accepts": [
+				"AAM",
+				"AGM"
+			]
+		},
+		{
+			"id": "wing-inner-R",
+			"label": "Wing Inner R",
+			"type": "external",
+			"accepts": [
+				"AAM",
+				"AGM"
+			]
+		},
+		{
+			"id": "wing-outer-L",
+			"label": "Wing Outer L",
+			"type": "external",
+			"accepts": [
+				"AAM",
+				"AGM"
+			]
+		},
+		{
+			"id": "wing-outer-R",
+			"label": "Wing Outer R",
+			"type": "external",
+			"accepts": [
+				"AAM",
+				"AGM"
+			]
+		},
+		{
+			"id": "centerline",
+			"label": "Centerline",
+			"type": "centerline",
+			"accepts": [
+				"AGM",
+				"TANK"
+			]
+		},
+		{
+			"id": "amber-L-1",
+			"label": "AMBER L-1 (CFT)",
+			"type": "external",
+			"accepts": [
+				"AAM",
+				"AGM",
+				"GBU"
+			]
+		},
+		{
+			"id": "amber-L-2",
+			"label": "AMBER L-2 (CFT)",
+			"type": "external",
+			"accepts": [
+				"AAM",
+				"AGM",
+				"GBU"
+			]
+		},
+		{
+			"id": "amber-L-3",
+			"label": "AMBER L-3 (CFT)",
+			"type": "external",
+			"accepts": [
+				"AAM",
+				"AGM",
+				"GBU"
+			]
+		},
+		{
+			"id": "amber-R-1",
+			"label": "AMBER R-1 (CFT)",
+			"type": "external",
+			"accepts": [
+				"AAM",
+				"AGM",
+				"GBU"
+			]
+		},
+		{
+			"id": "amber-R-2",
+			"label": "AMBER R-2 (CFT)",
+			"type": "external",
+			"accepts": [
+				"AAM",
+				"AGM",
+				"GBU"
+			]
+		},
+		{
+			"id": "amber-R-3",
+			"label": "AMBER R-3 (CFT)",
+			"type": "external",
+			"accepts": [
+				"AAM",
+				"AGM",
+				"GBU"
+			]
+		}
 	],
 	"maxLoadoutKg": 13400,
-	"radarOverride": { "nominalRange": 180000 },
+	"radarOverride": {
+		"nominalRange": 180000
+	},
 	"specs": {
 		"role": "Air Superiority / Strike",
 		"topSpeed": "Mach 2.5",
 		"combatRadius": "1 480 km",
-		"rcs": "~12 m²",
+		"rcs": "~12 m\u00b2",
 		"irSig": "High",
 		"radarRange": "180 km (APG-82)",
 		"agility": 7,
 		"supercruise": false
-	}
+	},
+	"hideNodes": [
+		{
+			"type": "regex",
+			"pattern": "landingOn(?:Light)?_",
+			"flags": "i"
+		}
+	]
 }
