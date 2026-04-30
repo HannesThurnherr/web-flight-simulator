@@ -46,7 +46,7 @@ import {
 	getCycleMode,
 	moveDesignation,
 } from './designation.js';
-import { getTeamDatalink } from './teamDatalink.js';
+import { getTeamDatalink, TeamDatalink } from './teamDatalink.js';
 import { totalWingmanAmmo, formation, MODE_FORMATION, MODE_PATROL_RTB, MODE_PATROL_CAP, setMemberMode } from './formation.js';
 
 const COLOR_PLAYER       = Cesium.Color.fromCssColorString('#00eaff');
@@ -583,6 +583,28 @@ export class StrikePlannerView {
 			if (dlContacts  && dlContacts.has(u))  return true;
 			return false;
 		};
+		// 6g — derive the per-track source tag (R / IR / EO / R+IR / …)
+		// from whichever picture has the unit. Own-contact channels go
+		// through TeamDatalink.sourceTag too — same shape, just keyed
+		// off the local contact entry. Returns empty string for stale
+		// or briefed-only entries; callers fall back to 'INTEL'/etc.
+		const sourceTagFor = (u) => {
+			if (!u) return '';
+			const own = ownContacts && ownContacts.get(u);
+			if (own) {
+				// Build a minimal channels snapshot from own contact;
+				// per-channel lastSeen lives on the channel record.
+				const ch = {
+					radar:  own.radar  ? own.radar.lastSeen  : null,
+					ir:     own.ir     ? own.ir.lastSeen     : null,
+					visual: own.visual ? own.visual.lastSeen : null,
+				};
+				return TeamDatalink.sourceTag({ channels: ch }, now);
+			}
+			const dl = dlContacts && dlContacts.get(u);
+			if (dl) return TeamDatalink.sourceTag(dl, now);
+			return '';
+		};
 		// Knowledge resolution per unit (highest first):
 		//   live   — current sensor or datalink contact
 		//   stale  — recently sensor-painted, now memory-only
@@ -643,7 +665,16 @@ export class StrikePlannerView {
 				if (detected || isFriendly) {
 					renderColor = baseColor;
 					renderUnit = u;
-					labelText = labelBase;
+					// 6g — append source-channel tag (R / IR / EO /
+					// R+IR / …) so the player can tell which sensor
+					// produced the track. Friendlies stay un-tagged
+					// since they're own-side knowledge, not a sensor
+					// fix. Empty tag (everything stale) is treated
+					// as no decoration rather than 'unknown' since
+					// that path normally promotes through the stale
+					// branch below before going dark.
+					const tag = isFriendly ? '' : sourceTagFor(u);
+					labelText = tag ? `${labelBase}  ${tag}` : labelBase;
 				} else if (stale) {
 					renderColor = baseColor.withAlpha(0.4);
 					renderUnit = this._lastKnown.get(u);
