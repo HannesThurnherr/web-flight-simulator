@@ -437,7 +437,16 @@ export function update(dt, ctx) {
 		const gone = ctx.spectatorTarget.destroyed ||
 			ctx.spectatorTarget.active === false ||
 			(typeof ctx.spectatorTarget.lon !== 'number');
-		if (gone) ctx.setSpectatorTarget(null);
+		if (gone) {
+			ctx.setSpectatorTarget(null);
+			// If we were spectating while dead, the crash menu was
+			// hidden on entry. Restore it now that we've fallen back
+			// off the spectator unit so the player can still respawn.
+			if (ctx.currentState === 'CRASHED') {
+				const crashMenu = document.getElementById('crashMenu');
+				if (crashMenu) crashMenu.classList.remove('hidden');
+			}
+		}
 	}
 
 	// NPCs, HUD, commander: always tick so the world keeps running

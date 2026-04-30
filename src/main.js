@@ -201,6 +201,12 @@ window.addEventListener('spectator-request', (e) => {
 	if (commanderView && commanderView.active) {
 		commanderView.setActive(false);
 	}
+	// If the player is dead, the crash menu (RESPAWN / RESPAWN ELSEWHERE)
+	// is currently overlaid. Hide it while spectating — the player is
+	// watching another unit, not deciding whether to revive theirs.
+	// Escape restores it (see the spectator-exit branch in menus.js).
+	const crashMenu = document.getElementById('crashMenu');
+	if (crashMenu) crashMenu.classList.add('hidden');
 });
 let npcSystem;
 let weaponSystem;
