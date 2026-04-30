@@ -643,7 +643,19 @@ function scanVisual(observer, target, now) {
 
 	const tgtFwd = unitForwardENU(target);
 	const aspect = aspectAngleFromVectors(los.losHat, tgtFwd);
-	const effSize = sig.visualSize * visualAspectFactor(aspect);
+	let effSize = sig.visualSize * visualAspectFactor(aspect);
+
+	// Phase 8 — contrails are by far the most reliable visual ID cue
+	// at altitude. A jet that would otherwise be a 19 m speck against
+	// blue sky becomes a kilometre-long white streak the moment it
+	// crosses the formation ceiling. We model this as a hefty ×6
+	// effective visual-size multiplier when the target is currently
+	// emitting a contrail (Contrail.update sets unit.contrailing).
+	// Translates the 12 km baseline eyeball range into ~70 km against
+	// a contrailing fighter — long but not absurd; a contrail at
+	// 30 000 ft is in fact visible to the naked eye that far away on
+	// a clear day, which is the point of this whole sub-phase.
+	if (target.contrailing) effSize *= 6;
 
 	// Detection range scales linearly with visual size (apparent angular
 	// size is size / range). referenceVisualSize is the default fighter.
