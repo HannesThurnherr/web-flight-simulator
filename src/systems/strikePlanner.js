@@ -47,9 +47,6 @@ import {
 	moveDesignation,
 } from './designation.js';
 import { getTeamDatalink } from './teamDatalink.js';
-import { MUNITIONS } from '../weapon/munitions.js';
-import { munitionIdForSimType } from '../weapon/munitionFactory.js';
-import { isStrikeWeapon } from './strikeEnvelope.js';
 import { totalWingmanAmmo, formation, MODE_FORMATION, MODE_PATROL_RTB, MODE_PATROL_CAP, setMemberMode } from './formation.js';
 
 const COLOR_PLAYER       = Cesium.Color.fromCssColorString('#00eaff');
@@ -324,40 +321,17 @@ export class StrikePlannerView {
 		this._flashUntil = performance.now() * 0.001 + durationS;
 	}
 
-	// Auto-assign: queue one target per detected/stale enemy ground
-	// contact, in range-from-player order, capped at the current
-	// strike weapon's ammo. If the player's loaded weapon isn't a
-	// GBU-class, no-op (auto-assign would pick targets nothing can
-	// hit). Wipes the existing queue first so repeated A presses
-	// don't keep stacking.
+	// Auto-assign: queue every known hostile ground contact, in
+	// range-from-player order. The queue is a planning artifact, not
+	// a firing artifact — designations exist independent of whether
+	// the player has a strike weapon selected or has enough ammo for
+	// every target. (You might be cuing them up for a wingman to drop,
+	// or just marking them for situational awareness.) Wipes the
+	// existing queue first so repeated A presses don't keep stacking.
 	autoAssign() {
 		const ps = this._lastPlayerState;
 		if (!ps) {
 			this._flash('AUTO: no player state yet', '#ff8', 3);
-			return;
-		}
-		const ws = ps.weaponSystem;
-		const cur = ws && ws.getCurrentWeapon && ws.getCurrentWeapon();
-		if (!cur || !cur.type) {
-			this._flash('AUTO: no weapon selected', '#ff8', 3);
-			return;
-		}
-		// Gate on the munition's seeker class, not the weapon-system
-		// slot id. GBU-* and AGM-* live in different slots (id 'gbu'
-		// vs 'agm') but the strike planner queue is the right
-		// concept for any seeker that takes a frozen GPS coord at
-		// release — JDAM, SDB, GBU-12, ALCM, Storm Shadow — and the
-		// wrong concept for HARM (which needs a live emitter, not a
-		// queue point). isStrikeWeapon centralizes that decision.
-		const munId = munitionIdForSimType(cur.type);
-		const munData = munId ? MUNITIONS[munId] : null;
-		if (!isStrikeWeapon(munData)) {
-			this._flash(`AUTO: ${cur.name || cur.type} is not a strike weapon — switch to JDAM/SDB/ALCM/STORM`, '#f88', 5);
-			return;
-		}
-		const ammo = (typeof cur.ammo === 'number' && cur.ammo !== Infinity) ? cur.ammo : 99;
-		if (ammo <= 0) {
-			this._flash('AUTO: no ammo loaded', '#f88', 3);
 			return;
 		}
 
@@ -425,13 +399,15 @@ export class StrikePlannerView {
 		console.log('[autoAssign]',
 			`units=${nUnits} friendly=${nFriendly} destroyed=${nDestroyed}`,
 			`detected=${nDetected} stale=${nStale} intel=${nIntel} noKnowledge=${nNoKnowledge}`,
-			`candidates=${candidates.length} ammo=${ammo}`,
+			`candidates=${candidates.length}`,
 			`dlIntelSize=${dlIntel ? dlIntel.size : 'no-dl'}`);
 
 		clearDesignationQueue();
-		const take = Math.min(ammo, candidates.length);
-		for (let i = 0; i < take; i++) {
-			const c = candidates[i];
+		// Queue every known hostile ground contact. No ammo cap —
+		// the queue is just "what I want hit," not "what I can hit
+		// right now." Excess targets sit in the queue waiting for a
+		// wingman drop, a rearm, or to be manually pruned.
+		for (const c of candidates) {
 			addDesignation(c.lon, c.lat, c.alt);
 		}
 
