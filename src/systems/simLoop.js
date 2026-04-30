@@ -36,6 +36,7 @@ import {
 } from '../world/cesiumWorld';
 import { updateSensors, setSensorScene } from './sensorSystem';
 import { collectJamStrobes } from './ew/jammerSubsystem.js';
+import { Contrail } from '../plane/contrail.js';
 import { getTeamDatalink } from './teamDatalink';
 import { getActiveScenario } from './scenarios';
 import { CommanderView } from './commanderView';
@@ -671,6 +672,15 @@ export function update(dt, ctx) {
 		planeModel.quaternion.copy(combinedQ);
 
 		const clock = ctx.clock;
+		// Phase 8 — player contrails. One Contrail instance per
+		// session, lazy-initialized so we don't pay the import cost
+		// before the player has actually loaded a plane. Runs every
+		// frame regardless of state (it gates internally on alt +
+		// speed); pauses naturally when dt = 0.
+		if (!ctx._playerContrail && ctx.scene) {
+			ctx._playerContrail = new Contrail(ctx.scene, getViewer());
+		}
+		if (ctx._playerContrail) ctx._playerContrail.update(dt, state);
 		if (jetFlames.length > 0) {
 			// TV nozzle deflection: rotate the flame group so the plume
 			// visibly tilts when the F-22's nozzles vector. Smoothed so the
