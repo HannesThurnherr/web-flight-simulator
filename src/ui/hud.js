@@ -956,11 +956,11 @@ export class HUD {
 			marker.el.style.left = `${windowPos.x}px`;
 			marker.el.style.top  = `${windowPos.y}px`;
 
-			const spd = Math.round(m.speed);
+			const spd = Math.round(m.speed * 3.6);
 			const phase = m.boostRemaining > 0 ? 'BOOST' : 'COAST';
 			const typeTag = m.type || 'MSL';
 			const prefix = isOwnTeam ? '' : 'INBOUND ';
-			marker.label.innerText = `${prefix}${typeTag} ${phase}  ${spd}m/s`;
+			marker.label.innerText = `${prefix}${typeTag} ${phase}  ${spd} km/h`;
 		}
 
 		// Prune markers whose missile is gone (destroyed or despawned).
@@ -2485,7 +2485,8 @@ export class HUD {
 			this.uiContainer.style.transform = `perspective(1000px) rotateX(${tiltX}deg) rotateY(${tiltY}deg) translate(${shiftX}px, ${shiftY}px) scale(${scale})`;
 		}
 
-		// state.speed is m/s; display in km/h.
+		// state.speed is m/s; display in km/h since that's what the
+		// player has the easiest time relating to.
 		const speedKmh = Math.round((state.speed || 0) * 3.6);
 		this.speedElem.innerText = speedKmh.toString().padStart(4, '0');
 

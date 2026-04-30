@@ -896,14 +896,14 @@ export class CommanderView {
 			return (
 				`<div style="font-weight:bold; margin-bottom:3px;">${typeTag} ${phase}</div>` +
 				row('TGT',  tgt) + row('RNG', rng) +
-				row('SPD',  `${Math.round(ref.speed)} m/s`) +
+				row('SPD',  `${Math.round(ref.speed * 3.6)} km/h`) +
 				row('ALT',  `${altM} m`) +
 				row('MODE', mode) +
 				row('TTL',  `${ref.life.toFixed(1)} s`)
 			);
 		}
 		const name = kind === 'player' ? 'PLAYER' : (ref.name || 'BOGEY');
-		const spd  = typeof ref.speed   === 'number' ? `${Math.round(ref.speed)} m/s` : '—';
+		const spd  = typeof ref.speed   === 'number' ? `${Math.round(ref.speed * 3.6)} km/h` : '—';
 		const hdg  = typeof ref.heading === 'number' ? dir(ref.heading) : '—';
 		const pit  = typeof ref.pitch   === 'number' ? `${ref.pitch.toFixed(1)}°` : '—';
 		let html =
