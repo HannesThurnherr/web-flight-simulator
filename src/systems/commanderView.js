@@ -856,7 +856,7 @@ export class CommanderView {
 
 	_buildTooltipHtml(meta) {
 		const { kind, ref } = meta;
-		const altFt = Math.max(0, Math.round(ref.alt * 3.28084)).toLocaleString();
+		const altM = Math.max(0, Math.round(ref.alt)).toLocaleString();
 		const row = (lbl, val) =>
 			`<div><span style="display:inline-block; width:36px; opacity:0.65">${lbl}</span>${val}</div>`;
 		const dir = (d) => `${Math.round(((d % 360) + 360) % 360).toString().padStart(3, '0')}°`;
@@ -897,7 +897,7 @@ export class CommanderView {
 				`<div style="font-weight:bold; margin-bottom:3px;">${typeTag} ${phase}</div>` +
 				row('TGT',  tgt) + row('RNG', rng) +
 				row('SPD',  `${Math.round(ref.speed)} m/s`) +
-				row('ALT',  `${altFt} ft`) +
+				row('ALT',  `${altM} m`) +
 				row('MODE', mode) +
 				row('TTL',  `${ref.life.toFixed(1)} s`)
 			);
@@ -908,7 +908,7 @@ export class CommanderView {
 		const pit  = typeof ref.pitch   === 'number' ? `${ref.pitch.toFixed(1)}°` : '—';
 		let html =
 			`<div style="font-weight:bold; margin-bottom:3px;">${name}</div>` +
-			row('ALT', `${altFt} ft`) +
+			row('ALT', `${altM} m`) +
 			row('SPD', spd) +
 			row('HDG', hdg) +
 			row('PIT', pit);

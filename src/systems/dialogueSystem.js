@@ -7,7 +7,7 @@ export class DialogueSystem {
 		this.dialogues = [
 			"Welcome, Pilot. I am Commander Dimar Tarmizi. I will be your flight instructor today.",
 			"You are currently piloting the F-15 Eaglehawk, an advanced air superiority fighter.",
-			"Check your HUD. The left box shows your SPEED in knots, and the right box shows your ALTITUDE.",
+			"Check your HUD. The left box shows your SPEED in m/s, and the right box shows your ALTITUDE in metres.",
 			"The compass at the top shows your heading, and the crosshair in the center helps you level your flight.",
 			"Your weapons are armed. You have the M61A1 Vulcan Cannon and AIM-9 Sidewinder missiles.",
 			"Use 'W' and 'S' to control your throttle. Keep an eye on your energy state.",
