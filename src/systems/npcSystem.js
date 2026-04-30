@@ -9,8 +9,14 @@ import f15Plane from '../data/planes/f-15.json';
 // when we do, this will become a per-NPC-type lookup. For now the
 // F-15 spec is the canonical "fighter" baseline and lives in one
 // place — the F-15 JSON. Importing it here keeps the spec in sync
-// with the player's F-15 automatically.
-const NPC_FIGHTER_SPEC = { ...f15Plane.physicsOverrides, __id: 'npc-fighter' };
+// with the player's F-15 automatically. realLengthM is hoisted out
+// so the NPC mesh-scaling code can auto-derive scale from the loaded
+// GLB's bbox without depending on the JSON shape.
+const NPC_FIGHTER_SPEC = {
+	...f15Plane.physicsOverrides,
+	__id: 'npc-fighter',
+	realLengthM: f15Plane.realLengthM || 19.43,
+};
 import {
 	FIGHTER_RADAR_DEFAULT,
 	FIGHTER_IRST_DEFAULT,
@@ -266,18 +272,26 @@ export class NPCSystem {
 		// Model-space → body-frame orientation. The Strike Eagle GLB
 		// exports with +X forward and +Z up, so we yaw 90° (rotation.y)
 		// after the pitch-up (rotation.x) to put the nose along the
-		// body-frame forward axis.
+		// body-frame forward axis. Same convention works for all the
+		// fighter-jet GLBs from the current source pack.
 		model.rotation.x = Math.PI / 2;
 		model.rotation.y = Math.PI / 2;
-		// Real-world scale: Strike Eagle GLB is 14.6 units long on its
-		// longest axis; real F-15 is 19.43 m. Scale factor ≈ 1.33 puts
-		// the in-world NPCs at true size so missile engagement
-		// envelopes, proximity fuze radii, and visual acquisition
-		// distances all read correctly against the airframe. Old model
-		// was 25.6 units at scale 1.0 (i.e. an oversized 25 m F-15),
-		// which was mildly wrong — now corrected.
-		const SCALE = 19.43 / 14.6;
-		model.scale.set(SCALE, SCALE, SCALE);
+		// Auto-scale from realLengthM / bbox-max so a different GLB
+		// asset with different unit scale just works. Falls back to a
+		// reasonable default if the bbox can't be read (e.g. async
+		// load not done — shouldn't happen since spawnNPC is gated on
+		// loaded=true, but defensive).
+		let scaleFactor = 1.0;
+		try {
+			model.updateMatrixWorld(true);
+			const bbox = new THREE.Box3().setFromObject(model);
+			const size = new THREE.Vector3();
+			bbox.getSize(size);
+			const maxDim = Math.max(size.x, size.y, size.z);
+			const realLen = (NPC_FIGHTER_SPEC && NPC_FIGHTER_SPEC.realLengthM) || 19.43;
+			if (maxDim > 0.01) scaleFactor = realLen / maxDim;
+		} catch (e) { /* keep default 1.0 */ }
+		model.scale.set(scaleFactor, scaleFactor, scaleFactor);
 
 		group.add(model);
 		group.matrixAutoUpdate = false;

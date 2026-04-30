@@ -3,7 +3,7 @@
 	"name": "F-35A LIGHTNING II",
 	"description": "Single-engine stealth multirole. Low RCS and cooled exhaust — you see them much later, they see you the same.",
 	"model": "/assets/models/f-35a-lightning-ii.glb",
-	"modelRotation": { "x": 0, "y": 0, "z": 0 },
+	"modelRotation": { "x": 0, "y": 90, "z": 0 },
 	"realLengthM": 15.67,
 	"signature": "stealth_fighter",
 	"engineCount": 1,

@@ -1,0 +1,41 @@
+{
+	"id": "ea-18g-growler",
+	"name": "EA-18G Growler",
+	"kind": "airborne",
+	"model": "/assets/models/ea-18g-growler.glb",
+	"modelRotation": { "x": 0, "y": 90, "z": 0 },
+	"modelScale": 0.1,
+	"signature": "awacs",
+	"sensors": {
+		"radar": {
+			"enabled": true,
+			"active": true,
+			"mode": "search",
+			"nominalRange": 110000,
+			"referenceRcs": 5,
+			"fovHalfHDeg": 70,
+			"fovHalfVDeg": 60,
+			"notchThreshold": 60
+		}
+	},
+	"jammer": {
+		"type": "both",
+		"power": 50000,
+		"beamCount": 3,
+		"coneHalfDeg": 45,
+		"burnThroughRangeM": 8000
+	},
+	"pilot": {
+		"type": "orbit",
+		"defaultParams": {
+			"radiusM":      35000,
+			"altitudeM":    10000,
+			"throttle":     0.6,
+			"targetSpeed":  220
+		}
+	},
+	"physicsOverrides": {
+		"mass": 18000,
+		"wingArea": 46.5
+	}
+}
