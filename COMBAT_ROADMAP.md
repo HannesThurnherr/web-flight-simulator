@@ -978,9 +978,25 @@ bursts only when needed.
 
 ### 6d — IFF + unknown contact state, sensor-quality realism
 
-The "perfect team filter" goes away. ID uncertainty propagates
-through every channel (own sensors → datalink → planner) so we
-don't ship realism on the radar but undermine it via a perfect DL.
+⚠ **Plumbing landed; default-OFF until 6e (jamming) lands.**
+
+The realistic IFF pipeline is wired through (sensor → datalink →
+HUD) but defaults to omniscient mode (perfect friend-ID from team)
+because real Link-16 broadcasts every coalition member's position
+continuously, making friend ID trivial under normal conditions.
+Adding fake IFF flake to the friendly side without modeling the
+condition where Link-16 actually fails (jamming) is just
+frustration without realism.
+
+The plumbing stays in place because IFF realism becomes meaningful
+the moment 6e jamming can knock out Link-16 reception — at that
+point, jammed teammates can't broadcast their position, and you're
+really down to sensor-only ID with genuine ambiguity. When 6e
+ships, default flips back to OFF (realistic) for any contact that's
+been jammed off the datalink in the last N seconds.
+
+Settings toggle ("Perfect friend-or-foe ID") lets power users force
+either mode standalone for testing.
 
 #### 6d.1 — IFF identification
 

@@ -37,13 +37,21 @@ export const gameSettings = {
 	// do when out of strike-class ammo: 'rtb' (orbit spawn point) or
 	// 'cap' (orbit player). Persisted so the choice survives a reload.
 	formation: { count: 0, breakBehavior: 'rtb' },
-	// Phase 6d — IFF realism. The default (omniscient: false) runs the
-	// realistic identifyContact() pipeline: radar contacts are stamped
-	// with iffStatus 'friendly' / 'hostile' / 'unknown', NCTR + visual
-	// ID resolve unknowns at close range. With omniscient: true the
-	// pipeline is bypassed and contacts are always perfectly tagged
-	// from .team — the previous behavior, kept as an opt-in arcade mode.
-	iff: { omniscient: false },
+	// Phase 6d — IFF realism, currently DEFAULT-ON (omniscient: true).
+	// Reasoning: real Link-16 broadcasts every coalition member's exact
+	// position continuously, so friend ID is trivial under normal
+	// conditions — radar paint position correlates with the friendly
+	// broadcast. The realistic identifyContact() pipeline (NCTR +
+	// visual ID + per-pair IFF flake) only earns its keep when jamming
+	// can knock out Link-16 reception, at which point you really are
+	// down to sensor-only ID with ambiguity.
+	//
+	// 6e (jamming) is what creates that condition. Until then, the
+	// scaffolding stays in place but defaults to omniscient so we
+	// don't add fake uncertainty for things that wouldn't logically be
+	// uncertain IRL. Power users can flip the toggle to test the
+	// realistic pipeline standalone.
+	iff: { omniscient: true },
 };
 
 // Read the stored settings blob into `gameSettings` WITHOUT touching any
