@@ -30,6 +30,7 @@ import {
 	effectiveRcsM2, externalRcsM2,
 } from '../plane/loadout';
 import { PlanePreview } from './planePreview';
+import { MunitionPreview } from './munitionPreview';
 import { gameSettings, saveSettings } from './settings';
 import { computeSpecs, UNMODELED_FIELDS } from './planeSpecsView';
 
@@ -158,19 +159,110 @@ export function setupPlanePicker(ctx) {
 		paintLoadout(id);
 	}
 
-	// Loadout editor. Rebuilds on every selection change and whenever
-	// the user changes a slot (so weight / stealth / option-set all
-	// stay in sync). Uses native <select> elements per row because
-	// the option list is short and searchable without custom UI.
+	// Loadout editor.
+	//
+	// Layout (built once, then sub-areas innerHTML-rewritten per repaint):
+	//   ┌────────────────────────────────────────────────────────────┐
+	//   │ summary (weight / RCS / stealth / quick actions)           │
+	//   │ tally  (LOADED chips)                                      │
+	//   │ bulk toolbar  (visible when ≥1 hardpoint selected)         │
+	//   │ ┌──────────────────────────────┬─────────────────────────┐ │
+	//   │ │ hardpoint list (click-to-     │  munition preview        │ │
+	//   │ │  select, per-row dropdown)    │  + spec readout          │ │
+	//   │ └──────────────────────────────┴─────────────────────────┘ │
+	//   └────────────────────────────────────────────────────────────┘
+	//
+	// Selection state is per plane id (cleared on plane switch). The
+	// MunitionPreview is created once and persists across repaints
+	// because its <canvas> sits inside an outer skeleton div whose
+	// children we never wholesale-replace.
+	const _selectedHps = new Set();      // current plane's selected hardpoint ids
+	let _selectedPlaneForHps = null;     // plane id those selections belong to
+	let _previewMunitionId = null;       // id whose model is currently shown
+	let _munitionPreview = null;
+	let _lastSkeletonPlaneId = null;
+	let _skeletonInstalled = false;
+
+	// Update only the preview pane (canvas + meta) without rebuilding the
+	// whole list. Called from focus / hover paths so we don't blow away
+	// the user's just-clicked dropdown before its menu opens.
+	function updatePreviewPaneOnly(munId) {
+		_previewMunitionId = munId || null;
+		const m = _previewMunitionId && MUNITIONS[_previewMunitionId];
+		if (_munitionPreview) _munitionPreview.show(m || null);
+		const metaEl = detailLoadout && detailLoadout.querySelector('.munition-preview-meta');
+		if (!metaEl) return;
+		if (!m) {
+			metaEl.innerHTML =
+				`<div class="munition-meta-empty">Hover or focus a row to preview a weapon.</div>`;
+			return;
+		}
+		const tagsHtml = (m.tags || []).map(t =>
+			`<span class="munition-tag">${t.toUpperCase()}</span>`).join('');
+		const seeker = m.seekerType ? m.seekerType.replace('_', ' ').toUpperCase() : '—';
+		const range = m.loft && m.loft.maxLoftRangeM
+			? `${(m.loft.maxLoftRangeM / 1000).toFixed(0)} km`
+			: m.seeker && m.seeker.trackRangeM
+				? `${(m.seeker.trackRangeM / 1000).toFixed(0)} km (track)`
+				: '—';
+		const wh = m.warhead && m.warhead.killRadiusM
+			? `${m.warhead.killRadiusM} m kill / ${(m.warhead.fuzeSenseRadiusM || 0)} m fuze`
+			: '—';
+		metaEl.innerHTML = `
+			<div class="munition-name">${m.name}</div>
+			<div class="munition-tags">${tagsHtml}</div>
+			<div class="munition-rows">
+				<div><span class="mr-k">Mass</span><span class="mr-v">${m.massKg} kg</span></div>
+				<div><span class="mr-k">Seeker</span><span class="mr-v">${seeker}</span></div>
+				<div><span class="mr-k">Range</span><span class="mr-v">${range}</span></div>
+				<div><span class="mr-k">Warhead</span><span class="mr-v">${wh}</span></div>
+				<div><span class="mr-k">RCS</span><span class="mr-v">${(m.rcsContributionM2 || 0).toFixed(3)} m²</span></div>
+			</div>
+			${m.description ? `<div class="munition-desc">${m.description}</div>` : ''}
+		`;
+	}
+
+	function ensureLoadoutSkeleton() {
+		if (_skeletonInstalled) return;
+		_skeletonInstalled = true;
+		detailLoadout.innerHTML = `
+			<div class="loadout-summary-area"></div>
+			<div class="loadout-tally-area"></div>
+			<div class="loadout-bulk-area"></div>
+			<div class="loadout-body">
+				<div class="loadout-list-area"></div>
+				<div class="loadout-preview-area">
+					<canvas class="munition-preview-canvas"></canvas>
+					<div class="munition-preview-meta"></div>
+				</div>
+			</div>
+		`;
+		const canvas = detailLoadout.querySelector('.munition-preview-canvas');
+		if (canvas) _munitionPreview = new MunitionPreview(canvas);
+	}
+
 	function paintLoadout(planeId) {
 		if (!detailLoadout) return;
 		const plane = PLANES[planeId];
 		if (!plane || !Array.isArray(plane.hardpoints)) {
+			if (_munitionPreview) { _munitionPreview.dispose(); _munitionPreview = null; }
+			_skeletonInstalled = false;
 			detailLoadout.innerHTML =
 				'<div style="color:rgba(0,255,0,0.55);font-size:11px;padding:10px 0;">' +
 				'No hardpoints defined for this airframe.</div>';
 			return;
 		}
+
+		// Plane switch → clear selection (the old hardpoint ids may not
+		// even exist on the new plane).
+		if (_selectedPlaneForHps !== planeId) {
+			_selectedHps.clear();
+			_selectedPlaneForHps = planeId;
+			_previewMunitionId = null;
+		}
+
+		ensureLoadoutSkeleton();
+		_lastSkeletonPlaneId = planeId;
 		const lo = getLoadout(planeId);
 		const weight = totalWeightKg(planeId);
 		const maxWeight = plane.maxLoadoutKg || 0;
@@ -248,28 +340,23 @@ export function setupPlanePicker(ctx) {
 					<button type="button" data-fill="clear">CLEAR</button>
 				</div>
 			</div>
+		`;
+		const tallyOnlyHtml = `
 			<div class="loadout-tally">
 				<span class="tally-label">LOADED</span>
 				<span class="tally-body">${tallyHtml}</span>
 			</div>
 		`;
 
-		// Hardpoint list. Each row shows the hardpoint label, a select
-		// of compatible munitions, and the per-slot mass readout. The
-		// dropdown's options are filtered via munitionsForHardpoint
-		// so incompatible loads just can't be picked. When NO
-		// compatible munitions exist (e.g. a TANK-only hardpoint with
-		// no tank munitions defined yet) we disable the select and
-		// show an explicit hint — previously the dropdown silently
-		// showed only "empty" which was confusing.
+		// Hardpoint list. Each row is a clickable button that toggles
+		// multi-selection, plus a per-row dropdown that still allows
+		// fast single-slot edits. Multi-select drives the bulk toolbar
+		// above the list, where the user picks one weapon and applies
+		// it to every selected slot at once.
 		const rowsHtml = plane.hardpoints.map((hp) => {
 			const current = lo[hp.id] || '';
 			const compatible = munitionsForHardpoint(hp);
 			const hasOptions = compatible.length > 0;
-			// Each dropdown option shows mass + per-unit RCS so the
-			// user can eyeball the signature cost before picking.
-			// External-only field: internal carriage reads 0 regardless
-			// of the munition's own RCS (stores sit inside a bay).
 			const isInternal = hp.type === 'internal';
 			const options = ['<option value="">— empty —</option>'].concat(
 				compatible.map(m => {
@@ -290,8 +377,16 @@ export function setupPlanePicker(ctx) {
 			const selectHtml = hasOptions
 				? `<select data-hp="${hp.id}">${options.join('')}</select>`
 				: `<span class="hp-no-match">no ${(hp.accepts || []).join('/')} munitions available</span>`;
+			const isSel = _selectedHps.has(hp.id);
+			const rowClasses = ['hardpoint-row'];
+			if (!hasOptions) rowClasses.push('disabled');
+			if (isSel) rowClasses.push('selected');
+			const checkChar = isSel ? '✓' : '';
 			return `
-				<div class="hardpoint-row${hasOptions ? '' : ' disabled'}">
+				<div class="${rowClasses.join(' ')}" data-hprow="${hp.id}">
+					<button type="button" class="hp-check" data-hpcheck="${hp.id}"
+						title="Toggle selection"
+						${hasOptions ? '' : 'disabled'}>${checkChar}</button>
 					<div class="hp-label">
 						<span class="hp-name">${hp.label || hp.id}${stealthTag}</span>
 						<span class="hp-type ${hp.type || ''}">${(hp.type || '').toUpperCase()} · ${(hp.accepts || []).join('/')}</span>
@@ -302,17 +397,186 @@ export function setupPlanePicker(ctx) {
 			`;
 		}).join('');
 
-		detailLoadout.innerHTML = summaryHtml + `<div class="hardpoint-list">${rowsHtml}</div>`;
+		// Bulk toolbar: union of compatible munitions across selected
+		// hardpoints. Using union (not intersection) keeps the dropdown
+		// useful even with mixed selections — applying e.g. an AAM to a
+		// GBU-only slot just no-ops on that one. We mark which slots a
+		// given option will actually populate via the count badge.
+		let bulkHtml = '';
+		const selectedHpObjs = plane.hardpoints.filter(hp => _selectedHps.has(hp.id));
+		if (selectedHpObjs.length > 0) {
+			const munitionToSlots = new Map();   // munitionId -> count of slots that accept it
+			for (const hp of selectedHpObjs) {
+				for (const m of munitionsForHardpoint(hp)) {
+					munitionToSlots.set(m.id, (munitionToSlots.get(m.id) || 0) + 1);
+				}
+			}
+			const sorted = Array.from(munitionToSlots.entries()).sort((a, b) => b[1] - a[1]);
+			const opts = ['<option value="">— pick a weapon —</option>',
+				'<option value="__empty__">(empty / unload)</option>',
+			].concat(sorted.map(([id, n]) => {
+				const m = MUNITIONS[id];
+				if (!m) return '';
+				const fits = n === selectedHpObjs.length ? '' : ` · fits ${n}/${selectedHpObjs.length}`;
+				const sel = id === _previewMunitionId ? ' selected' : '';
+				return `<option value="${id}"${sel}>${m.shortName || m.name} · ${m.massKg} kg${fits}</option>`;
+			}));
+			bulkHtml = `
+				<div class="loadout-bulk">
+					<div class="bulk-count">${selectedHpObjs.length} slot${selectedHpObjs.length === 1 ? '' : 's'} selected</div>
+					<select id="bulkWeaponSelect" class="bulk-weapon">${opts.join('')}</select>
+					<button type="button" class="bulk-btn" data-bulk="apply">APPLY</button>
+					<button type="button" class="bulk-btn" data-bulk="select-all">ALL</button>
+					<button type="button" class="bulk-btn" data-bulk="select-none">NONE</button>
+				</div>
+			`;
+		} else {
+			bulkHtml = `
+				<div class="loadout-bulk loadout-bulk-empty">
+					<div class="bulk-hint">Click a slot's checkbox to multi-select, then assign a weapon to all at once</div>
+					<button type="button" class="bulk-btn" data-bulk="select-all">SELECT ALL</button>
+				</div>
+			`;
+		}
 
-		// Event wiring — a single delegated listener per panel since we
-		// just replaced its innerHTML. Select change updates the slot;
-		// quick-action buttons bulk-fill or clear.
+		// Munition preview side panel. Description + key spec readouts
+		// next to the spinning model. Falls back to a "no preview"
+		// placeholder when nothing is selected (or for munitions
+		// without a 3D model, e.g. drop tanks).
+		const previewMun = _previewMunitionId && MUNITIONS[_previewMunitionId];
+		let metaHtml;
+		if (!previewMun) {
+			metaHtml = `<div class="munition-meta-empty">Hover or focus a row to preview a weapon.</div>`;
+		} else {
+			const m = previewMun;
+			const tagsHtml = (m.tags || []).map(t =>
+				`<span class="munition-tag">${t.toUpperCase()}</span>`).join('');
+			const seeker = m.seekerType
+				? m.seekerType.replace('_', ' ').toUpperCase()
+				: '—';
+			const range = m.loft && m.loft.maxLoftRangeM
+				? `${(m.loft.maxLoftRangeM / 1000).toFixed(0)} km`
+				: m.seeker && m.seeker.trackRangeM
+					? `${(m.seeker.trackRangeM / 1000).toFixed(0)} km (track)`
+					: '—';
+			const wh = m.warhead && m.warhead.killRadiusM
+				? `${m.warhead.killRadiusM} m kill / ${(m.warhead.fuzeSenseRadiusM || 0)} m fuze`
+				: '—';
+			metaHtml = `
+				<div class="munition-name">${m.name}</div>
+				<div class="munition-tags">${tagsHtml}</div>
+				<div class="munition-rows">
+					<div><span class="mr-k">Mass</span><span class="mr-v">${m.massKg} kg</span></div>
+					<div><span class="mr-k">Seeker</span><span class="mr-v">${seeker}</span></div>
+					<div><span class="mr-k">Range</span><span class="mr-v">${range}</span></div>
+					<div><span class="mr-k">Warhead</span><span class="mr-v">${wh}</span></div>
+					<div><span class="mr-k">RCS</span><span class="mr-v">${(m.rcsContributionM2 || 0).toFixed(3)} m²</span></div>
+				</div>
+				${m.description ? `<div class="munition-desc">${m.description}</div>` : ''}
+			`;
+		}
+
+		// Push HTML into each sub-area; the canvas-bearing skeleton stays.
+		detailLoadout.querySelector('.loadout-summary-area').innerHTML = summaryHtml;
+		detailLoadout.querySelector('.loadout-tally-area').innerHTML = tallyOnlyHtml;
+		detailLoadout.querySelector('.loadout-bulk-area').innerHTML = bulkHtml;
+		detailLoadout.querySelector('.loadout-list-area').innerHTML =
+			`<div class="hardpoint-list">${rowsHtml}</div>`;
+		detailLoadout.querySelector('.munition-preview-meta').innerHTML = metaHtml;
+
+		if (_munitionPreview) _munitionPreview.show(previewMun || null);
+
+		// ----- Event wiring (re-attached each repaint, since innerHTML
+		// in sub-areas blew the listeners away). -----
+
+		// Per-row dropdown — single-slot edit path. Also bumps the
+		// preview to the just-picked munition.
 		for (const sel of detailLoadout.querySelectorAll('select[data-hp]')) {
 			sel.addEventListener('change', (ev) => {
-				setLoadoutSlot(planeId, sel.dataset.hp, ev.target.value);
+				const munId = ev.target.value;
+				setLoadoutSlot(planeId, sel.dataset.hp, munId);
+				if (munId) _previewMunitionId = munId;
+				paintLoadout(planeId);
+			});
+			// Hovering an option doesn't bubble a usable event; fall back
+			// to focus-as-preview-trigger. Critically: do NOT call
+			// paintLoadout here — that rebuilds .loadout-list-area's
+			// innerHTML, killing the just-focused <select> before its
+			// dropdown can open. Update only the preview pane in place.
+			sel.addEventListener('focus', () => {
+				if (sel.value) updatePreviewPaneOnly(sel.value);
+			});
+		}
+
+		// Row body click (anywhere except the dropdown / button) acts as
+		// a checkbox toggle, so the user can multi-select rapidly.
+		for (const row of detailLoadout.querySelectorAll('.hardpoint-row[data-hprow]')) {
+			row.addEventListener('click', (ev) => {
+				if (ev.target.closest('select')) return;          // dropdown handles its own
+				if (ev.target.closest('[data-hpcheck]')) return;  // explicit button handles it
+				const id = row.dataset.hprow;
+				if (row.classList.contains('disabled')) return;
+				if (_selectedHps.has(id)) _selectedHps.delete(id);
+				else _selectedHps.add(id);
 				paintLoadout(planeId);
 			});
 		}
+		for (const btn of detailLoadout.querySelectorAll('[data-hpcheck]')) {
+			btn.addEventListener('click', (ev) => {
+				ev.stopPropagation();
+				const id = btn.dataset.hpcheck;
+				if (_selectedHps.has(id)) _selectedHps.delete(id);
+				else _selectedHps.add(id);
+				paintLoadout(planeId);
+			});
+		}
+
+		// Bulk toolbar.
+		const bulkSel = detailLoadout.querySelector('#bulkWeaponSelect');
+		if (bulkSel) {
+			bulkSel.addEventListener('change', () => {
+				const v = bulkSel.value;
+				if (v && v !== '__empty__') _previewMunitionId = v;
+				paintLoadout(planeId);
+			});
+			bulkSel.addEventListener('focus', () => {
+				const v = bulkSel.value;
+				if (v && v !== '__empty__') updatePreviewPaneOnly(v);
+			});
+		}
+		for (const btn of detailLoadout.querySelectorAll('[data-bulk]')) {
+			btn.addEventListener('click', () => {
+				const action = btn.dataset.bulk;
+				if (action === 'select-all') {
+					for (const hp of plane.hardpoints) {
+						if (munitionsForHardpoint(hp).length > 0) _selectedHps.add(hp.id);
+					}
+				} else if (action === 'select-none') {
+					_selectedHps.clear();
+				} else if (action === 'apply') {
+					const sel = detailLoadout.querySelector('#bulkWeaponSelect');
+					const v = sel ? sel.value : '';
+					if (!v) return;
+					const munId = v === '__empty__' ? '' : v;
+					for (const hp of plane.hardpoints) {
+						if (!_selectedHps.has(hp.id)) continue;
+						// Only assign if this hardpoint actually accepts it.
+						// Mixed selections (AAM-only slot + AGM-only slot)
+						// will silently no-op on the incompatible ones —
+						// the count-badge in the dropdown made this clear.
+						if (munId === '') {
+							setLoadoutSlot(planeId, hp.id, '');
+						} else {
+							const fits = munitionsForHardpoint(hp).some(m => m.id === munId);
+							if (fits) setLoadoutSlot(planeId, hp.id, munId);
+						}
+					}
+				}
+				paintLoadout(planeId);
+			});
+		}
+
+		// Quick-action buttons in the summary row (FILL / CLEAR).
 		for (const btn of detailLoadout.querySelectorAll('button[data-fill]')) {
 			btn.addEventListener('click', () => {
 				const what = btn.dataset.fill;
