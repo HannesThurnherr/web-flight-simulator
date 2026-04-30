@@ -835,15 +835,28 @@ A dedicated tactical situation display on the HUD. Builds the
 display surface that 6b–6g need; without it, every later sub-phase
 ships an invisible mechanic with no place to render its state.
 
+**Built on top of the existing minimap.** The minimap already does
+heading-up PPI projection with own-ship at center, sensor+datalink
+visibility gating (`_playerCanSee`), range scaling, and a 2D canvas
+overlay for icons. The radar scope IS the minimap, layered with
+EW-aware iconography and a toggle for the Cesium terrain background.
+
 **Layout:**
-- **Compact mode** (default): ~220 × 220 px panel, bottom-right of
-  HUD, always visible while a missile weapon is selected.
-- **Expanded mode** (toggled via a key, e.g. `\``): full-overlay
-  scope, ~700 × 700 px centered, dimmed cockpit underneath.
-- B-scope projection (bearing × range, own-ship at bottom-center)
-  for air-to-air. PPI optional later for ground-mapping radars.
-- Selectable range scale: cycle 10 / 20 / 40 / 80 nm via a dedicated
-  key. Range tics drawn as concentric arcs; current scale labeled.
+- **Top-down PPI projection**, own-ship at center, heading-up
+  (existing minimap behavior).
+- **Cesium-background toggle**: a key (e.g. `M`) hides the
+  `#minimapCesium` substrate. With background ON, you get the
+  current map-style minimap; OFF, you get a pure tactical radar
+  scope on a dark/grid backdrop. Both modes share the same canvas
+  overlay.
+- **Compact mode** (default): the existing minimap-container size
+  (~250 × 250 px), bottom-left of HUD.
+- **Expanded mode** (toggled via a key, e.g. `\``): the same scope
+  scaled to ~700 × 700 px centered on screen. Same draw routine,
+  same data; just bigger so the player can read dense pictures.
+- Selectable range scale: cycle 5 / 10 / 20 / 40 km via the
+  existing minimap range cycle. Range arcs (concentric circles
+  every N km) drawn on the canvas overlay; current scale labeled.
 
 **Radar FOV visualization (the cranking-friendly part):**
 - The antenna's azimuth scan limits drawn as left/right wedge
@@ -896,8 +909,10 @@ matches the user's "combine with RWR idk" intuition.
 - Mode label colored by aggression: cyan for RWS, amber for TWS,
   red for STT (the "I'm committing" mode).
 
-**Files:** new `src/ui/radarScope.js` (DOM canvas + render loop),
-extends `src/ui/hud.js` (mount point + key handler), CSS additions.
+**Files:** extends `src/ui/hud.js` (drawMinimap → drawRadarScope
+with the new overlays), CSS additions for the Cesium-background
+toggle and the expanded-mode pop-out, new key handlers in
+`src/systems/inputHandlers.js`.
 
 ### 6b — Radar modes (RWS / TWS / STT)
 
