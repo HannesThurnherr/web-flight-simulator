@@ -8,6 +8,7 @@ import { soundManager } from '../utils/soundManager';
 import { movePosition } from '../utils/math';
 import { isRadiating } from './sensorSystem.js';
 import { playerDesignation, consumeDesignationHead } from './designation.js';
+import { consumeHardpointShot } from '../plane/loadout.js';
 import { pickWingmanShooter } from './formation.js';
 
 export class WeaponSystem {
@@ -357,6 +358,14 @@ export class WeaponSystem {
 
 		weapon.lastFire = now;
 		if (weapon.ammo !== Infinity) weapon.ammo--;
+
+		// Pop one hardpoint off the per-shot plan so RCS reflects what
+		// actually still sits on the rails. No-op for the gun
+		// (Infinity ammo, no simType match), flares, or jammer beams
+		// since none of those have a hardpoint entry. Internal-bay
+		// shots leave RCS unchanged (they contributed 0 from the
+		// start). External shots subtract their rcsContributionM2.
+		consumeHardpointShot(playerState, weapon.type);
 
 		// Phase 5.5 — formation flight pool. For coord-homing strike
 		// weapons (cruise / GPS / laser-guided — any AGM or GBU), pick

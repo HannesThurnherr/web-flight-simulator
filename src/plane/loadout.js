@@ -160,6 +160,63 @@ export function effectiveRcsM2(planeId) {
 	return base + externalRcsM2(planeId);
 }
 
+// Build a per-shot consumption plan: an ordered list of every loaded
+// hardpoint with the data needed to update RCS as munitions leave the
+// rails. Used at spawn to stamp `state._loadoutHardpoints`; consumed
+// one entry at a time by `consumeHardpointShot()` on each weapon fire.
+//
+// Entry shape:
+//   { hardpointId, simType, isInternal, rcsContribM2 }
+//
+// Order matters — `consumeHardpointShot` pops the *first* match, which
+// in a real flight would be the next round to leave the rails. We use
+// the order the airframe declares its hardpoints, which is the same
+// order the loadout editor renders, which is roughly outboard-to-
+// inboard. Good enough.
+export function buildHardpointPlan(planeId) {
+	const plane = PLANES[planeId];
+	if (!plane || !Array.isArray(plane.hardpoints)) return [];
+	const lo = getLoadout(planeId);
+	const plan = [];
+	for (const hp of plane.hardpoints) {
+		const munId = lo[hp.id];
+		if (!munId) continue;
+		const m = MUNITIONS[munId];
+		if (!m) continue;
+		plan.push({
+			hardpointId:  hp.id,
+			simType:      m.simType,
+			isInternal:   hp.type === 'internal',
+			rcsContribM2: (typeof m.rcsContributionM2 === 'number') ? m.rcsContributionM2 : 0,
+		});
+	}
+	return plan;
+}
+
+// Pop the first plan entry matching this simType and update the
+// state's signature.rcs accordingly. Internal-bay shots make no
+// change (they were 0 contribution); external shots subtract their
+// contribution from the carrier's effective RCS, clamped above the
+// airframe's clean baseline (state._airframeBaselineRcs, also
+// stamped at spawn). Returns true if an entry was consumed, false
+// when the plan has nothing of that simType left (e.g. gun, flares,
+// jammer pseudo-weapon — none of which have a hardpoint).
+export function consumeHardpointShot(state, simType) {
+	if (!state || !simType) return false;
+	const plan = state._loadoutHardpoints;
+	if (!Array.isArray(plan) || plan.length === 0) return false;
+	const idx = plan.findIndex(e => e && e.simType === simType);
+	if (idx < 0) return false;
+	const entry = plan[idx];
+	plan.splice(idx, 1);
+	if (!entry.isInternal && state.signature && typeof state.signature.rcs === 'number') {
+		const baseline = (typeof state._airframeBaselineRcs === 'number')
+			? state._airframeBaselineRcs : 0;
+		state.signature.rcs = Math.max(baseline, state.signature.rcs - entry.rcsContribM2);
+	}
+	return true;
+}
+
 // Backward-compatible helper: true when externals contribute more to
 // RCS than the airframe baseline (i.e. the stealth advantage is
 // substantially degraded). Useful for a UI badge.

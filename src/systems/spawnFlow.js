@@ -30,7 +30,7 @@
 import * as Cesium from 'cesium';
 import { PlanePhysics } from '../plane/planePhysics';
 import { getActivePlane, getActivePlaneId, PLANES } from '../plane/planes';
-import { simTypeCounts, effectiveRcsM2 } from '../plane/loadout';
+import { simTypeCounts, effectiveRcsM2, buildHardpointPlan } from '../plane/loadout';
 import { SIGNATURES } from './signatures';
 import { getActiveScenario } from './scenarios';
 import { getViewer, setControlsEnabled, setRenderOptimization } from '../world/cesiumWorld';
@@ -421,10 +421,20 @@ export function setupConfirmSpawn(ctx) {
 				const planeId = getActivePlaneId();
 				const plane   = PLANES[planeId];
 				if (plane && SIGNATURES[plane.signature]) {
+					const baseline = SIGNATURES[plane.signature].rcs || 0;
 					state.signature = {
 						...SIGNATURES[plane.signature],
 						rcs: effectiveRcsM2(planeId),
 					};
+					// Per-shot RCS bookkeeping: store the airframe
+					// baseline so consumeHardpointShot() can clamp,
+					// and the ordered hardpoint plan so each fire
+					// pops exactly one entry. Externals leaving the
+					// rails subtract their rcsContributionM2;
+					// internal-bay shots are no-ops. The clean RCS is
+					// what's left once every external is gone.
+					state._airframeBaselineRcs = baseline;
+					state._loadoutHardpoints   = buildHardpointPlan(planeId);
 				}
 			}
 
