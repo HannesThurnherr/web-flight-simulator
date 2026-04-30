@@ -47,6 +47,21 @@ export class WeaponSystem {
 			// missile is loaded behind it).
 			{ id: 'missile', name: 'MBDA METEOR',      ammo: 0,  maxAmmo: 0,  fireRate: 0,
 			  lastFire: 0, type: 'METEOR',   lockRange: 180000, lockCone: 0.92,  lockTime: 0.3 },
+			// Vympel R-77 (RVV-AE / "AA-12 Adder") — Russian active-radar
+			// AAM, AMRAAM analog. Same Fox-3 fire profile as AIM-120;
+			// slightly tighter no-escape zone in our model.
+			{ id: 'missile', name: 'R-77 RVV-AE',      ammo: 0,  maxAmmo: 0,  fireRate: 0,
+			  lastFire: 0, type: 'R-77',     lockRange: 80000,  lockCone: 0.92,  lockTime: 0.3 },
+			// Vympel R-37M ("AA-13 Axehead") — long-range AESA-class
+			// BVR weapon, Mach 6 peak, designed to swat tankers / AWACS
+			// at very long range. Heavy + sluggish in terminal but the
+			// no-escape envelope is enormous.
+			{ id: 'missile', name: 'R-37M',            ammo: 0,  maxAmmo: 0,  fireRate: 0,
+			  lastFire: 0, type: 'R-37M',    lockRange: 200000, lockCone: 0.92,  lockTime: 0.3 },
+			// Vympel R-73 ("AA-11 Archer") — IR-guided WVR with TVC
+			// and a 60° off-boresight seeker. Russian AIM-9X analog.
+			{ id: 'missile', name: 'R-73',             ammo: 0,  maxAmmo: 0,  fireRate: 0,
+			  lastFire: 0, type: 'R-73',     lockRange: 20000,  lockCone: 0.0,   lockTime: 0.4 },
 			// AGM-88 HARM. Anti-radiation seeker — passive, no AESA
 			// lock required. The seeker scans hostile radiating units
 			// at launch and auto-picks the strongest in cone. id='agm'
