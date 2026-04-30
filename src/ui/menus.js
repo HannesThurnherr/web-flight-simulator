@@ -330,23 +330,21 @@ export function setupGlobalKeybinds(ctx) {
 			return;
 		}
 
-		// 6a — radar / SA scope mode toggles, cockpit-only. M flips the
-		// minimap's Cesium terrain background; with it off the canvas
-		// overlay alone renders on a dark grid for a "pure tactical
-		// scope" look. ` (backtick) flips the expanded full-screen
-		// pop-out. Strike planner has its own L/R/A/C bindings; since
-		// these only fire when the planner is INACTIVE, the two don't
-		// collide.
+		// 6a — radar / SA scope mode cycle, cockpit-only. ' (apostrophe)
+		// cycles through three display states:
+		//   normal               — Cesium terrain background visible (default minimap)
+		//   no-bg compact        — terrain hidden; pure tactical scope on dark grid
+		//   no-bg expanded       — terrain hidden; scope scaled to full-screen overlay
+		// Single key keeps the binding count down; M is reserved by the
+		// commander view, and ` is awkward on Swiss layouts (AltGr).
+		// Strike planner has its own A/C/L/R bindings — these only
+		// fire when the planner is INACTIVE so the two don't collide.
+		// See KEYBINDS.md for the canonical bind list.
 		if (ctx.currentState === 'FLYING' && ctx.hud &&
 			!(ctx.commanderView && ctx.commanderView.active) &&
 			!(ctx.strikePlannerView && ctx.strikePlannerView.active)) {
-			if (key === 'm') {
-				ctx.hud.toggleRadarBackground();
-				e.preventDefault();
-				return;
-			}
-			if (key === '`') {
-				ctx.hud.toggleRadarExpanded();
+			if (key === "'") {
+				ctx.hud.cycleRadarMode();
 				e.preventDefault();
 				return;
 			}

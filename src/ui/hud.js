@@ -1230,15 +1230,21 @@ export class HUD {
 		this.minimapRange = range;
 	}
 
-	// 6a — radar/SA scope mode toggles. The container's classList drives
-	// the styling (CSS handles the layout); we just flip the JS state and
-	// call _applyRadarMode() to push the change into the DOM.
-	toggleRadarBackground() {
-		this.radarBackground = !this.radarBackground;
-		this._applyRadarMode();
-	}
-	toggleRadarExpanded() {
-		this.radarExpanded = !this.radarExpanded;
+	// 6a — radar/SA scope mode cycle. Three states, advanced by the '
+	// keybind (see src/ui/menus.js / KEYBINDS.md):
+	//
+	//   0 = normal             (background ON,  compact)  — default minimap
+	//   1 = scope-only compact (background OFF, compact)  — F-16 MFD look
+	//   2 = scope-only expanded(background OFF, expanded) — full-screen scope
+	//
+	// `radarBackground` and `radarExpanded` are derived from the cycle
+	// index, then pushed into the DOM via _applyRadarMode(). The
+	// container's classList drives the styling (CSS handles the layout).
+	cycleRadarMode() {
+		const idx = (this._radarModeIndex || 0) + 1;
+		this._radarModeIndex = idx % 3;
+		this.radarBackground = (this._radarModeIndex === 0);
+		this.radarExpanded   = (this._radarModeIndex === 2);
 		this._applyRadarMode();
 	}
 	_applyRadarMode() {
@@ -2443,48 +2449,12 @@ export class HUD {
 			ctx.stroke();
 		}
 
-		// 6a — radar FOV wedge. Anchored at own-ship (canvas center),
-		// projected forward in the body frame. Because the canvas is
-		// already counter-rotated by the leader's heading at the top
-		// of drawMinimap, the wedge is simply two rays extending
-		// upward (north-up in the rotated frame) from the center,
-		// fanning out by ±radar.fovH. Sweeps relative to ground-
-		// stabilized contacts as the player turns / cranks — gives an
-		// immediate "is the bandit drifting toward the gimbal edge"
-		// read, which is the whole point of having this scope.
-		const radar = state.sensors && state.sensors.radar;
-		if (radar && radar.enabled !== false && radar.active && radar.fovH != null) {
-			const fovH = radar.fovH;
-			const wedgeR = radius * 0.95;
-			const fovOn  = !!radar.active;
-			ctx.save();
-			ctx.strokeStyle = fovOn ? 'rgba(0, 255, 80, 0.55)' : 'rgba(120, 200, 120, 0.25)';
-			ctx.fillStyle   = fovOn ? 'rgba(0, 255, 80, 0.06)' : 'rgba(120, 200, 120, 0.02)';
-			ctx.lineWidth = 1.2;
-			ctx.beginPath();
-			ctx.moveTo(0, 0);
-			// Negative Y is forward in the rotated frame (the canvas
-			// uses screen-Y-down, and drawMinimap rotates by -heading
-			// so own forward points up). FOV opens symmetric around
-			// straight-up.
-			ctx.lineTo(-Math.sin(fovH) * wedgeR, -Math.cos(fovH) * wedgeR);
-			ctx.arc(0, 0, wedgeR,
-				-Math.PI / 2 - fovH, -Math.PI / 2 + fovH, false);
-			ctx.lineTo(0, 0);
-			ctx.fill();
-			ctx.stroke();
-			// Boresight line — solid down the middle of the wedge so
-			// the antenna's "look-here" direction is unambiguous.
-			ctx.beginPath();
-			ctx.strokeStyle = fovOn ? 'rgba(0, 255, 80, 0.85)' : 'rgba(120, 200, 120, 0.4)';
-			ctx.lineWidth = 1.0;
-			ctx.setLineDash([4, 4]);
-			ctx.moveTo(0, 0);
-			ctx.lineTo(0, -wedgeR);
-			ctx.stroke();
-			ctx.setLineDash([]);
-			ctx.restore();
-		}
+		// FOV wedge moved to AFTER the rotation block so it draws in
+		// screen-axis-aligned coords. (Drawn here, inside the rotated
+		// frame, "up on canvas" doesn't equal "forward of the player"
+		// — it equals world-north — and the wedge ends up locked to
+		// north regardless of player heading. See block below the
+		// rotation restore.)
 
 		npcs.forEach(npc => {
 			// Same visibility gate as the pause-menu minimap — fused
@@ -2562,6 +2532,51 @@ export class HUD {
 		}
 
 		ctx.restore();
+
+		// 6a — radar FOV wedge. Drawn in screen-axis-aligned coords
+		// (after the heading-rotated block above) because the scope is
+		// HEADING-UP: forward direction is always straight UP on
+		// canvas regardless of where the player is facing. Drawing
+		// inside the rotated frame would lock the wedge to world-
+		// north instead of the player's nose. As the player turns,
+		// the wedge stays visually fixed (pointing up); ground-
+		// stabilized contacts inside the rotated block visibly drift
+		// across the wedge's azimuth — exactly the cranking-vs-
+		// gimbal-edge cue this view is for.
+		const radar = state.sensors && state.sensors.radar;
+		if (radar && radar.enabled !== false && radar.fovH != null) {
+			const fovH = radar.fovH;
+			const wedgeR = radius;
+			const fovOn  = !!radar.active && radar.mode !== 'off';
+			ctx.save();
+			ctx.translate(centerX, centerY);
+			ctx.strokeStyle = fovOn ? 'rgba(0, 255, 80, 0.55)' : 'rgba(120, 200, 120, 0.25)';
+			ctx.fillStyle   = fovOn ? 'rgba(0, 255, 80, 0.06)' : 'rgba(120, 200, 120, 0.02)';
+			ctx.lineWidth = 1.2;
+			ctx.beginPath();
+			ctx.moveTo(0, 0);
+			// Wedge fans symmetric around the straight-up direction
+			// (canvas −Y). At angle ±fovH from up, the rim points are:
+			//   left edge:  (−sin fovH, −cos fovH) · wedgeR
+			//   right edge: (+sin fovH, −cos fovH) · wedgeR
+			ctx.lineTo(-Math.sin(fovH) * wedgeR, -Math.cos(fovH) * wedgeR);
+			ctx.arc(0, 0, wedgeR,
+				-Math.PI / 2 - fovH, -Math.PI / 2 + fovH, false);
+			ctx.lineTo(0, 0);
+			ctx.fill();
+			ctx.stroke();
+			// Boresight line — solid down the middle of the wedge so
+			// the antenna's "look-here" direction is unambiguous.
+			ctx.beginPath();
+			ctx.strokeStyle = fovOn ? 'rgba(0, 255, 80, 0.85)' : 'rgba(120, 200, 120, 0.4)';
+			ctx.lineWidth = 1.0;
+			ctx.setLineDash([4, 4]);
+			ctx.moveTo(0, 0);
+			ctx.lineTo(0, -wedgeR);
+			ctx.stroke();
+			ctx.setLineDash([]);
+			ctx.restore();
+		}
 
 		const pad = 12;
 		const edgeX = centerX - pad;
@@ -2674,7 +2689,7 @@ export class HUD {
 			ctx.textAlign = 'center';
 			ctx.fillStyle = 'rgba(0, 255, 0, 0.55)';
 			ctx.font = '9px AceCombat, monospace';
-			ctx.fillText('M: bg · `: collapse · R: emcon', w / 2, h - 4);
+			ctx.fillText("' cycle scope · R emcon", w / 2, h - 4);
 		}
 		ctx.restore();
 	}
