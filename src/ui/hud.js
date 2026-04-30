@@ -3,6 +3,7 @@ import { calculateDistance } from '../world/regions';
 import * as Cesium from 'cesium';
 import { releaseEnvelope, isStrikeWeapon } from '../systems/strikeEnvelope.js';
 import { totalWingmanAmmo } from '../systems/formation.js';
+import { getTeamDatalink } from '../systems/teamDatalink.js';
 import { MUNITIONS } from '../weapon/munitions.js';
 import { munitionIdForSimType } from '../weapon/munitionFactory.js';
 import { playerDesignation, designationQueue } from '../systems/designation.js';
@@ -17,6 +18,33 @@ function _hudTeamColor(team) {
 	if (team === 'hostile-red')  return '#ff4040';
 	if (team === 'hostile-blue') return '#4080ff';
 	return '#ff4040';
+}
+
+// 6d — IFF-aware color. Looks up the player's CURRENT perception of
+// an npc (from own sensor contacts first, then datalink fusion). If
+// the contact is stamped 'unknown' anywhere along the way, returns
+// amber; if 'friendly' returns cyan; if 'hostile' returns the
+// faction-team color from _hudTeamColor. With omniscient mode on
+// the IFF pipeline always returns truth so this collapses to
+// _hudTeamColor(npc.team) — preserving the legacy look.
+const HUD_IFF_AMBER    = '#ffb000';
+const HUD_IFF_FRIENDLY = '#40d8ff';
+function _hudIffColor(playerState, npc) {
+	if (!playerState || !npc) return _hudTeamColor(npc && npc.team);
+	let iff = null;
+	const own = playerState.contacts && playerState.contacts.get(npc);
+	if (own) iff = own.iffStatus;
+	if (!iff) {
+		const dl = getTeamDatalink(playerState.team || 'friendly');
+		const fused = dl && dl.contacts && dl.contacts.get(npc);
+		if (fused) iff = fused.iffStatus;
+	}
+	if (iff === 'unknown')  return HUD_IFF_AMBER;
+	if (iff === 'friendly') return HUD_IFF_FRIENDLY;
+	// 'hostile' OR no fused/own data (which means we can see it via
+	// some other channel like briefed intel — assume the team color
+	// is correct in that case).
+	return _hudTeamColor(npc.team);
 }
 
 export class HUD {
@@ -1906,7 +1934,18 @@ export class HUD {
 
 			if (px < 0 || px > w || py < 0 || py > h) return;
 
-			const teamC = _hudTeamColor(npc.team);
+			const teamC = _hudIffColor(state, npc);
+			// 6d — first-time unknown encounter teaches the player the
+			// system. One-shot toast on the first amber contact ever
+			// (per session) so they connect "amber = uncertain ID,
+			// don't shoot blindly" before they fire.
+			if (teamC === HUD_IFF_AMBER && !this._iffUnknownToastShown) {
+				this._iffUnknownToastShown = true;
+				if (this.showRadarToast) {
+					this.showRadarToast('UNKNOWN — IFF FAIL — VISUAL ID NEEDED',
+						'rgba(255, 176, 0, 0.95)', 4.0);
+				}
+			}
 			ctx.strokeStyle = teamC;
 			ctx.lineWidth = 2;
 			ctx.save();
@@ -2535,7 +2574,7 @@ export class HUD {
 			ctx.translate(px, py);
 			ctx.rotate(npc.heading * Math.PI / 180);
 
-			ctx.fillStyle = _hudTeamColor(npc.team);
+			ctx.fillStyle = _hudIffColor(state, npc);
 			ctx.shadowBlur = 0;
 			ctx.beginPath();
 			ctx.moveTo(0, -8);
@@ -2898,11 +2937,13 @@ export class HUD {
 		marker.dot.style.display = 'none';
 		marker.offscreenName.style.display = 'none';
 
-		// Color the diamond by team affiliation. Friendlies render
-		// cyan so a merged furball is immediately readable — wingmen
-		// stand out from hostiles. Hostile-red / hostile-blue each get
-		// their faction color; anything unknown falls through to red.
-		const teamC = _hudTeamColor(npc.team);
+		// 6d — color the diamond by IFF perception, not raw team.
+		// Realistic IFF can leave a contact 'unknown' until visual ID
+		// or NCTR resolves it; that comes through as amber here so
+		// the player has clear ROE pressure (don't shoot the amber!).
+		// Omniscient mode bypasses identifyContact and this collapses
+		// back to team-based coloring.
+		const teamC = _hudIffColor(state, npc);
 		marker.diamond.style.borderColor = teamC;
 		marker.diamond.style.boxShadow = `0 0 10px ${teamC}80`;
 

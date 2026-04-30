@@ -165,6 +165,12 @@ export function setupModalListeners(ctx) {
 		gameSettings.showHorizonLines = document.getElementById('showHorizonLines').checked;
 		gameSettings.soundEnabled     = document.getElementById('soundEnabled').checked;
 		gameSettings.minimapRange     = parseInt(document.getElementById('minimapRange').value);
+		// Phase 6d — sensor-fidelity panel.
+		const iffOm = document.getElementById('iffOmniscient');
+		if (iffOm) {
+			gameSettings.iff = gameSettings.iff || {};
+			gameSettings.iff.omniscient = !!iffOm.checked;
+		}
 
 		saveSettings();
 		applySettings({ hud: ctx.hud, controller: ctx.controller });

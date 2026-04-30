@@ -976,20 +976,67 @@ bursts only when needed.
 - Combined with terrain masking (already in sim) and wide-area ISR
   (5j), enables real silent ingress to AMRAAM range.
 
-### 6d — IFF + unknown contact state
+### 6d — IFF + unknown contact state, sensor-quality realism
 
-The "perfect team filter" goes away. IFF interrogation can fail.
+The "perfect team filter" goes away. ID uncertainty propagates
+through every channel (own sensors → datalink → planner) so we
+don't ship realism on the radar but undermine it via a perfect DL.
+
+#### 6d.1 — IFF identification
 
 - Replaces `team === team` with `identifyContact(observer, target)`
   returning `'friendly' | 'hostile' | 'unknown'`.
-- Drivers: IFF interrogation success rate, visual-ID at close
-  range (auto-resolves), NCTR at high signal strength (resolves to
-  hostile if no friendly squawk).
-- New color on the scope + RWR + HUD: **amber** for unknown.
-- First unknown contact pops a brief `UNKNOWN — IFF FAIL` tag so
-  the player learns the system.
-- Shooting unknown carries blue-on-blue risk — adds real ROE
-  pressure to BVR shots.
+- Stamping happens at SOURCE: the sensor that paints the contact
+  records the IFF result on the contact object. Downstream consumers
+  (datalink fusion, HUD diamonds, scope, RWR, planner) read the
+  stamped value rather than re-deriving from `team`. So when AWACS
+  paints something as 'unknown', the whole team sees 'unknown'
+  until someone resolves it.
+- Resolution paths:
+    visual ID — any contact within ~5 km in eyeball cone auto-resolves
+    NCTR     — radar contact at signal > threshold resolves to hostile
+               unless friendly IFF squawk
+- Briefed / ELINT / satellite intel → `iffStatus: 'hostile'` (DB
+  knows what it is).
+- Color: amber on scope, RWR, HUD diamonds, planner markers. First
+  unknown contact pops a one-shot "UNKNOWN — IFF FAIL" toast.
+- Shooting unknown carries blue-on-blue risk if it turns out to be
+  friendly.
+
+#### 6d.2 — Velocity uncertainty (sensor-quality realism)
+
+Currently radar contacts carry ground-truth velocity. Real radars
+report a *range-rate* (Doppler-resolved, accurate) plus an inferred
+*lateral velocity* (poor at long range, gets better with dwell + signal).
+
+- Stamp each radar contact with `vNoise` proportional to inverse
+  signal strength. At nominal range stddev ≈ 30 m/s lateral; at half
+  nominal ~15 m/s; at signal=1.0 (close + strong) ~5 m/s.
+- IRST/visual report no velocity at all (range/bearing only).
+- Datalink fusion uses the freshest source's noisy velocity rather
+  than picking the cleanest — the picture should reflect what the
+  team actually knows.
+- Affects AAM midcourse handoff (the missile picks up the launcher's
+  noisy velocity estimate, not ground truth) and the bandit-tracking
+  HUD readouts.
+
+#### 6d.3 — Omniscient mode (arcade override)
+
+Settings toggle: `gameSettings.iff.omniscient` (default `false`).
+When true, `identifyContact()` always returns the true team and
+velocity stamps revert to ground truth. Lets the player play
+"perfect SA" if they want a more arcade experience without
+removing the realistic default.
+
+#### Sequencing within 6d
+
+1. Settings toggle + scaffolding: gameSettings.iff, identifyContact
+2. IFF stamping at sensor sources (radar/IR/visual)
+3. Datalink fusion carries iffStatus
+4. Scope, HUD, planner amber-coding for unknown
+5. Visual-ID + NCTR resolution
+6. Friendly-fire penalty (kill log + score)
+7. Velocity uncertainty (6d.2 — separate commit, builds on 6d.1)
 
 ### 6e — Jamming (with full UX surface)
 

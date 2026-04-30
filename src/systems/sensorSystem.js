@@ -3,6 +3,7 @@ import {
 	rcsAspectFactor, irAspectFactor, visualAspectFactor,
 	aspectAngleFromVectors,
 } from './signatures.js';
+import { identifyContact } from './iff.js';
 
 // ============================================================================
 // Sensor system — three independent detection channels wired through a shared
@@ -333,10 +334,26 @@ function ensureRwr(observer) {
 function touchContact(contacts, target) {
 	let c = contacts.get(target);
 	if (!c) {
-		c = { target, radar: null, ir: null, visual: null, fused: null };
+		c = { target, radar: null, ir: null, visual: null, fused: null,
+			iffStatus: 'unknown' };
 		contacts.set(target, c);
 	}
 	return c;
+}
+
+// 6d — upgrade-only IFF merge. Each channel (radar, IR, visual) calls
+// identifyContact() and proposes a status. Multiple channels touching
+// the same contact each frame should NOT let a weaker channel
+// (e.g. IR with no range → 'unknown') downgrade a resolved one
+// (e.g. visual ID at 3 km → 'hostile'). So we only allow:
+//   unknown → friendly | hostile  (any resolution counts as upgrade)
+//   hostile → friendly  (visual ID overrules NCTR; rare)
+//   friendly → hostile  (visual ID can re-resolve too)
+//   {anything} → unknown    NOT allowed (no downgrades)
+function _mergeIff(contact, proposed) {
+	if (!proposed) return;
+	if (proposed === 'unknown') return;     // no downgrades
+	contact.iffStatus = proposed;
 }
 
 // ---- Debug toggles ---------------------------------------------------------
@@ -521,6 +538,16 @@ function scanRadar(observer, target, now) {
 		signal: det.signal,
 		lastSeen: now,
 	};
+	// Phase 6d — IFF stamping at the source. NCTR + IFF interrogation
+	// run as part of the radar scan; the result is sticky on the
+	// contact record so downstream readers (datalink, HUD, scope, RWR,
+	// strike planner) all see the same classification without
+	// re-deriving it from target.team.
+	_mergeIff(contact, identifyContact(observer, target, {
+		signal: det.signal,
+		range:  det.range,
+		inEyeball: false,
+	}));
 
 	// RWR on the target: "observer is painting me". Bearing is relative to
 	// the target's own body, not the observer's.
@@ -582,6 +609,12 @@ function scanIR(observer, target, now) {
 		// No range directly — IR is a passive bearing-only channel.
 		lastSeen: now,
 	};
+	// 6d — IR alone can't run NCTR (no Doppler / size resolution
+	// like radar) so the strongest signal here is "something hot
+	// in the cone" — fall through identifyContact's IFF
+	// interrogation, which still works coalition-wise. Range is
+	// unknown so visual ID can't trigger from IR alone.
+	_mergeIff(contact, identifyContact(observer, target, { signal }));
 	return true;
 }
 
@@ -619,6 +652,12 @@ function scanVisual(observer, target, now) {
 		classHint: sig.unitClass,
 		lastSeen: now,
 	};
+	// 6d — visual is the most reliable IFF resolver. Anything close
+	// enough + in the eyeball cone gets visual-ID'd to truth.
+	_mergeIff(contact, identifyContact(observer, target, {
+		range: los.losLenMeters,
+		inEyeball: true,
+	}));
 	return true;
 }
 

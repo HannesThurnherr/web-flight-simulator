@@ -37,6 +37,13 @@ export const gameSettings = {
 	// do when out of strike-class ammo: 'rtb' (orbit spawn point) or
 	// 'cap' (orbit player). Persisted so the choice survives a reload.
 	formation: { count: 0, breakBehavior: 'rtb' },
+	// Phase 6d — IFF realism. The default (omniscient: false) runs the
+	// realistic identifyContact() pipeline: radar contacts are stamped
+	// with iffStatus 'friendly' / 'hostile' / 'unknown', NCTR + visual
+	// ID resolve unknowns at close range. With omniscient: true the
+	// pipeline is bypassed and contacts are always perfectly tagged
+	// from .team — the previous behavior, kept as an opt-in arcade mode.
+	iff: { omniscient: false },
 };
 
 // Read the stored settings blob into `gameSettings` WITHOUT touching any
@@ -78,6 +85,8 @@ export function updateSettingsUI() {
 	document.getElementById('showHorizonLines').checked = gameSettings.showHorizonLines;
 	document.getElementById('soundEnabled').checked = gameSettings.soundEnabled;
 	document.getElementById('minimapRange').value = gameSettings.minimapRange.toString();
+	const iffOm = document.getElementById('iffOmniscient');
+	if (iffOm) iffOm.checked = !!(gameSettings.iff && gameSettings.iff.omniscient);
 }
 
 // Apply the current settings to the live game systems. Safe to call

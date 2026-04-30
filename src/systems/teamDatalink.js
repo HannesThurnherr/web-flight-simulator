@@ -121,6 +121,7 @@ export class TeamDatalink {
 			alt: target.alt,
 			uncertaintyM: (level === 'suspected') ? (intel.uncertaintyM || 3000) : 0,
 			sourceUnit: null,
+			iffStatus: "hostile",
 			firstSeen: now,
 			lastSeen:  now,
 		});
@@ -155,6 +156,7 @@ export class TeamDatalink {
 			alt: target.alt,
 			uncertaintyM: 0,
 			sourceUnit: null,
+			iffStatus: "hostile",
 			firstSeen: existing ? existing.firstSeen : now,
 			lastSeen:  now,
 		});
@@ -197,6 +199,7 @@ export class TeamDatalink {
 			alt: target.alt,
 			uncertaintyM: 0,
 			sourceUnit: null,
+			iffStatus: "hostile",
 			memoryS,
 			firstSeen: existing ? existing.firstSeen : now,
 			lastSeen:  now,
@@ -214,7 +217,19 @@ export class TeamDatalink {
 		for (const [target, c] of unit.contacts) {
 			if (!c || !c.radar) continue;
 			if (!target || target.destroyed || target.active === false) continue;
-			if (target.team === this.team) continue; // don't broadcast friendlies
+			// 6d — datalink no longer auto-filters out same-team
+			// contacts via target.team. With realistic IFF the
+			// publishing unit may have stamped this contact as
+			// 'unknown' even though target.team matches; the fused
+			// picture should reflect what the team actually saw, not
+			// ground truth. We still skip resolved-friendly contacts
+			// — broadcasting "your wingman is at lat/lon" is noise —
+			// but unknown / hostile contacts go through regardless of
+			// team. Note: with omniscient mode on, identifyContact
+			// returns truth and target.team === this.team is
+			// equivalent to iffStatus === 'friendly', so this branch
+			// preserves the legacy filter for that mode.
+			if (c.iffStatus === 'friendly') continue;
 
 			// Keep the freshest-published copy. If two team-mates publish
 			// the same target the same frame, the second overwrites the
@@ -232,6 +247,13 @@ export class TeamDatalink {
 				vU:       vel.z,
 				range:    c.radar.range,
 				quality:  Math.max(0.2, Math.min(1, c.radar.signal || 0.5)),
+				// Phase 6d — propagate the publishing source's IFF
+				// classification. Consumers (HUD, scope, planner) read
+				// this rather than re-deriving from .team. If a
+				// teammate later resolves the unknown via visual ID,
+				// the next publishContacts pass overwrites with the
+				// resolved status.
+				iffStatus: c.iffStatus || 'unknown',
 			});
 		}
 	}

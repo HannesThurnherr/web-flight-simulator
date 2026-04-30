@@ -169,6 +169,22 @@
 					<option value="10">10km (Regional)</option>
 				</select>
 			</div>
+
+			<h3>SENSOR FIDELITY</h3>
+			<div class="setting-item" style="flex-direction: column; align-items: flex-start;">
+				<div style="display: flex; width: 100%; align-items: center; justify-content: space-between;">
+					<span>Omniscient SA (arcade mode)</span>
+					<input type="checkbox" id="iffOmniscient">
+				</div>
+				<div style="font-size: 11px; opacity: 0.6; margin-top: 4px; max-width: 360px;">
+					When ON, every contact is perfectly tagged friendly /
+					hostile from team membership (the legacy behavior).
+					When OFF (default), IFF can fail — contacts may show
+					as UNKNOWN amber until visual ID at close range or
+					NCTR resolves them, and shooting unknown carries
+					blue-on-blue risk.
+				</div>
+			</div>
 		</div>
 		<div class="modal-footer">
 			<button id="saveOptionsBtn">CONFIRM & SAVE</button>
