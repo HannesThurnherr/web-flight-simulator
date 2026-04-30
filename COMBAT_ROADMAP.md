@@ -1060,7 +1060,7 @@ Both passive (jammers in the world degrade your sensors) and active
 (player engages jammers as a weapon AND as a countermeasure). Built
 in layers so we ship visible mechanics early.
 
-#### 6e.1 — Core JammerSubsystem + receive-side visualization
+#### 6e.1 — Core JammerSubsystem + receive-side visualization  ✅ implemented
 
 The plumbing every later sub-phase needs.
 
@@ -1082,7 +1082,7 @@ The plumbing every later sub-phase needs.
   `RNG: 80 → 32 km · JAM 045°`.
 - HUD toast on jam-acquired / burnthrough state changes.
 
-#### 6e.2 — Player targeted jamming (offensive, sustained)
+#### 6e.2 — Player targeted jamming (offensive, sustained)  ✅ implemented
 
 Player jet gets an `AN/ALQ-218`-class jammer pod.
 
@@ -1132,7 +1132,7 @@ Player jet gets an `AN/ALQ-218`-class jammer pod.
   in cone** — friendlies in the cone get DL drops just like
   hostiles, so don't shotgun blast.
 
-#### 6e.3 — Reactive defensive jamming (sustained, automatic)
+#### 6e.3 — Reactive defensive jamming (sustained, automatic)  ✅ implemented
 
 Same pod, "DEFENSIVE" mode. Replaces the "burst-charges" model —
 real ECM stays on through a missile's full endgame, not a 2 s pulse.
@@ -1197,7 +1197,7 @@ dispenser pattern.
 - NPC AI (Phase 1.5 unblocked) dispenses chaff coordinated with
   notching.
 
-### 6g — Datalink fusion upgrade
+### 6g — Datalink fusion upgrade  ✅ implemented
 
 Mostly invisible improvement to existing fused picture; ships last.
 
