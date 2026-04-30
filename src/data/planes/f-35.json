@@ -11,6 +11,11 @@
 	"realLengthM": 15.67,
 	"signature": "stealth_fighter",
 	"engineCount": 1,
+	"nozzle": {
+		"xRatio": 0.0,
+		"yRatio": -0.022,
+		"zRatio": 0.85
+	},
 	"physicsOverrides": {
 		"mass": 17000,
 		"wingArea": 42.7,

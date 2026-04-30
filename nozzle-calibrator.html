@@ -1,0 +1,380 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Nozzle Calibrator</title>
+<style>
+  body { margin: 0; background: #111; color: #ddd; font: 13px/1.4 system-ui, sans-serif; overflow: hidden; }
+  #app { display: flex; flex-direction: column; height: 100vh; }
+  #topbar { padding: 8px 12px; background: #1a1a1a; border-bottom: 1px solid #333;
+            display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+  #topbar h1 { font-size: 14px; margin: 0 8px 0 0; color: #ffb84a; }
+  #topbar .info { color: #aaa; }
+  #topbar button { background: #2a3a4a; color: #fff; border: 1px solid #456;
+                   padding: 6px 12px; border-radius: 3px; cursor: pointer; font: inherit; }
+  #topbar button:hover { background: #3a4a5a; }
+  #topbar button:disabled { opacity: 0.4; cursor: default; }
+  #stage { flex: 1; position: relative; overflow: hidden; }
+  canvas { display: block; cursor: crosshair; width: 100% !important; height: 100% !important; }
+  .marker {
+    position: absolute; width: 16px; height: 16px; border: 2px solid #ff4444;
+    border-radius: 50%; transform: translate(-50%, -50%); pointer-events: none;
+    box-shadow: 0 0 10px #ff4444;
+  }
+  .marker.mirror { border-color: #ff8844; opacity: 0.7; }
+  .marker.pair2  { border-color: #44aaff; box-shadow: 0 0 10px #44aaff; }
+  .marker.pair2.mirror { border-color: #88ccff; }
+  #picker, #output {
+    position: absolute; inset: 0; background: rgba(0,0,0,0.92);
+    display: flex; align-items: center; justify-content: center;
+    flex-direction: column; gap: 16px; z-index: 10; padding: 24px;
+  }
+  #output { display: none; }
+  #picker p, #output p { max-width: 580px; text-align: center; color: #ccc; }
+  #output { align-items: stretch; }
+  #output textarea { flex: 1; background: #0a0a0a; color: #cfc;
+                     border: 1px solid #333; padding: 12px;
+                     font: 12px/1.4 ui-monospace, Menlo, monospace; resize: none; }
+  #values { color: #6c8; font: 12px ui-monospace, Menlo, monospace; }
+  .hint { color: #888; font-size: 12px; }
+  code { background: #222; padding: 1px 5px; border-radius: 2px; }
+</style>
+</head>
+<body>
+<div id="app">
+  <div id="topbar">
+    <h1 id="title">Nozzle Calibrator</h1>
+    <span class="info" id="progress"></span>
+    <span id="values"></span>
+    <span style="flex:1"></span>
+    <button id="flip" title="If you're seeing the front of the plane, flip">Flip View</button>
+    <button id="reset">Reset Click</button>
+    <button id="skip">Skip</button>
+    <button id="next" disabled>Save &amp; Next →</button>
+  </div>
+  <div id="stage">
+    <div id="marker"        class="marker"               style="display:none"></div>
+    <div id="marker-mirror" class="marker mirror"        style="display:none"></div>
+    <div id="marker2"       class="marker pair2"         style="display:none"></div>
+    <div id="marker2-mirror" class="marker pair2 mirror" style="display:none"></div>
+
+    <div id="picker">
+      <h2 style="color:#ffb84a;margin:0">Nozzle Calibrator</h2>
+      <p>Select all 8 GLBs from <code>public/assets/models/</code> in one shot
+         (open the dialog, navigate to that folder, ⌘A, Open). The page matches files
+         by name to the inlined plane configs.</p>
+      <input type="file" id="filein" accept=".glb,model/gltf-binary" multiple>
+      <p class="hint">After loading: click the center of one engine. The other side mirrors
+         automatically. Use <b>Flip View</b> if you're seeing the front by mistake.
+         Use <b>Skip</b> to leave the existing nozzle config untouched.</p>
+    </div>
+
+    <div id="output">
+      <h2 style="color:#ffb84a;margin:0 0 8px">Done — calibrated nozzle blocks</h2>
+      <p style="text-align:left" class="hint">
+        Each entry is the <code>nozzle</code> field for that plane's JSON.
+        <code>zRatio</code> preserved from prior config (or 0.85 default) since you can't
+        see depth from behind. Patches below are ready to paste over the existing
+        <code>nozzle</code> object in <code>src/data/planes/&lt;id&gt;.json</code>.
+      </p>
+      <textarea id="outtext" readonly></textarea>
+      <div style="display:flex;gap:8px">
+        <button id="copy">Copy to Clipboard</button>
+        <button id="download">Download nozzles.json</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://esm.sh/three@0.182.0",
+    "three/addons/": "https://esm.sh/three@0.182.0/examples/jsm/"
+  }
+}
+</script>
+<script type="module">
+import * as THREE from 'three';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+
+// id, model filename, modelRotation.y (deg), prior nozzle (preserves zRatio)
+const PLANES = [
+  { id:'f-15',           file:'f-15-strike-eagle.glb',    name:'F-15EX Eagle II',      rotY:90, prev:{xRatio:0.055,yRatio:-0.18,zRatio:0.80} },
+  { id:'f-16',           file:'f-16c.glb',                name:'F-16C Viper',          rotY:90, prev:null },
+  { id:'f-22',           file:'f-22-raptor.glb',          name:'F-22 Raptor',          rotY:90, prev:null },
+  { id:'f-35',           file:'f-35a-lightning-ii.glb',   name:'F-35A Lightning II',   rotY:90, prev:null },
+  { id:'fa-18f',         file:'fa-18f-super-hornet.glb',  name:'F/A-18F Super Hornet', rotY:90, prev:{xRatio:0.045,yRatio:-0.12,zRatio:0.82} },
+  { id:'su-35',          file:'su-35.glb',                name:'Su-35S Flanker-E',     rotY:90, prev:{xRatio:0.06, yRatio:-0.15,zRatio:0.80} },
+  { id:'rafale-m',       file:'rafale-m.glb',             name:'Dassault Rafale M',    rotY:90, prev:{xRatio:0.04, yRatio:-0.12,zRatio:0.85} },
+  { id:'ea-18g-growler', file:'ea-18g-growler.glb',       name:'EA-18G Growler',       rotY:90, prev:null },
+  // B-2: 4 engines. Click inner pair first, then outer pair. Both auto-mirror.
+  { id:'b-2',            file:'b-2-spirit.glb',           name:'B-2A Spirit (inner pair, then outer pair)', rotY:90, prev:{xRatio:0.055,yRatio:0.10,zRatio:0.40}, clicks:2 },
+];
+
+const files = new Map();
+let idx = 0;
+let cameraSide = 1;          // +1: camera at +Z (post-rotation rear); -1: flipped
+const results = {};          // id -> {xRatio, yRatio, zRatio}
+
+const stage      = document.getElementById('stage');
+const marker     = document.getElementById('marker');
+const markerM    = document.getElementById('marker-mirror');
+const marker2    = document.getElementById('marker2');
+const marker2M   = document.getElementById('marker2-mirror');
+const ALL_MARKERS = [marker, markerM, marker2, marker2M];
+function hideAllMarkers() { for (const m of ALL_MARKERS) m.style.display = 'none'; }
+const titleEl    = document.getElementById('title');
+const progressEl = document.getElementById('progress');
+const valuesEl   = document.getElementById('values');
+const nextBtn    = document.getElementById('next');
+const flipBtn    = document.getElementById('flip');
+const resetBtn   = document.getElementById('reset');
+const skipBtn    = document.getElementById('skip');
+const picker     = document.getElementById('picker');
+const output     = document.getElementById('output');
+const outtext    = document.getElementById('outtext');
+const fileInput  = document.getElementById('filein');
+const copyBtn    = document.getElementById('copy');
+const downloadBtn= document.getElementById('download');
+
+// --- three.js scene ----------------------------------------------------------
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x222831);
+const camera = new THREE.PerspectiveCamera(35, 1, 0.05, 5000);
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+stage.appendChild(renderer.domElement);
+
+scene.add(new THREE.HemisphereLight(0xffffff, 0x223344, 0.7));
+const d1 = new THREE.DirectionalLight(0xffffff, 0.9); d1.position.set(5,10,7);  scene.add(d1);
+const d2 = new THREE.DirectionalLight(0xffeecc, 0.4); d2.position.set(-5,3,-5); scene.add(d2);
+
+let currentModel = null;
+let currentBBox  = null;
+let currentSize  = null;
+let currentClicks = [];      // [{xRatio, yRatio, hitWorld}, ...]
+let requiredClicks = 1;
+
+function resizeRenderer() {
+  const r = stage.getBoundingClientRect();
+  renderer.setPixelRatio(devicePixelRatio);
+  renderer.setSize(r.width, r.height, true);
+  camera.aspect = r.width / Math.max(1, r.height);
+  camera.updateProjectionMatrix();
+  redrawMarkers();
+}
+window.addEventListener('resize', resizeRenderer);
+resizeRenderer();
+
+function frameModel() {
+  if (!currentSize) return;
+  const maxDim = Math.max(currentSize.x, currentSize.y, currentSize.z);
+  const dist = maxDim * 1.7;
+  camera.position.set(0, currentSize.y * 0.05, cameraSide * dist);
+  camera.up.set(0, 1, 0);
+  camera.lookAt(0, 0, 0);
+}
+
+(function animate() {
+  requestAnimationFrame(animate);
+  renderer.render(scene, camera);
+})();
+
+// --- file loading ------------------------------------------------------------
+fileInput.addEventListener('change', async (e) => {
+  for (const f of e.target.files) files.set(f.name, f);
+  const missing = PLANES.filter(p => !files.has(p.file)).map(p => p.file);
+  if (missing.length) {
+    alert('Missing GLBs (selected ' + e.target.files.length + ' files):\n\n' + missing.join('\n'));
+    return;
+  }
+  picker.style.display = 'none';
+  await loadPlane(0);
+});
+
+const loader = new GLTFLoader();
+
+async function loadPlane(i) {
+  idx = i;
+  if (i >= PLANES.length) return showOutput();
+  const cfg = PLANES[i];
+  titleEl.textContent = cfg.name;
+  progressEl.textContent = `(${i+1}/${PLANES.length})  id=${cfg.id}`;
+  valuesEl.textContent = cfg.prev
+    ? `prev: x=${cfg.prev.xRatio} y=${cfg.prev.yRatio} z=${cfg.prev.zRatio}`
+    : '(no prior nozzle)';
+  cameraSide = 1;
+  hideAllMarkers();
+  currentClicks = [];
+  requiredClicks = cfg.clicks || 1;
+  nextBtn.disabled = true;
+  if (requiredClicks > 1) {
+    progressEl.textContent += `   • need ${requiredClicks} clicks`;
+  }
+
+  if (currentModel) { scene.remove(currentModel); currentModel = null; }
+
+  const buf = await files.get(cfg.file).arrayBuffer();
+  const gltf = await new Promise((res, rej) => loader.parse(buf, '', res, rej));
+  const root = gltf.scene;
+
+  // Apply modelRotation around Y so the body frame matches runtime
+  root.rotation.set(0, (cfg.rotY || 0) * Math.PI / 180, 0);
+
+  // Hide deployed gear so we calibrate the in-flight silhouette
+  root.traverse((c) => {
+    if (c.name && /landingOn(?:Light)?_/i.test(c.name)) c.visible = false;
+  });
+
+  scene.add(root);
+  currentModel = root;
+
+  // Center model at origin, recompute bbox
+  root.updateMatrixWorld(true);
+  let bbox = new THREE.Box3().setFromObject(root);
+  const center = new THREE.Vector3();
+  bbox.getCenter(center);
+  root.position.sub(center);
+  root.updateMatrixWorld(true);
+  currentBBox = new THREE.Box3().setFromObject(root);
+  currentSize = new THREE.Vector3();
+  currentBBox.getSize(currentSize);
+
+  frameModel();
+}
+
+// --- click -> ratios ---------------------------------------------------------
+renderer.domElement.addEventListener('click', (e) => {
+  if (!currentModel) return;
+  if (currentClicks.length >= requiredClicks) return;  // ignore extra clicks
+  const rect = renderer.domElement.getBoundingClientRect();
+  const ndc = new THREE.Vector2(
+    ((e.clientX - rect.left) / rect.width)  * 2 - 1,
+    -((e.clientY - rect.top) / rect.height) * 2 + 1,
+  );
+  const raycaster = new THREE.Raycaster();
+  raycaster.setFromCamera(ndc, camera);
+
+  const halfZ = currentSize.z / 2;
+  const planeZ = cameraSide * halfZ * 0.95;
+  const plane = new THREE.Plane(new THREE.Vector3(0, 0, 1), -planeZ);
+  const hit = new THREE.Vector3();
+  if (!raycaster.ray.intersectPlane(plane, hit)) return;
+
+  const xRatio = Math.abs(hit.x) / currentSize.x;
+  const yRatio = hit.y / currentSize.y;
+  currentClicks.push({ xRatio, yRatio, hitWorld: hit.clone() });
+
+  if (currentClicks.length >= requiredClicks) nextBtn.disabled = false;
+  valuesEl.textContent = currentClicks
+    .map((c, i) => `[${i+1}] x=${c.xRatio.toFixed(3)} y=${c.yRatio.toFixed(3)}`)
+    .join('   ');
+  redrawMarkers();
+});
+
+function redrawMarkers() {
+  hideAllMarkers();
+  const pairs = [[marker, markerM], [marker2, marker2M]];
+  for (let i = 0; i < currentClicks.length && i < pairs.length; i++) {
+    const c = currentClicks[i];
+    showMarker(pairs[i][0], c.hitWorld);
+    const m = c.hitWorld.clone(); m.x = -m.x;
+    showMarker(pairs[i][1], m);
+  }
+}
+
+function showMarker(el, worldPos) {
+  const v = worldPos.clone().project(camera);
+  const rect = renderer.domElement.getBoundingClientRect();
+  el.style.left = ((v.x * 0.5 + 0.5) * rect.width)  + 'px';
+  el.style.top  = ((-v.y * 0.5 + 0.5) * rect.height) + 'px';
+  el.style.display = 'block';
+}
+
+// --- buttons -----------------------------------------------------------------
+flipBtn.addEventListener('click', () => {
+  cameraSide *= -1;
+  hideAllMarkers();
+  currentClicks = [];
+  nextBtn.disabled = true;
+  valuesEl.textContent = '';
+  frameModel();
+});
+
+resetBtn.addEventListener('click', () => {
+  hideAllMarkers();
+  currentClicks = [];
+  nextBtn.disabled = true;
+  valuesEl.textContent = '';
+});
+
+skipBtn.addEventListener('click', () => loadPlane(idx + 1));
+
+nextBtn.addEventListener('click', () => {
+  const cfg = PLANES[idx];
+  const zRatio = (cfg.prev && cfg.prev.zRatio) || 0.85;
+  if (currentClicks.length === 1) {
+    results[cfg.id] = {
+      xRatio: +currentClicks[0].xRatio.toFixed(3),
+      yRatio: +currentClicks[0].yRatio.toFixed(3),
+      zRatio,
+    };
+  } else {
+    // Multi-click → produce a nozzlePositions array with explicit ±x mirroring
+    const positions = [];
+    for (const c of currentClicks) {
+      positions.push({ xRatio: +(-c.xRatio).toFixed(3), yRatio: +c.yRatio.toFixed(3), zRatio });
+      positions.push({ xRatio: +(+c.xRatio).toFixed(3), yRatio: +c.yRatio.toFixed(3), zRatio });
+    }
+    // Sort left→right so it's readable
+    positions.sort((a, b) => a.xRatio - b.xRatio);
+    results[cfg.id] = { nozzlePositions: positions };
+  }
+  loadPlane(idx + 1);
+});
+
+function showOutput() {
+  output.style.display = 'flex';
+  // Pretty print as both a combined map AND per-plane patch blocks
+  const lines = [];
+  lines.push('// Combined map (id -> nozzle):');
+  lines.push(JSON.stringify(results, null, 2));
+  lines.push('');
+  lines.push('// Per-plane patches — paste over each plane JSON\'s "nozzle" field:');
+  for (const [id, n] of Object.entries(results)) {
+    lines.push(`// src/data/planes/${id}.json`);
+    if (n.nozzlePositions) {
+      lines.push(`"nozzlePositions": [`);
+      for (const p of n.nozzlePositions) {
+        lines.push(`    { "xRatio": ${p.xRatio}, "yRatio": ${p.yRatio}, "zRatio": ${p.zRatio} },`);
+      }
+      lines.push(`],`);
+    } else {
+      lines.push(`"nozzle": {`);
+      lines.push(`    "xRatio": ${n.xRatio},`);
+      lines.push(`    "yRatio": ${n.yRatio},`);
+      lines.push(`    "zRatio": ${n.zRatio}`);
+      lines.push(`},`);
+    }
+    lines.push('');
+  }
+  outtext.value = lines.join('\n');
+}
+
+copyBtn.addEventListener('click', () => {
+  outtext.select();
+  document.execCommand('copy');
+  copyBtn.textContent = 'Copied ✓';
+  setTimeout(() => copyBtn.textContent = 'Copy to Clipboard', 1200);
+});
+
+downloadBtn.addEventListener('click', () => {
+  const blob = new Blob([JSON.stringify(results, null, 2)], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = 'nozzles.json'; a.click();
+  URL.revokeObjectURL(url);
+});
+</script>
+</body>
+</html>

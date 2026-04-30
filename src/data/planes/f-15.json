@@ -12,8 +12,8 @@
 	"signature": "fighter",
 	"engineCount": 2,
 	"nozzle": {
-		"xRatio": 0.055,
-		"yRatio": -0.18,
+		"xRatio": 0.047,
+		"yRatio": -0.089,
 		"zRatio": 0.8
 	},
 	"physicsOverrides": {

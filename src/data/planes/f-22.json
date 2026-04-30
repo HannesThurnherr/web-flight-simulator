@@ -68,8 +68,8 @@
 		}
 	],
 	"nozzle": {
-		"xRatio": 0.035,
-		"yRatio": -0.1,
+		"xRatio": 0.043,
+		"yRatio": -0.089,
 		"zRatio": 0.75
 	},
 	"hardpoints": [

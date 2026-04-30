@@ -6,6 +6,12 @@
 	"modelRotation": { "x": 0, "y": 90, "z": 0 },
 	"modelScale": 0.1,
 	"signature": "awacs",
+	"engineCount": 2,
+	"nozzle": {
+		"xRatio": 0.035,
+		"yRatio": -0.024,
+		"zRatio": 0.85
+	},
 	"sensors": {
 		"radar": {
 			"enabled": true,
