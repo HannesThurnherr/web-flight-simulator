@@ -29,6 +29,7 @@ import { getTeamDatalink, tickAllDatalinks } from './teamDatalink.js';
 import { isRadiating } from './sensorSystem.js';
 import { applyNpcMeshMatrix } from './npcRendering.js';
 import { tickFormationModes } from './formation.js';
+import { Contrail } from '../plane/contrail.js';
 
 // Strike-class simTypes: any munition that takes a designation queue
 // point. When a wingman's combined ammo across these types hits zero,
@@ -145,6 +146,13 @@ export function npcSystemUpdate(sys, dt, playerState, simTime = 0) {
 		const npc = sys.npcs[i];
 		if (npc.destroyed) {
 			sys.scene.remove(npc.mesh);
+			// Dispose the contrail's puff meshes / materials so we
+			// don't leak GPU buffers when many NPCs are spawned
+			// over a long session. Existing trail behind the dead
+			// NPC vanishes immediately — slightly less realistic
+			// than letting it linger, but cheaper and the airframe
+			// blowing up is its own visual cue.
+			if (npc._contrail) { npc._contrail.dispose(); npc._contrail = null; }
 			sys.npcs.splice(i, 1);
 			continue;
 		}
@@ -438,6 +446,17 @@ export function npcSystemUpdate(sys, dt, playerState, simTime = 0) {
 
 		if (npc.mixer) {
 			npc.mixer.update(dt);
+		}
+
+		// Phase 8 — contrails for airborne NPCs. Lazy-allocated per
+		// NPC; the Contrail itself gates emission on alt + speed, so
+		// low-flying CAS / strikers don't trail. Skip static ground
+		// platforms and missiles entirely (ground SAMs aren't going
+		// to hit the contrail ceiling, and missile trails come from
+		// the missile's own updateTrail path).
+		if (!npc.isStatic && (npc.kind || 'airborne') === 'airborne') {
+			if (!npc._contrail) npc._contrail = new Contrail(sys.scene, sys.viewer);
+			npc._contrail.update(dt, npc);
 		}
 	}
 
