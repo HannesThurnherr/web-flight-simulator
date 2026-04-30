@@ -1294,7 +1294,7 @@ plane JSONs (`f-15.json`, `f-22.json`, `f-35.json`, plus future Su-class).
 
 ---
 
-## Phase 8 — Contrails & visual ID cues
+## Phase 8 — Contrails & visual ID cues  ✅ implemented
 
 Goal: high-altitude bandits are spottable by the naked eye well before
 radar acquisition, the way they are in real BVR. Adds a visual-ID
