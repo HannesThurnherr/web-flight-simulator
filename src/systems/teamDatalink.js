@@ -208,45 +208,75 @@ export class TeamDatalink {
 
 	// ---- Contact fusion ----------------------------------------------------
 
-	// Called each frame from a radar-equipped team-mate. `unit` must have
-	// `contacts` populated by the sensor system. We ONLY fuse radar
-	// contacts here — IR-only/visual contacts don't produce a range and
-	// aren't useful for firing solutions. Expand later if needed.
+	// Called each frame from a sensor-equipped team-mate. `unit` must have
+	// `contacts` populated by the sensor system. 6g — we now fuse all
+	// three channels (radar, IR, visual): a teammate with eyes-on a
+	// bandit pushes a visual entry; a wingman with IRST gets the same
+	// bandit on IR; AWACS lights it up on radar. Each channel carries
+	// its own per-channel lastSeen so the source tag can age out
+	// independently (radar drops first, IR is stickier, visual is
+	// stickiest — same memory windows the sensorSystem uses).
+	//
+	// Contributors (`sources`) accumulate across teammates so the
+	// planner can show "3 reports" or list contributors on hover.
+	// Position still comes from `target.lon/lat/alt` (sim ground truth);
+	// future tightening would derive a real fix from radar range +
+	// triangulated IR/visual bearings, but that's beyond 6g scope.
 	publishContacts(unit, now) {
 		if (!unit || !unit.contacts) return;
 		for (const [target, c] of unit.contacts) {
-			if (!c || !c.radar) continue;
+			if (!c) continue;
 			if (!target || target.destroyed || target.active === false) continue;
 			// 6d — datalink no longer auto-filters out same-team
-			// contacts via target.team. With realistic IFF the
-			// publishing unit may have stamped this contact as
-			// 'unknown' even though target.team matches; the fused
-			// picture should reflect what the team actually saw, not
-			// ground truth. We still skip resolved-friendly contacts
-			// — broadcasting "your wingman is at lat/lon" is noise —
-			// but unknown / hostile contacts go through regardless of
-			// team. Note: with omniscient mode on, identifyContact
-			// returns truth and target.team === this.team is
-			// equivalent to iffStatus === 'friendly', so this branch
-			// preserves the legacy filter for that mode.
+			// contacts via target.team. We still skip resolved-friendly
+			// contacts (broadcasting "your wingman is at lat/lon" is
+			// noise) but unknown / hostile contacts go through.
 			if (c.iffStatus === 'friendly') continue;
 
-			// Keep the freshest-published copy. If two team-mates publish
-			// the same target the same frame, the second overwrites the
-			// first — doesn't matter which "wins," they're within a few
-			// metres of each other.
-			const vel = c.radar.velocity || { x: 0, y: 0, z: 0 };
+			const hasR = !!c.radar;
+			const hasI = !!c.ir;
+			const hasV = !!c.visual;
+			if (!hasR && !hasI && !hasV) continue;
+
+			// Best position + velocity available. Radar is preferred
+			// (range + Doppler velocity); IR/visual fall back to
+			// ground truth for now (see comment above). Velocity:
+			// only radar gives a real measurement; without it we
+			// publish zeros so consumers know it's not a firing-grade
+			// track.
+			const vel = (hasR && c.radar.velocity) || { x: 0, y: 0, z: 0 };
+			const range = hasR ? c.radar.range : null;
+
+			// Per-channel quality contribution: radar's signal is the
+			// most informative; visual is a strong confirmer; IR is
+			// the cheapest hint.
+			const qR = hasR ? Math.max(0.2, Math.min(1, c.radar.signal || 0.5)) : 0;
+			const qV = hasV ? 0.7 : 0;
+			const qI = hasI ? 0.5 : 0;
+			const quality = Math.max(0.2, Math.min(1, Math.max(qR, qV, qI)));
+
+			const existing = this.contacts.get(target);
+			const channels = (existing && existing.channels) || { radar: null, ir: null, visual: null };
+			if (hasR) channels.radar  = now;
+			if (hasI) channels.ir     = now;
+			if (hasV) channels.visual = now;
+
+			const sources = (existing && existing.sources) || new Set();
+			sources.add(unit);
+
 			this.contacts.set(target, {
 				lastSeen: now,
-				source:   unit,
+				source:   unit,            // most-recent publisher (legacy field)
+				sources,                   // 6g — full contributor set
+				channels,                  // 6g — per-channel lastSeen for source tagging
 				lon:      target.lon,
 				lat:      target.lat,
 				alt:      target.alt,
 				vE:       vel.x,
 				vN:       vel.y,
 				vU:       vel.z,
-				range:    c.radar.range,
-				quality:  Math.max(0.2, Math.min(1, c.radar.signal || 0.5)),
+				range,
+				quality,
 				// Phase 6d — propagate the publishing source's IFF
 				// classification. Consumers (HUD, scope, planner) read
 				// this rather than re-deriving from .team. If a
@@ -256,6 +286,26 @@ export class TeamDatalink {
 				iffStatus: c.iffStatus || 'unknown',
 			});
 		}
+	}
+
+	// 6g — single-letter source tag for a fused entry. Returns the
+	// string the planner / HUD draws next to a track. Aged channels
+	// drop off, so `R` becomes `IR+EO` 4 seconds after the radar
+	// contact lapses but the IRST still sees the bandit. Returns
+	// empty string if all channels expired (caller should treat as
+	// no-contact).
+	static sourceTag(entry, now,
+		radarMemoryS  = 2.0,
+		irMemoryS     = 2.0,
+		visualMemoryS = 5.0,
+	) {
+		if (!entry || !entry.channels) return '';
+		const ch  = entry.channels;
+		const tags = [];
+		if (ch.radar  != null && now - ch.radar  <= radarMemoryS)  tags.push('R');
+		if (ch.ir     != null && now - ch.ir     <= irMemoryS)     tags.push('IR');
+		if (ch.visual != null && now - ch.visual <= visualMemoryS) tags.push('EO');
+		return tags.join('+');
 	}
 
 	// Age out stale contacts. Called once per tick from the owner.
