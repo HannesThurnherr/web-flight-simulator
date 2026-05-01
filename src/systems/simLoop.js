@@ -37,7 +37,8 @@ import {
 import { updateSensors, setSensorScene } from './sensorSystem';
 import { collectJamStrobes } from './ew/jammerSubsystem.js';
 import { Contrail } from '../plane/contrail.js';
-import { CloudField } from './cloudField.js';
+import { CloudField } from './cloudField.js';        // eslint-disable-line no-unused-vars
+import { CesiumCloudField } from './cesiumClouds.js';
 import { getTeamDatalink } from './teamDatalink';
 import { getActiveScenario } from './scenarios';
 import { CommanderView } from './commanderView';
@@ -724,16 +725,15 @@ export function update(dt, ctx) {
 		}
 		if (ctx._playerContrail) ctx._playerContrail.update(dt, state);
 
-		// Phase 9c — particle-cluster cloud field. Lazy on first frame
-		// of flight, centred on the player's current position so the
-		// field shows up wherever the scenario drops them. Built once;
-		// updates every frame to keep matrices baked against the
-		// current camera. ~1-2 ms / frame at 24×24 grid × 3 puffs/cell
-		// (~3 k spheres of 36 tris each).
-		if (!ctx._cloudField && ctx.scene) {
-			ctx._cloudField = new CloudField(ctx.scene, getViewer(), state.lon, state.lat);
+		// Phase 9c — Cesium-native cumulus field. Lazy on first frame
+		// of flight, centred on player at scenario start. Cesium's
+		// CloudCollection bills its primitives through the same
+		// depth pipeline as the globe, so terrain occludes clouds
+		// (you can fly behind a ridge and they go away) — the thing
+		// the THREE-side particle-cluster attempt couldn't do.
+		if (!ctx._cesiumClouds) {
+			ctx._cesiumClouds = new CesiumCloudField(getViewer(), state.lon, state.lat);
 		}
-		if (ctx._cloudField) ctx._cloudField.update();
 		if (jetFlames.length > 0) {
 			// TV nozzle deflection: rotate the flame group so the plume
 			// visibly tilts when the F-22's nozzles vector. Smoothed so the
