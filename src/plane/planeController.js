@@ -216,7 +216,15 @@ export class PlaneController {
 
 			this.mouseDeltaX = 0;
 			this.mouseDeltaY = 0;
-		} else {
+		} else if (!this.holdCameraOrbit) {
+			// Pilot chase-cam decays the orbit back to zero on RMB
+			// release so the camera snaps back to "behind the plane"
+			// after a quick look-around. Spectator chase-cam wants
+			// the opposite — sit where the user dragged to. simLoop
+			// sets `holdCameraOrbit` true while spectating; the orbit
+			// is still unit-relative (so as the spectated unit turns,
+			// the camera tracks with it, keeping the unit framed),
+			// just no longer recentering on its own.
 			this.input.cameraYaw = this.lerp(this.input.cameraYaw, 0, 0.1);
 			this.input.cameraPitch = this.lerp(this.input.cameraPitch, 0, 0.1);
 		}

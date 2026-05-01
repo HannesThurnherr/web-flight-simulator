@@ -69,6 +69,12 @@ export function update(dt, ctx) {
 	const isSpectating = !isFlying && !!ctx.spectatorTarget;
 
 	const controller = ctx.controller;
+	// Spectator chase-cam: hold whatever orbit the user dragged on
+	// RMB release instead of recentering. Unit-relative orbit stays
+	// (as the unit turns, the camera follows so the unit stays
+	// framed), but no decay-toward-zero. Pilot chase-cam keeps the
+	// recentering behavior so it snaps back to behind-the-plane.
+	if (controller) controller.holdCameraOrbit = isSpectating && !isFlying;
 	const input = (isFlying || isSpectating) ? controller.update() : null;
 
 	// Commander view suspends pilot control: stick goes neutral,
