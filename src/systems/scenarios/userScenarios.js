@@ -71,7 +71,7 @@ export function emptyScenario(id, name) {
 	return {
 		schemaVersion: 2,
 		id,
-		name: name || 'New Scenario',
+		name: name || randomScenarioName(),
 		description: '',
 		anchor: { mode: 'player-relative' },
 		autoSpawn: false,
@@ -81,6 +81,33 @@ export function emptyScenario(id, name) {
 		createdAt: new Date().toISOString(),
 		modifiedAt: new Date().toISOString(),
 	};
+}
+
+// Three-word combat-y name generator. Saves the user from typing a
+// name on every NEW SCENARIO click; gives each empty scenario a
+// distinct identity in the picker so repeated NEW clicks don't
+// produce a wall of "New Scenario / New Scenario / New Scenario."
+const NAME_ADJ = [
+	'BURNING', 'IRON', 'SILENT', 'SHATTERED', 'NORTHERN', 'ARCTIC',
+	'SCORCHED', 'COLD', 'BROKEN', 'GOLDEN', 'CRIMSON', 'BLACK',
+	'EMERALD', 'STORMING', 'BITTER', 'DESERT', 'STEEL', 'DISTANT',
+	'WOUNDED', 'SOVEREIGN', 'LAST', 'FORGOTTEN', 'BLAZING', 'HARSH',
+];
+const NAME_NOUN1 = [
+	'VALLEY', 'RIDGE', 'HORIZON', 'CROSSWIND', 'OUTRIDER', 'SENTINEL',
+	'OVERWATCH', 'TALON', 'ANVIL', 'HAMMER', 'RAVEN', 'EAGLE',
+	'FALCON', 'SHADE', 'HARRIER', 'SPECTRE', 'WOLF', 'HUNTER',
+	'GHOST', 'ARROW', 'BLADE', 'ASCENT', 'COVENANT', 'BASTION',
+];
+const NAME_NOUN2 = [
+	'TEMPEST', 'DAWN', 'DUSK', 'STORM', 'FURY', 'RAIN', 'THUNDER',
+	'LIGHTNING', 'FROST', 'EMBER', 'ASHES', 'TIDE', 'GALE', 'FLARE',
+	'ECHO', 'RECKONING', 'SILENCE', 'AWAKENING', 'PASSAGE', 'GAUNTLET',
+	'VIGIL', 'STAND', 'PROCESSION', 'DESCENT',
+];
+function _pick(arr) { return arr[Math.floor(Math.random() * arr.length)]; }
+export function randomScenarioName() {
+	return `${_pick(NAME_ADJ)} ${_pick(NAME_NOUN1)} ${_pick(NAME_NOUN2)}`;
 }
 
 // Generate an id that doesn't collide with bundled or user scenarios.

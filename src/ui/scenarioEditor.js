@@ -73,15 +73,18 @@ const DEFAULT_FIGHTER_SPD  = 250;
 export function setupScenarioEditor(ctx) {
 	_ctx = ctx;
 	window.addEventListener('scenario-edit-request', (e) => {
-		const id = e && e.detail && e.detail.id;
-		if (!id) return;
-		open(id);
+		const detail = e && e.detail;
+		if (!detail || !detail.id) return;
+		open(detail.id, detail.json || null);
 	});
 }
 
-function open(id) {
-	const userScenarios = loadUserScenarios();
-	const json = userScenarios[id] || getRawScenario(id);
+function open(id, providedJson = null) {
+	let json = providedJson;
+	if (!json) {
+		const userScenarios = loadUserScenarios();
+		json = userScenarios[id] || getRawScenario(id);
+	}
 	if (!json) {
 		console.warn('[scenarioEditor] no scenario found for id:', id);
 		return;

@@ -23,11 +23,13 @@ import {
 } from '../systems/scenarios/userScenarios.js';
 import { gameSettings, saveSettings } from './settings';
 
-// Dispatched on `window` when the user clicks NEW or EDIT. Carries
-// `{ id }` of the scenario to open in the editor (newly-created for
-// NEW, existing for EDIT). The editor opens itself in response.
-function _dispatchEdit(id) {
-	window.dispatchEvent(new CustomEvent('scenario-edit-request', { detail: { id } }));
+// Dispatched on `window` when the user clicks NEW / EDIT / DUPLICATE.
+// `{ id }` always — `{ json }` is supplied for NEW (an unsaved fresh
+// scenario record) so the editor can open it without a localStorage
+// round-trip. EDIT / DUPLICATE rely on the editor pulling the JSON
+// from the registry / userScenarios store by id.
+function _dispatchEdit(id, json = null) {
+	window.dispatchEvent(new CustomEvent('scenario-edit-request', { detail: { id, json } }));
 }
 
 export function setupScenarioPicker() {
@@ -64,15 +66,16 @@ function render(container) {
 		<span class="card-desc">Open the editor with an empty scenario.</span>
 	`;
 	newCard.addEventListener('click', () => {
+		// Don't pre-save: pass the fresh-empty JSON in the event
+		// detail. Persistence only happens if the user clicks SAVE
+		// in the editor — otherwise opening NEW + EXIT leaves the
+		// picker untouched. Auto-generates a combat-y three-word
+		// name so repeated NEW clicks produce distinct entries
+		// instead of a wall of "New Scenario."
 		const usedIds = Object.keys(SCENARIOS);
 		const id = nextUserId(usedIds, 'untitled');
-		const blank = emptyScenario(id, 'New Scenario');
-		// Save the empty record up front so the editor has something
-		// to load — otherwise the round-trip "EDIT untitled-1" would
-		// fail because no JSON exists for that id yet.
-		saveUserScenario(id, blank);
-		refreshScenarios();
-		_dispatchEdit(id);
+		const blank = emptyScenario(id);
+		_dispatchEdit(id, blank);
 	});
 	container.appendChild(newCard);
 
