@@ -674,7 +674,7 @@ export class NPCSystem {
 	// src/systems/npcUpdate.js to keep this class file under its size
 	// budget. The shim here keeps the public call site (main.js's sim
 	// loop) unchanged.
-	update(dt, playerState, simTime = 0, opts = {}) { npcSystemUpdate(this, dt, playerState, simTime, opts); }
+	update(dt, playerState, simTime = 0) { npcSystemUpdate(this, dt, playerState, simTime); }
 
 	// Called by the update loop when an NPC's EngageBehavior commits to a
 	// shot. Mirrors the player's WeaponSystem.fire path: offset launch
