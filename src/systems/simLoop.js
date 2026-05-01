@@ -69,6 +69,12 @@ export function update(dt, ctx) {
 	const isSpectating = !isFlying && !!ctx.spectatorTarget;
 
 	const controller = ctx.controller;
+	// Spectator chase-cam should HOLD where the user dragged to, not
+	// snap back behind the unit on RMB release. Flag the controller
+	// so it doesn't decay cameraYaw / cameraPitch toward zero. Reset
+	// when the player resumes flying so the pilot-cam still snaps
+	// back to behind-the-plane on release.
+	if (controller) controller.holdCameraOrbit = isSpectating && !isFlying;
 	const input = (isFlying || isSpectating) ? controller.update() : null;
 
 	// Commander view suspends pilot control: stick goes neutral,

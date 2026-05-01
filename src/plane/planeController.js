@@ -216,7 +216,12 @@ export class PlaneController {
 
 			this.mouseDeltaX = 0;
 			this.mouseDeltaY = 0;
-		} else {
+		} else if (!this.holdCameraOrbit) {
+			// Pilot-cam recenters the orbit when the player releases
+			// RMB so the chase-cam snaps back to "behind the plane."
+			// Spectator-cam wants the opposite: stay where the user
+			// last placed it. simLoop sets `holdCameraOrbit` while
+			// spectating to suppress the decay.
 			this.input.cameraYaw = this.lerp(this.input.cameraYaw, 0, 0.1);
 			this.input.cameraPitch = this.lerp(this.input.cameraPitch, 0, 0.1);
 		}
