@@ -909,6 +909,12 @@ export class HUD {
 			// Only AMRAAM-ish missiles get labels — otherwise the HUD clutters
 			// fast with bullets & AIM-9 tags.
 			if (!m.active || typeof m.boostRemaining !== 'number') continue;
+			// MALD decoys spoof a fighter signature — they should
+			// look like a contact, not an inbound missile, on the
+			// player's HUD. Skip the missile-marker render path; the
+			// regular sensor pipeline will surface them as fighter
+			// contacts the same way it does any radar paint.
+			if (m.type === 'MALD') continue;
 
 			// Visibility rule: the pilot always knows what *they* launched
 			// (friendly outgoing). Hostile incoming missiles only appear if

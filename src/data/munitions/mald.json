@@ -1,0 +1,45 @@
+{
+	"id": "mald",
+	"name": "MALD-X DECOY",
+	"shortName": "MALD",
+	"category": "AGM",
+	"tags": ["decoy", "ew", "stand-off"],
+	"massKg": 130,
+	"rcsContributionM2": 0.02,
+	"description": "ADM-160 MALD-class miniature air-launched decoy. No warhead — the whole point is the radar signature. Onboard transponder + corner reflectors paint the decoy to enemy radar with the cross-section of a 4th-gen fighter (RCS ~12 m², fighter unit-class), so a SAM operator or hostile fighter sees a plausible inbound striker, expends a missile on the lure, and reveals their site. Cruise profile mimics a manned ingress: ~Mach 0.7 cruise, low altitude. Range ~900 km. Storm Shadow GLB is the visual stand-in until a dedicated MALD model lands.",
+	"simType": "MALD",
+	"signature": "fighter",
+	"seekerType": "cruise",
+	"modelTemplate": "storm-shadow",
+	"realLengthM": 2.84,
+	"flight": {
+		"launchSpeedOffset": 20,
+		"boostDurationS": 5,
+		"boostAccel": 30,
+		"peakSpeed": 240,
+		"minSpeed": 200,
+		"maxLifeS": 3600,
+		"maxTurnDegPerSec": 8,
+		"pnGain": 3.0,
+		"dragRef": 0.4,
+		"dragRefSpeed": 230,
+		"dragRefAltitude": 1500,
+		"vManeuverRef": 230,
+		"gAvailFloor": 0.3,
+		"cruiseAltM": 1500,
+		"cruiseAltMode": "agl",
+		"cruiseTurnG": 1.2,
+		"climbAngleDeg": 6,
+		"terminalRangeM": 500,
+		"popUpAltAGL": 0,
+		"diveAngleDeg": 0
+	},
+	"warhead": {
+		"killRadiusM": 0,
+		"fuzeSenseRadiusM": 0,
+		"missAbortRadiusMul": 1
+	},
+	"seeker": {
+		"maxG": 4
+	}
+}

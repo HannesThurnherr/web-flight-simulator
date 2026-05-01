@@ -109,6 +109,14 @@ export class WeaponSystem {
 			// per the munition JSON (MSL vs AGL altitude mode).
 			{ id: 'agm',     name: 'STORM SHADOW',      ammo: 0,  maxAmmo: 0,  fireRate: 0,
 			  lastFire: 0, type: 'STORM-SHADOW', lockRange: 0, lockCone: 0,    lockTime: 0 },
+			// MALD-X (ADM-160) miniature air-launched decoy. Same
+			// id:'agm' fire path + cruise seeker as the ALCM/Storm
+			// Shadow; what makes it a decoy is the JSON signature
+			// ("fighter" instead of "cruise_missile"). Enemy radars
+			// detect it as a 4th-gen fighter — RCS 12 m², classHint
+			// 'fighter' — and waste shots on it. No warhead.
+			{ id: 'agm',     name: 'MALD-X DECOY',      ammo: 0,  maxAmmo: 0,  fireRate: 0,
+			  lastFire: 0, type: 'MALD',    lockRange: 0,      lockCone: 0,     lockTime: 0 },
 			// 6e.2 — EW JAMMER pseudo-weapon. Not a projectile launcher;
 			// pressing fire toggles the currently-designated victim into
 			// state.jammer.offensiveTargets (sustained beam). `ammo` is
