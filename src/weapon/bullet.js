@@ -220,6 +220,10 @@ export class Bullet {
 			reason:  'kill',
 		});
 		target.destroyed = true;
+		// Projectile-type targets (cruise missiles, MALD decoys) gate
+		// on `.active`, not `.destroyed` — flip both so a CIWS or gun
+		// kill on a cruise actually stops the projectile.
+		if ('active' in target) target.active = false;
 		if (this.onKill) this.onKill(target);
 		try {
 			particles.spawnExplosion(this.lon, this.lat, this.alt, { count: 36, smokeCount: 8, big: true });

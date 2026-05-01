@@ -823,6 +823,13 @@ export class Missile {
 			reason:  'kill',
 		});
 		npc.destroyed = true;
+		// Projectile-type targets (cruise missiles, MALD decoys, other
+		// AAMs) gate their own update on `.active`, not `.destroyed`.
+		// Without this flip a hit AIM-9-vs-MALD or AIM-9-vs-cruise
+		// engagement sets the destroyed flag but the target keeps
+		// flying. NPC airframes don't define `.active` so they're
+		// unaffected.
+		if ('active' in npc) npc.active = false;
 		if (this.onKill) this.onKill(npc);
 		try {
 			particles.spawnExplosion(this.lon, this.lat, this.alt, { count: 80, smokeCount: 18, big: true });

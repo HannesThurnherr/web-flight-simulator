@@ -815,6 +815,12 @@ export class AIM120 extends Missile {
 			reason:  'kill',
 		});
 		npc.destroyed = true;
+		// Projectile-type targets (cruise missiles, MALD decoys, other
+		// AAMs) gate their own update on `.active`, not `.destroyed`.
+		// Without this flip a hit AMRAAM-vs-MALD engagement sets the
+		// destroyed flag but the MALD keeps flying as if unscathed.
+		// NPC airframes don't define `.active` and aren't affected.
+		if ('active' in npc) npc.active = false;
 		if (this.onKill) this.onKill(npc);
 		try {
 			// Bigger bang than an AIM-9 — proximity fuze goes off with its
