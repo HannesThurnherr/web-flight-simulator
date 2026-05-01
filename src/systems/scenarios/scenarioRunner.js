@@ -178,10 +178,96 @@ export function buildScenarioFromJson(data) {
 	// each onStart so re-running the scenario starts fresh.
 	let satTimer = 0;
 	let satFired = false;
+	// 10d — objective + trigger evaluator state.
+	//
+	//   _taggedUnits      tag → npc reference (filled at spawn time so
+	//                     destroy / protect objectives can find their
+	//                     subject without scanning the npc list).
+	//   _objectiveState   ordered { id, kind, label, required, status,
+	//                              ... per-kind fields } records.
+	//                     status = 'pending' | 'done' | 'failed'.
+	//   _triggerFired     Set of trigger indices that have fired
+	//                     already (one-shots — see _evalTrigger).
+	//   _scenarioElapsed  seconds since onStart, for elapsed triggers.
+	let _taggedUnits = new Map();
+	let _objectiveState = [];
+	let _triggerFired = new Set();
+	let _scenarioElapsed = 0;
+	// Snapshot of player spawn coords at onStart. Used to resolve
+	// `zone: { relTo: "player", ... }` to a fixed point — "RTB" means
+	// "go back to where you took off from," not "go to where you
+	// currently are," so we capture once at scenario start and reuse.
+	let _playerSpawnPose = null;
+
+	// Tag registration. Stores npc under `tag` for count===1, or
+	// under both the bare tag (first iteration) AND `tag-N` for
+	// count>1 so an objective referring to the bare tag still
+	// resolves to a specific unit while the suffixed forms let the
+	// author target individual members of a group.
+	function _registerTag(tag, npc, count, idx) {
+		if (count > 1) _taggedUnits.set(`${tag}-${idx + 1}`, npc);
+		if (idx === 0) _taggedUnits.set(tag, npc);
+	}
+
+	// Per-tick objective evaluation. Mutates _objectiveState entries
+	// in place. Three kinds shipped in 10d.1:
+	//   destroy    — tag must reference an npc that's now destroyed.
+	//   protect    — tag's npc must still be alive (becomes 'failed'
+	//                if it dies; never auto-completes).
+	//   reach-zone — playerState within radiusM of zone.lon/lat.
+	// Objectives gated by `afterObjective` stay 'pending' until that
+	// other objective's status becomes 'done'.
+	function _evalObjectives(playerState) {
+		for (const o of _objectiveState) {
+			if (o.status === 'failed') continue;
+			if (o.afterObjective) {
+				const dep = _objectiveState.find(x => x.id === o.afterObjective);
+				if (!dep || dep.status !== 'done') continue;
+			}
+			if (o.kind === 'destroy') {
+				const u = _taggedUnits.get(o.tag);
+				if (u && (u.destroyed || u.active === false)) o.status = 'done';
+			} else if (o.kind === 'protect') {
+				const u = _taggedUnits.get(o.tag);
+				if (u && (u.destroyed || u.active === false)) o.status = 'failed';
+				// Otherwise stays pending — protect objectives are
+				// evaluated as "succeeded" only at scenario end.
+			} else if (o.kind === 'reach-zone' && o.zone && playerState) {
+				// Resolve zone center. Absolute lon/lat passes through;
+				// relTo:'player' uses the player's spawn pose snapshot.
+				const z = o.zone;
+				let centre = z;
+				if (z.relTo === 'player' && _playerSpawnPose) {
+					const plat = _playerSpawnPose.lat * Math.PI / 180;
+					const dE = (z.lon || 0);    // metres east of spawn
+					const dN = (z.lat || 0);    // metres north of spawn
+					centre = {
+						lon: _playerSpawnPose.lon + dE / (111320 * Math.cos(plat)),
+						lat: _playerSpawnPose.lat + dN / 111320,
+					};
+				}
+				const inZone = _distM(playerState, centre) <= (z.radiusM || 0);
+				if (inZone && !o._prevInZone) o.status = 'done';
+				o._prevInZone = inZone;
+			}
+		}
+	}
+
+	function _distM(a, b) {
+		const plat = (a.lat || 0) * Math.PI / 180;
+		const dE = (b.lon - a.lon) * 111320 * Math.cos(plat);
+		const dN = (b.lat - a.lat) * 111320;
+		return Math.hypot(dE, dN);
+	}
 	return {
 		id: data.id,
 		name: data.name,
 		description: data.description,
+		// HUD pulls objectives + tagged-unit refs each frame to render
+		// the overlay. Returning the live arrays keeps the lookup zero-
+		// cost; consumers must not mutate.
+		getObjectives() { return _objectiveState; },
+		getTaggedUnit(tag) { return _taggedUnits.get(tag) || null; },
 
 		onStart(ctx) {
 			const { npcSystem, playerState, weaponSystem } = ctx;
@@ -190,6 +276,14 @@ export function buildScenarioFromJson(data) {
 			// Satellite-ISR state reset.
 			satTimer = 0;
 			satFired = false;
+			// 10d — fresh evaluator state per scenario start.
+			_taggedUnits = new Map();
+			_objectiveState = [];
+			_triggerFired = new Set();
+			_scenarioElapsed = 0;
+			_playerSpawnPose = playerState ? {
+				lon: playerState.lon, lat: playerState.lat, alt: playerState.alt,
+			} : null;
 
 			// 10a — per-scenario PRNG. Seeded via scenario.randomSeed
 			// for reproducibility; defaulting to Date.now() gives the
@@ -252,6 +346,14 @@ export function buildScenarioFromJson(data) {
 						if (npc && s.loadout) {
 							applyNpcLoadout(npc, _resolveLoadout(rng, s.loadout, npc));
 						}
+						// 10d — tag registration. Single-tag spawns put
+						// the first npc on the tag. Multi-count spawns
+						// with N>1 register every iteration under the
+						// same tag using a tag-N suffix so an objective
+						// like "destroy ewr-1" stays unambiguous in the
+						// 1-count default while still allowing the
+						// player to author "destroy any of three".
+						if (npc && s.tag) _registerTag(s.tag, npc, count, i);
 					}
 
 				} else if (s.type === 'platform') {
@@ -264,7 +366,12 @@ export function buildScenarioFromJson(data) {
 						if (count > 1 && !_isRandomOrigin(s.origin)) {
 							pos = jitterPos(pos, s.jitterM ?? 400);
 						}
-						const onSpawn = (npc) => {
+						// Platform spawns may complete asynchronously (GLB
+					// load), so we wrap state mutations in onSpawn so
+					// they fire whether the spawn lands immediately or
+					// after a queued retry.
+					const tagSeq = i;        // captured for tag suffixing
+					const onSpawn = (npc) => {
 							// 10a — per-spawn magazine override for
 							// SAMs / AAA. Apply before any intel
 							// publish so the platform's authored
@@ -278,6 +385,9 @@ export function buildScenarioFromJson(data) {
 									? performance.now() * 0.001 : 0;
 								friendly.publishBriefed(npc, s.intel, now);
 							}
+							// 10d — tag registration so "destroy ewr-1"
+							// objectives can find the spawned platform.
+							if (s.tag) _registerTag(s.tag, npc, count, tagSeq);
 						};
 						npcSystem.spawnPlatform(
 							s.platformId, pos.lon, pos.lat, pos.alt,
@@ -286,6 +396,21 @@ export function buildScenarioFromJson(data) {
 							onSpawn,
 						);
 					}
+				}
+			}
+
+			// 10d — seed objective evaluator state from the JSON.
+			// Each objective starts as 'pending'. Some kinds need
+			// per-objective transient fields (e.g. reach-zone wants
+			// a `prevInZone` so we can edge-trigger on entry).
+			if (Array.isArray(data.objectives)) {
+				for (const o of data.objectives) {
+					if (!o || !o.id) continue;
+					_objectiveState.push({
+						...o,
+						status: 'pending',
+						_prevInZone: false,
+					});
 				}
 			}
 
@@ -307,6 +432,15 @@ export function buildScenarioFromJson(data) {
 		},
 
 		update(ctx, dt) {
+			_scenarioElapsed += dt;
+
+			// 10d — objective evaluator. Cheap per-frame walk over the
+			// objective list; each kind's check is O(1) given a tagged
+			// unit lookup or a zone distance test.
+			if (_objectiveState.length > 0 && ctx && ctx.playerState) {
+				_evalObjectives(ctx.playerState);
+			}
+
 			// Satellite-ISR pass scheduling. Walks every hostile unit
 			// whose `kind` is in the configured class list and drops
 			// a snapshot into the beneficiary team's datalink, then

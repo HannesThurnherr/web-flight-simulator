@@ -554,6 +554,11 @@ export function update(dt, ctx) {
 	// dies.
 	{
 		const scn = getActiveScenario();
+		// Expose the active scenario on state so HUD modules
+		// (objectives panel, future briefing strip) can read its
+		// getObjectives() / getTaggedUnit() helpers without each
+		// importing the registry directly.
+		state._activeScenario = scn || null;
 		if (scn && scn.update) {
 			scn.update({ npcSystem, playerState: state, viewer: getViewer() }, dt);
 		}

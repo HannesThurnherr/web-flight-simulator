@@ -824,6 +824,54 @@ export class HUD {
 	// arrow. Visible only when the player has a strike weapon loaded
 	// AND the queue has at least one entry — otherwise hidden so it
 	// doesn't clutter dogfights.
+	// 10d.1 — objectives overlay. Reads the active scenario's
+	// `getObjectives()` (a method exposed by buildScenarioFromJson)
+	// and renders a small mission-status block in the top-left of
+	// the HUD. Hidden when the scenario has no objectives.
+	updateObjectivesPanel(state) {
+		let panel = document.getElementById('objectives-panel');
+		const scn = state && state._activeScenario;
+		const list = (scn && typeof scn.getObjectives === 'function')
+			? scn.getObjectives() : null;
+		if (!list || list.length === 0) {
+			if (panel) panel.style.display = 'none';
+			return;
+		}
+		if (!panel) {
+			panel = document.createElement('div');
+			panel.id = 'objectives-panel';
+			panel.style.cssText = `
+				position: fixed;
+				left: 16px;
+				top: 80px;
+				min-width: 240px;
+				padding: 8px 12px;
+				background: rgba(0, 25, 0, 0.65);
+				border: 1px solid rgba(0, 255, 0, 0.45);
+				color: #0f0;
+				font-family: 'AceCombat', 'Courier New', monospace;
+				font-size: 11px;
+				line-height: 1.55;
+				z-index: 50;
+				pointer-events: none;
+				letter-spacing: 0.5px;
+			`;
+			document.body.appendChild(panel);
+		}
+		panel.style.display = '';
+		const symbol = (status) => status === 'done' ? '✓'
+			: status === 'failed' ? '✗' : '◇';
+		const colour = (status) => status === 'done' ? '#80ff80'
+			: status === 'failed' ? '#ff6060'
+			: '#0f0';
+		let html = '<div style="font-weight:bold;border-bottom:1px solid rgba(0,255,0,0.3);padding-bottom:3px;margin-bottom:4px;">MISSION</div>';
+		for (const o of list) {
+			const c = colour(o.status);
+			html += `<div style="color:${c};">${symbol(o.status)} ${o.label || o.id}${o.required === false ? '  (opt)' : ''}</div>`;
+		}
+		panel.innerHTML = html;
+	}
+
 	updateStrikeQueueStrip(state) {
 		const el = document.getElementById('strike-queue-strip');
 		if (!el) return;
@@ -2505,6 +2553,7 @@ export class HUD {
 		this.updateRwrScope(state);
 		this.updateDesignationMarkers(state);
 		this.updateStrikeQueueStrip(state);
+		this.updateObjectivesPanel(state);
 
 		if (state.weaponSystem) {
 			this.updateWeapons(state.weaponSystem, state);

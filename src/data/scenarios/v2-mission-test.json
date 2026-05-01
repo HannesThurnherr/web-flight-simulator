@@ -1,0 +1,66 @@
+{
+	"schemaVersion": 2,
+	"id": "v2-mission-test",
+	"name": "V2 — Mission Smoke Test",
+	"description": "Phase 10d.1 smoke test for the objective evaluator. Two hostile EWRs ahead — destroy at least one, then fly back to RTB zone. The friendly RQ-4 is the protect target. Watch the top-left MISSION panel: ◇ pending, ✓ done, ✗ failed.",
+	"autoSpawn": false,
+
+	"spawns": [
+		{
+			"type": "platform",
+			"platformId": "rq-4-global-hawk",
+			"team": "friendly",
+			"tag": "isr-1",
+			"origin": { "relTo": "player", "bearingDeg": 180, "rangeM": 30000, "altM": 18000 },
+			"pilotOverrides": { "radiusM": 12000, "altitudeM": 18000, "targetSpeed": 160 }
+		},
+		{
+			"type": "platform",
+			"platformId": "ewr",
+			"team": "hostile-red",
+			"tag": "ewr-A",
+			"origin": { "relTo": "player", "bearingDeg": 355, "rangeM": 50000, "altOffsetM": -3000 },
+			"intel":  { "level": "known" }
+		},
+		{
+			"type": "platform",
+			"platformId": "ewr",
+			"team": "hostile-red",
+			"tag": "ewr-B",
+			"origin": { "relTo": "player", "bearingDeg": 5, "rangeM": 50000, "altOffsetM": -3000 },
+			"intel":  { "level": "known" }
+		}
+	],
+
+	"objectives": [
+		{
+			"id": "kill-ewr-a",
+			"kind": "destroy",
+			"tag": "ewr-A",
+			"label": "Destroy west EWR",
+			"required": true
+		},
+		{
+			"id": "kill-ewr-b",
+			"kind": "destroy",
+			"tag": "ewr-B",
+			"label": "Destroy east EWR",
+			"required": true
+		},
+		{
+			"id": "rtb",
+			"kind": "reach-zone",
+			"zone": { "relTo": "player", "lon": 0, "lat": 0, "radiusM": 5000 },
+			"afterObjective": "kill-ewr-a",
+			"label": "Return to spawn (after killing one EWR)",
+			"required": true
+		},
+		{
+			"id": "save-isr",
+			"kind": "protect",
+			"tag": "isr-1",
+			"label": "Keep RQ-4 alive",
+			"required": false
+		}
+	]
+}
