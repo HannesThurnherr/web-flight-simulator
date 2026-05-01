@@ -482,31 +482,96 @@ fixed seed gives reproducibility for sharing scary fights.
 
 ## 9. Editor UI (Phase 10b–10c)
 
-### 10b — Map placement
+**The editor is a mode of the existing CommanderView.** That 3D map
+already gives us pan / tilt / zoom, marker rendering with team
+colors, click-to-inspect tooltips, trail sampling, and the legend +
+controls panel. Building a separate editor would mean re-creating
+all of that. Instead the editor enters CommanderView with an extra
+"EDITOR MODE" UI layer, the same way debug overlays already plug in
+(R / D / J keybinds for radar / datalink / jammer overlays).
 
-Top-down Cesium view (reuse commander view's camera + interaction).
-Left-click on the map drops a unit at the clicked lon/lat at the
-default altitude for its type. Selected unit shows pose handles:
-heading rose, speed slider (air), altitude slider. Drag to reposition.
+### 10b — Map placement (CommanderView editor mode)
 
-Selection panel on the right with:
-- Type / platformId / fighterModel
-- Team / pilot type / skill
-- Tag (for objectives)
-- Intel level
-- Loadout (collapsible — opens the existing loadout editor)
-- Magazine (ground units)
+A new `M` modifier on CommanderView (or a "MODE: EDITOR" button on
+its existing controls panel) flips the view into editor mode. While
+in editor mode:
 
-Multi-select (lasso) → bulk-edit team / pilot / loadout.
+- **Left-click on terrain** drops a unit at the picked lon/lat at the
+  default altitude for the currently-armed unit kind. The unit kind
+  is selected from a palette in the top-left (groups: fighters,
+  ground SAMs, AAA, EWR, jammers, AWACS, ships, command posts).
+  The palette uses the same icons / unit-kind colors as the live
+  commander markers, so what you place in the editor reads exactly
+  the same way once you fly the scenario.
+- **Selected unit** shows in-world manipulators reusing the
+  marker-rendering machinery:
+  - A heading rose drawn as a thin polyline ring 60 m around the
+    unit (Cesium polyline entity, same primitive as the FOV cone
+    in radar debug). Drag the tick to set heading.
+  - An altitude slider in the right-side selection panel (ground
+    units locked to terrain + groundOffsetM).
+  - A speed slider for air units.
+  - Drag the unit's marker itself to reposition. Snap-to-route /
+    snap-to-grid optional.
+- **Tooltip morphs into edit form.** Today's commander tooltip is
+  read-only (name / ALT / SPD / HDG / ...). In editor mode the same
+  tooltip swaps to editable inputs for the same fields, plus the
+  full editor sidebar's worth of controls (team / pilot type /
+  skill / tag / intel / loadout / magazine). The user already
+  knows how to click VIEW or other buttons on commander tooltips;
+  the edit form is one more sibling.
+- **Multi-select (lasso)** is already half-implemented — the strike
+  planner's lasso lives in `src/systems/strikePlanner.js` and
+  produces a Set of selected NPCs. Reuse that selection primitive
+  in CommanderView editor mode for bulk-edit (team / pilot / loadout
+  template applied to all selected).
+- **Random-spec spawns are first-class markers.** When a `count: {
+  min: 3, max: 6 }` entry exists, CommanderView shows a single "spec
+  marker" at the spec's center / origin, with a dashed circle for
+  the random radius and a pill label "3–6× Su-35 (random loadout)".
+  Editing the spec marker edits the spec; clicking "preview" rolls a
+  sample so the user can see one realization before committing. The
+  editor never bakes random specs into literal entries — they stay
+  as random in the saved JSON, and the runtime re-rolls each play.
+- **Anchor mode toggle**. A button in the controls panel switches
+  between "world-anchored" and "player-relative." World-anchored
+  shows a world-anchor marker at scenario.anchor.{worldLon, worldLat}
+  draggable on the map. Player-relative mode shows the player-spawn
+  marker draggable; everything else is internally stored as
+  `{ relTo: "player", bearingDeg, rangeM }` and re-rendered relative
+  to the spawn marker.
 
 ### 10c — Per-unit panels
 
 Each unit kind (fighter, AWACS, SAM, EWR, jammer, MALD-launcher
-strike package, command-post, ship) gets a tailored sub-panel that
-exposes only the fields that make sense for that kind. E.g., the
-SAM panel shows magazine + cuing-source-tag; the AWACS panel shows
-orbit center + radius + altitude; the strike-package panel shows
-ingress route + target.
+strike package, command-post, ship) gets a tailored sub-panel inside
+CommanderView's existing right-side selection sidebar. Same widget
+discipline as the controls panel — collapsible sections, only the
+relevant fields for the unit's kind, sane defaults pulled from the
+platform JSON.
+
+- Fighter: `fighterModel`, loadout (template / literal / random),
+  pilot type + skill, patrol waypoints (route editor as another
+  CommanderView interaction — left-click adds waypoints, right-
+  click closes the polyline).
+- SAM: `magazine.missile` + `magazine.reloadS`, cuing tag, posture
+  (always-on / ambush / cued).
+- AWACS / orbit: orbit center (a marker draggable on the map),
+  orbit radius (a circle ring you scale by dragging the rim),
+  cruise altitude / speed.
+- EWR: just position + RCS-as-emitter — minimal panel.
+- Jammer: jammer block knobs (power / coneHalfDeg / burnThroughRangeM
+  / attFloor) with sane defaults, defensive on/off.
+- Strike package: ingress route polyline + target tag + weapon
+  type + egress route. The route editor is the same as the patrol
+  waypoint tool, just with a tagged target endpoint.
+- Command post / building: position + intel level only.
+- Ship: position + heading + speed + transit waypoints.
+
+Reusing CommanderView's marker rendering means the editor and the
+in-game commander view show units with the **exact same icons**.
+Authors place a marker, fly the scenario, and the same shape /
+color shows up on their HUD scope and god-eye map.
 
 ---
 
@@ -573,10 +638,18 @@ deep-strike scenarios.
 - `src/data/loadouts/*.json`                         — loadout template registry
 - `src/systems/scenarios/scenarioSchema.js`          — schema + validator
 - `src/systems/scenarios/scenarioRandom.js`          — RNG-driven spec resolution
-- `src/ui/scenarioEditor.js`                         — editor view (10b+)
-- `src/ui/scenarioEditor.css`                        — editor styles
+- `src/systems/commanderViewEditor.js`               — editor-mode plug-in for
+                                                       CommanderView (palette,
+                                                       interaction handlers,
+                                                       tooltip → edit-form swap,
+                                                       random-spec marker rendering)
 
 **Extended:**
+- `src/systems/commanderView.js`                     — adds editor-mode toggle,
+                                                       editable tooltip variant,
+                                                       interaction routing for
+                                                       click-to-place / drag-to-
+                                                       move / lasso-select
 - `src/systems/scenarios/scenarioRunner.js`          — consume schema v2
 - `src/ui/scenarioPicker.js`                         — merge bundled + localStorage scenarios
 - `src/systems/ai/index.js`                          — `patrol` / `strike` / `escort` pilot types
@@ -584,6 +657,13 @@ deep-strike scenarios.
                                                        `StrikeIngressBehavior`,
                                                        `EscortStationBehavior`
 - `src/data/platforms/*.json`                        — magazine field defaults
+
+**No new top-level UI surface.** The editor lives entirely inside
+the existing CommanderView, so the player flips into editor mode
+the same way they flip on the radar-debug overlay (a hotkey or
+controls-panel button). Saves on UX onboarding — anyone who can
+operate the commander map can edit a scenario with no extra
+learning.
 
 **Roadmap:**
 - `COMBAT_ROADMAP.md` — sub-phase status updates as work lands.
