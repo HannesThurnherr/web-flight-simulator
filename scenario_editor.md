@@ -482,6 +482,34 @@ fixed seed gives reproducibility for sharing scary fights.
 
 ## 9. Editor UI (Phase 10b–10c)
 
+### Entry point — the scenario picker
+
+The editor is reached from the **existing scenario picker** (the
+modal that opens at boot / after a respawn-elsewhere). Two ways in:
+
+- **"+ NEW SCENARIO" card** at the top of the picker grid → opens
+  the editor with an empty scenario (anchor defaulting to whatever
+  lon/lat the picker camera is currently centred on, or the user's
+  last edited location).
+- **"EDIT" button on any existing user-authored scenario card**
+  (one stored in localStorage, not the bundled ones) → opens the
+  editor populated with that scenario's contents.
+
+Bundled scenarios from `src/data/scenarios/*.json` are read-only in
+the editor — the picker shows them with a small "BUNDLED" badge and
+no EDIT button. The user can still **DUPLICATE** a bundled scenario
+to a new editable user copy, which is the recommended flow for "I
+liked sead-intro but want to add a fighter CAP."
+
+The picker stays at its current spawn-flow position in the boot
+sequence — the editor is just an alternate path out of it. Saving
+a scenario in the editor returns to the picker (the new / edited
+scenario is now selectable like any other). "Test fly" shortcuts
+this and goes straight to flight with the in-progress scenario,
+returning to the editor on respawn (Phase 10f).
+
+### Editor architecture — a mode of CommanderView
+
 **The editor is a mode of the existing CommanderView.** That 3D map
 already gives us pan / tilt / zoom, marker rendering with team
 colors, click-to-inspect tooltips, trail sampling, and the legend +
@@ -602,7 +630,10 @@ color shows up on their HUD scope and god-eye map.
      Magazine field on ground units.
      ----- ALL HAND-AUTHORED SCENARIOS WORK FROM HERE -----
 
-10b  Map placement editor (top-down, click to drop, drag to move).
+10b  Picker entry points + CommanderView editor mode boot.
+     "+ NEW SCENARIO" + "EDIT" + "DUPLICATE" buttons in the
+     picker; clicking enters CommanderView in editor mode.
+     Map placement (click to drop, drag to move).
      Selection panel, save to localStorage.
 
 10c  Per-unit config panels (ground units' magazine UI, AWACS orbit
