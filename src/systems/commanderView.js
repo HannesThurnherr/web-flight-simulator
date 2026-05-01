@@ -385,7 +385,12 @@ export class CommanderView {
 		this.active = active;
 
 		if (active) {
-			if (initialCenter) {
+			// Only re-center on the supplied initialCenter (typically the
+			// player) on the FIRST open of the session. Subsequent toggles
+			// restore wherever the user last left the map — re-centering
+			// on the player every time was jarring when the user was
+			// inspecting a unit far from their plane.
+			if (initialCenter && !this._everActivated) {
 				this.centerLon = initialCenter.lon;
 				this.centerLat = initialCenter.lat;
 				// Start far enough that the aircraft and any nearby units
@@ -393,6 +398,7 @@ export class CommanderView {
 				// absurdly close at high altitudes.
 				this.distance = Math.max(15000, (initialCenter.alt || 0) + 10000);
 			}
+			this._everActivated = true;
 		}
 		// Toggle visibility on all pre-existing entities.
 		this._setAllMarkersVisible(active);
