@@ -1,17 +1,26 @@
 // ============================================================================
-// Scenario editor — Phase 10b.3 (boot + render-only).
+// Scenario editor — Phase 10b.3 + 10b.4.
 //
 // Listens for `scenario-edit-request` (dispatched by the picker's
-// EDIT / NEW / DUPLICATE buttons), loads the raw scenario JSON from
-// the user-scenario store, swaps the game into a new EDITING state,
-// opens the commander map onto the scenario's anchor / first spawn,
-// and renders one Cesium marker per spawn entry. An overlay panel
-// shows scenario name + spawn list + EXIT button.
+// EDIT / NEW / DUPLICATE buttons), loads the raw scenario JSON,
+// swaps the game into a new EDITING state, opens the commander map,
+// and lets the player click on the globe to drop new units. Existing
+// spawns render as Cesium markers; the side panel lists them and
+// shows what each click-to-place will drop.
 //
-// This is the smallest useful slice: the player can open the editor,
-// see what's in the scenario, exit cleanly. Click-to-place,
-// drag-to-move, edit-form-tooltip land in subsequent 10b.4 / 10b.5
-// commits — they layer on top of this without restructuring.
+// Layout:
+//   - Side panel pinned to the RIGHT side (commander view's own
+//     controls panel sits at top-LEFT; we don't fight it).
+//   - Click-to-place is the primary interaction. The palette in the
+//     panel picks WHAT will be dropped (any plane / platform id) and
+//     the team. Then any left-click on the globe drops a literal
+//     spawn at the picked lon/lat (using terrain altitude for ground
+//     units, a sensible default cruise altitude for air units).
+//   - SAVE writes back to localStorage; EXIT returns to the menu.
+//
+// 10b.5 will add: drag-to-move existing markers, click-to-select with
+// edit form (override per-spawn fields like team / heading / loadout),
+// and per-marker delete on the map.
 // ============================================================================
 
 import * as Cesium from 'cesium';
@@ -21,16 +30,32 @@ import {
 } from '../systems/scenarios/userScenarios.js';
 import { getViewer } from '../world/cesiumWorld';
 import { CommanderView } from '../systems/commanderView';
+import { PLATFORMS } from '../systems/platforms';
+import { PLANES } from '../plane/planes';
 
-let _ctx = null;        // captured at install time so the editor can flip state
-let _activeId = null;   // currently-loaded scenario id
-let _activeJson = null; // raw scenario record (mutated by future edits)
-let _entities = [];     // Cesium entities for spawn markers
-let _panel = null;      // bottom-left overlay DOM
+let _ctx        = null;
+let _activeId   = null;
+let _activeJson = null;
+let _entities   = [];
+let _panel      = null;
 let _previousState = null;
+let _clickHandler  = null;
 
-// Marker color by team. Cesium colors so the markers look at home in
-// the commander view.
+// What the next click drops. Mutable; set by the palette in the side
+// panel.
+let _armedKind = 'fighter';        // 'fighter' | 'platform'
+let _armedSubId = 'f-15';          // plane id (when fighter) OR platform id
+let _armedTeam = 'hostile-red';
+
+// Ground-class platforms (depth-tested via the platform's `kind`
+// field). Used to decide whether to clamp to terrain altitude
+// (ground-anchored) or use a default cruise altitude (airborne).
+function _platformIsGround(platformId) {
+	const p = PLATFORMS[platformId];
+	return !!(p && p.kind === 'ground');
+}
+
+// Marker color by team.
 const TEAM_COLORS = {
 	'friendly':     Cesium.Color.fromCssColorString('#40d0ff'),
 	'hostile-red':  Cesium.Color.fromCssColorString('#ff4040'),
@@ -38,9 +63,13 @@ const TEAM_COLORS = {
 	'neutral':      Cesium.Color.fromCssColorString('#ffd040'),
 };
 const COLOR_FALLBACK = Cesium.Color.fromCssColorString('#cccccc');
-const COLOR_RANDOM   = Cesium.Color.fromCssColorString('#a070ff');  // violet
+const COLOR_RANDOM   = Cesium.Color.fromCssColorString('#a070ff');
 
-// Entry point — install the listener once at boot.
+const TEAMS = ['friendly', 'hostile-red', 'hostile-blue', 'neutral'];
+
+const DEFAULT_AIR_ALT_M    = 8000;
+const DEFAULT_FIGHTER_SPD  = 250;
+
 export function setupScenarioEditor(ctx) {
 	_ctx = ctx;
 	window.addEventListener('scenario-edit-request', (e) => {
@@ -58,24 +87,18 @@ function open(id) {
 		return;
 	}
 	_activeId = id;
-	_activeJson = JSON.parse(JSON.stringify(json));     // deep copy
+	_activeJson = JSON.parse(JSON.stringify(json));
 
-	// Hide the main menu so the editor view isn't covered.
 	const menu = document.getElementById('mainMenu');
 	if (menu) menu.classList.add('hidden');
 
-	// Stamp the EDITING state so animateLoop gives us camera-only
-	// rendering (no physics, no NPCs ticking).
 	if (_ctx) {
 		_previousState = _ctx.currentState;
 		_ctx.setCurrentState('EDITING');
 	}
 
-	// Bring up the commander map on the scenario anchor or the first
-	// spawn's location, whichever is more useful. Lazy-create the
-	// commander view if we're entering the editor straight from the
-	// menu (no flight session has run yet, so simLoop hasn't done
-	// the lazy-init).
+	// Lazy-create the commander view if we're entering the editor
+	// directly from the main menu (no flight session yet).
 	if (_ctx && !_ctx.commanderView) {
 		const viewer = getViewer();
 		if (viewer) {
@@ -85,21 +108,33 @@ function open(id) {
 		}
 	}
 	const view = _ctx && _ctx.commanderView;
-	const lookAt = _firstAnchorLikePoint(_activeJson);
-	if (view) view.setActive(true, lookAt);
+	if (view) {
+		view.setActive(true, _firstAnchorLikePoint(_activeJson));
+		// Force a wide regional zoom-out on entry so the user sees
+		// where the scenario lives in geographic context. The
+		// commander view's own _everActivated guard normally
+		// preserves whatever distance the user last left it at;
+		// for the editor we want to start zoomed out regardless.
+		view.distance = 800000;          // 800 km slant distance
+		view.tilt     = 12;              // mostly top-down
+	}
 
+	_installClickHandler();
 	_renderSpawnMarkers();
 	_buildPanel();
 }
 
 function _close() {
+	const viewer = getViewer();
 	for (const e of _entities) {
-		try { getViewer().entities.remove(e); } catch (err) { void err; }
+		try { viewer.entities.remove(e); } catch (err) { void err; }
 	}
 	_entities.length = 0;
 
 	if (_panel && _panel.parentNode) _panel.parentNode.removeChild(_panel);
 	_panel = null;
+
+	_uninstallClickHandler();
 
 	const view = _ctx && _ctx.commanderView;
 	if (view) view.setActive(false);
@@ -112,6 +147,55 @@ function _close() {
 
 	_activeId = null;
 	_activeJson = null;
+}
+
+// ----- Click-to-place ------------------------------------------------------
+
+function _installClickHandler() {
+	const viewer = getViewer();
+	if (!viewer || _clickHandler) return;
+	_clickHandler = new Cesium.ScreenSpaceEventHandler(viewer.scene.canvas);
+	_clickHandler.setInputAction((e) => {
+		// commander view also handles left-click for tooltip pinning;
+		// pick lon/lat from the cursor, drop a unit.
+		const ray = viewer.camera.getPickRay(e.position);
+		if (!ray) return;
+		const cart = viewer.scene.globe.pick(ray, viewer.scene);
+		if (!cart) return;
+		const carto = Cesium.Cartographic.fromCartesian(cart);
+		const lon = Cesium.Math.toDegrees(carto.longitude);
+		const lat = Cesium.Math.toDegrees(carto.latitude);
+		const terrainH = carto.height || 0;
+		_dropUnitAt(lon, lat, terrainH);
+	}, Cesium.ScreenSpaceEventType.LEFT_CLICK);
+}
+
+function _uninstallClickHandler() {
+	if (!_clickHandler) return;
+	try { _clickHandler.destroy(); } catch (err) { void err; }
+	_clickHandler = null;
+}
+
+function _dropUnitAt(lon, lat, terrainH) {
+	if (!_activeJson) return;
+	const spawn = {
+		type: _armedKind,
+		team: _armedTeam,
+		origin: { lon, lat, alt: 0 },
+	};
+	if (_armedKind === 'fighter') {
+		spawn.fighterModel = _armedSubId;
+		spawn.origin.alt = DEFAULT_AIR_ALT_M;
+		spawn.speedMps = DEFAULT_FIGHTER_SPD;
+	} else {
+		spawn.platformId = _armedSubId;
+		const isGround = _platformIsGround(_armedSubId);
+		spawn.origin.alt = isGround ? terrainH : DEFAULT_AIR_ALT_M;
+	}
+	if (!Array.isArray(_activeJson.spawns)) _activeJson.spawns = [];
+	_activeJson.spawns.push(spawn);
+	_renderSpawnMarkers();
+	_renderSpawnList();
 }
 
 // ----- Marker rendering ----------------------------------------------------
@@ -170,10 +254,6 @@ function _spawnLabel(s) {
 	return `${count}${id}  [${team}]`;
 }
 
-// Display position: literal origin coords directly; for random
-// origins use the centre as a stand-in (and the marker carries a
-// distinguishing colour). For player-relative we fall back to the
-// scenario anchor.
 function _resolveSpawnPositionForDisplay(s, json) {
 	const o = s.origin;
 	if (!o) return null;
@@ -191,8 +271,6 @@ function _resolveSpawnPositionForDisplay(s, json) {
 		};
 	}
 	if (o.relTo === 'player') {
-		// We don't know the player position at edit time. Pin to
-		// the anchor (or 0,0 fallback).
 		const anc = _scenarioAnchorPoint(json);
 		const plat = anc.lat * Math.PI / 180;
 		const b = (o.bearingDeg || 0) * Math.PI / 180;
@@ -237,8 +315,12 @@ function _scenarioAnchorPoint(json) {
 			alt: json.anchor.playerSpawn.alt || 0,
 		};
 	}
-	// Default — pick a sensible fallback (centre of the player's
-	// last-known geocode, otherwise (0,0)). For now just (0,0).
+	// Fall back to the ctx state's current lon/lat (where the player
+	// happens to be, geocoded from the menu / last flight) instead of
+	// (0, 0) which lands you in the equatorial Atlantic.
+	if (_ctx && _ctx.state && typeof _ctx.state.lon === 'number') {
+		return { lon: _ctx.state.lon, lat: _ctx.state.lat, alt: _ctx.state.alt || 0 };
+	}
 	return { lon: 0, lat: 0, alt: 0 };
 }
 
@@ -253,16 +335,18 @@ function _firstAnchorLikePoint(json) {
 	return null;
 }
 
-// ----- Overlay panel --------------------------------------------------------
+// ----- Side panel ----------------------------------------------------------
 
 function _buildPanel() {
 	const panel = document.createElement('div');
 	panel.id = 'scenario-editor-panel';
 	panel.style.cssText = `
 		position: fixed;
-		left: 16px;
+		right: 16px;
 		top: 16px;
 		width: 320px;
+		max-height: calc(100vh - 32px);
+		overflow-y: auto;
 		padding: 12px 14px;
 		background: rgba(0, 20, 30, 0.85);
 		border: 1px solid rgba(0, 220, 255, 0.45);
@@ -273,39 +357,34 @@ function _buildPanel() {
 		z-index: 60;
 		letter-spacing: 0.5px;
 	`;
-	panel.innerHTML = `
-		<div style="color:#6ff;font-weight:bold;border-bottom:1px solid rgba(0,220,255,0.35);padding-bottom:5px;margin-bottom:8px;display:flex;justify-content:space-between;">
-			<span>SCENARIO EDITOR</span>
-			<span style="opacity:0.6;font-size:10px;">10b.3</span>
-		</div>
-		<div style="margin-bottom:6px;">
-			<input id="se-name" type="text" value="${escapeAttr(_activeJson.name || '')}"
-				style="width:100%;background:rgba(0,0,0,0.4);border:1px solid rgba(0,220,255,0.35);color:#c0eeff;font-family:inherit;font-size:12px;padding:3px 6px;letter-spacing:0.5px;">
-		</div>
-		<div style="opacity:0.7;margin-bottom:8px;font-size:10px;">id: <span style="color:#fff">${escapeHtml(_activeId)}</span></div>
-		<div style="margin-bottom:8px;">
-			<div style="opacity:0.7;font-size:10px;">SPAWNS</div>
-			<div id="se-spawn-list" style="max-height:240px;overflow-y:auto;margin-top:4px;"></div>
-		</div>
-		<div style="display:flex;gap:8px;">
-			<button id="se-save" type="button" style="flex:1;font-family:inherit;font-size:11px;letter-spacing:1px;background:transparent;border:1px solid #6ff;color:#6ff;padding:5px;cursor:pointer;">SAVE</button>
-			<button id="se-exit" type="button" style="flex:1;font-family:inherit;font-size:11px;letter-spacing:1px;background:transparent;border:1px solid #ff8080;color:#ff8080;padding:5px;cursor:pointer;">EXIT</button>
-		</div>
-		<div style="margin-top:8px;opacity:0.6;font-size:10px;">
-			Click-to-place + drag-to-move land in 10b.4. For now this just shows the spawns.
-		</div>
-	`;
+	panel.innerHTML = _panelHtml();
 	document.body.appendChild(panel);
 	_panel = panel;
 
 	panel.querySelector('#se-name').addEventListener('input', (e) => {
 		_activeJson.name = e.target.value;
 	});
+	panel.querySelector('#se-kind').addEventListener('change', (e) => {
+		_armedKind = e.target.value;
+		// Reset sub-id to a sane default for the new kind.
+		const sub = panel.querySelector('#se-sub');
+		if (_armedKind === 'fighter') {
+			sub.innerHTML = _optionsFor(Object.keys(PLANES).sort(), _armedSubId);
+		} else {
+			sub.innerHTML = _optionsFor(Object.keys(PLATFORMS).sort(), _armedSubId);
+		}
+		// Force the next sub-id to be valid for the new options list.
+		_armedSubId = sub.value;
+	});
+	panel.querySelector('#se-sub').addEventListener('change', (e) => {
+		_armedSubId = e.target.value;
+	});
+	panel.querySelector('#se-team').addEventListener('change', (e) => {
+		_armedTeam = e.target.value;
+	});
 	panel.querySelector('#se-save').addEventListener('click', () => {
 		saveUserScenario(_activeId, _activeJson);
 		refreshScenarios();
-		// Brief flash on the SAVE button so the user gets visual
-		// feedback that something happened.
 		const btn = panel.querySelector('#se-save');
 		const orig = btn.textContent;
 		btn.textContent = 'SAVED ✓';
@@ -318,22 +397,95 @@ function _buildPanel() {
 	_renderSpawnList();
 }
 
+function _panelHtml() {
+	const planeOpts = _optionsFor(Object.keys(PLANES).sort(), _armedSubId);
+	const platOpts  = _optionsFor(Object.keys(PLATFORMS).sort(), _armedSubId);
+	const subOpts   = (_armedKind === 'fighter') ? planeOpts : platOpts;
+	const teamOpts  = TEAMS.map(t =>
+		`<option value="${t}"${t === _armedTeam ? ' selected' : ''}>${t}</option>`).join('');
+
+	return `
+	<div style="color:#6ff;font-weight:bold;border-bottom:1px solid rgba(0,220,255,0.35);padding-bottom:5px;margin-bottom:8px;display:flex;justify-content:space-between;">
+		<span>SCENARIO EDITOR</span>
+		<span style="opacity:0.6;font-size:10px;">10b.4</span>
+	</div>
+
+	<div style="margin-bottom:6px;">
+		<input id="se-name" type="text" value="${escapeAttr(_activeJson.name || '')}"
+			style="width:100%;background:rgba(0,0,0,0.4);border:1px solid rgba(0,220,255,0.35);color:#c0eeff;font-family:inherit;font-size:12px;padding:3px 6px;letter-spacing:0.5px;">
+	</div>
+	<div style="opacity:0.7;margin-bottom:8px;font-size:10px;">id: <span style="color:#fff">${escapeHtml(_activeId)}</span></div>
+
+	<div style="margin-top:8px;border-top:1px solid rgba(0,220,255,0.2);padding-top:6px;">
+		<div style="opacity:0.7;font-size:10px;margin-bottom:4px;">PALETTE — armed for next click</div>
+		<div style="display:flex;gap:6px;margin-bottom:5px;">
+			<select id="se-kind" style="${_selectCss()}flex:0 0 90px;">
+				<option value="fighter"${_armedKind === 'fighter' ? ' selected' : ''}>fighter</option>
+				<option value="platform"${_armedKind === 'platform' ? ' selected' : ''}>platform</option>
+			</select>
+			<select id="se-sub" style="${_selectCss()}flex:1;">${subOpts}</select>
+		</div>
+		<select id="se-team" style="${_selectCss()}width:100%;">${teamOpts}</select>
+	</div>
+
+	<div style="margin-top:8px;border-top:1px solid rgba(0,220,255,0.2);padding-top:6px;">
+		<div style="opacity:0.7;font-size:10px;">SPAWNS</div>
+		<div id="se-spawn-list" style="max-height:200px;overflow-y:auto;margin-top:4px;"></div>
+	</div>
+
+	<div style="margin-top:8px;border-top:1px solid rgba(0,220,255,0.2);padding-top:6px;font-size:10px;opacity:0.75;">
+		<div style="opacity:0.7;margin-bottom:4px;">CONTROLS</div>
+		<div>· LEFT-CLICK on terrain — drop selected unit</div>
+		<div>· LEFT-DRAG — pan map</div>
+		<div>· RIGHT-DRAG — tilt map</div>
+		<div>· WHEEL — zoom</div>
+		<div style="opacity:0.5;margin-top:3px;">drag-to-move + edit-form on markers in 10b.5</div>
+	</div>
+
+	<div style="display:flex;gap:8px;margin-top:10px;">
+		<button id="se-save" type="button" style="flex:1;font-family:inherit;font-size:11px;letter-spacing:1px;background:transparent;border:1px solid #6ff;color:#6ff;padding:5px;cursor:pointer;">SAVE</button>
+		<button id="se-exit" type="button" style="flex:1;font-family:inherit;font-size:11px;letter-spacing:1px;background:transparent;border:1px solid #ff8080;color:#ff8080;padding:5px;cursor:pointer;">EXIT</button>
+	</div>
+	`;
+}
+
+function _selectCss() {
+	return `background:rgba(0,0,0,0.4);border:1px solid rgba(0,220,255,0.35);color:#c0eeff;font-family:inherit;font-size:11px;padding:2px 4px;letter-spacing:0.5px;`;
+}
+
+function _optionsFor(ids, selected) {
+	return ids.map(id =>
+		`<option value="${escapeAttr(id)}"${id === selected ? ' selected' : ''}>${escapeHtml(id)}</option>`,
+	).join('');
+}
+
 function _renderSpawnList() {
 	if (!_panel || !_activeJson) return;
 	const list = _panel.querySelector('#se-spawn-list');
 	if (!list) return;
 	const spawns = _activeJson.spawns || [];
 	if (spawns.length === 0) {
-		list.innerHTML = '<div style="opacity:0.5;font-size:10px;font-style:italic;">no spawns yet</div>';
+		list.innerHTML = '<div style="opacity:0.5;font-size:10px;font-style:italic;">no spawns yet — click on the globe to drop a unit</div>';
 		return;
 	}
 	list.innerHTML = spawns.map((s, i) => {
 		const label = _spawnLabel(s);
-		return `<div style="padding:2px 0;border-bottom:1px dotted rgba(0,220,255,0.15);">
-			<span style="opacity:0.5;display:inline-block;width:18px;">${i + 1}.</span>
-			<span>${escapeHtml(label)}</span>
+		return `<div class="se-spawn-row" data-idx="${i}" style="padding:2px 4px;border-bottom:1px dotted rgba(0,220,255,0.15);display:flex;justify-content:space-between;align-items:center;">
+			<span><span style="opacity:0.5;display:inline-block;width:18px;">${i + 1}.</span>${escapeHtml(label)}</span>
+			<button type="button" class="se-del" data-idx="${i}" style="background:transparent;border:1px solid rgba(255,128,128,0.4);color:#f88;font-size:9px;padding:1px 5px;cursor:pointer;letter-spacing:0.5px;">DEL</button>
 		</div>`;
 	}).join('');
+	for (const btn of list.querySelectorAll('.se-del')) {
+		btn.addEventListener('click', (e) => {
+			e.stopPropagation();
+			const idx = parseInt(btn.getAttribute('data-idx'), 10);
+			if (Number.isFinite(idx)) {
+				_activeJson.spawns.splice(idx, 1);
+				_renderSpawnMarkers();
+				_renderSpawnList();
+			}
+		});
+	}
 }
 
 function escapeHtml(s) {
