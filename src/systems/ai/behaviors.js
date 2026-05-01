@@ -234,6 +234,17 @@ export class MissileEvasionBehavior extends Behavior {
 		this.triggerRange  = opts.triggerRange  ?? 30000; // m
 		this.flareInterval = opts.flareInterval ?? 1.5;   // s
 		this._lastFlareAt  = -Infinity;
+		// Per-engagement state: which missile we committed to and which
+		// direction (left/right) we chose to beam. Re-evaluating either
+		// every frame causes the "frantic roll back-and-forth"
+		// pathology — the closing missile's bearing drifts, the
+		// equidistant-beam-pick flips, and the AI commands a 180°
+		// heading reversal. Once we've picked, we hold until the
+		// missile dies or leaves the trigger envelope.
+		this._committedThreat   = null;
+		this._committedBeamSide = 0;          // -1 = left, +1 = right, 0 = uncommitted
+		this._committedAt       = -Infinity;
+		this._dropOutTimer      = 0;          // brief loss-of-contact grace
 	}
 
 	// Any hostile missile with at least one live sensor channel counts.
@@ -270,10 +281,57 @@ export class MissileEvasionBehavior extends Behavior {
 		return best;
 	}
 
-	isActive(ctx) { return !!this._findThreat(ctx); }
+	isActive(ctx) {
+		// Hold-then-drop semantics. Once committed to a threat, we
+		// stay active so long as the missile is alive and any sensor
+		// channel can find it within the next 1.5 s. A brief contact
+		// flicker (notch / IR cone edge) doesn't drop us — that's
+		// the source of the original frantic-roll oscillation when
+		// the AI rapidly toggled between Evasion and Engage.
+		if (this._committedThreat) {
+			const t = this._committedThreat;
+			const stillAlive = t && !t.destroyed && t.active !== false;
+			const stillNear  = stillAlive && this._findThreatById(ctx, t);
+			if (stillNear) {
+				this._dropOutTimer = 0;
+				return true;
+			}
+			this._dropOutTimer += (ctx.dt || 0);
+			if (stillAlive && this._dropOutTimer < 1.5) return true;
+			// Threat is gone or out of envelope — release.
+			this._committedThreat   = null;
+			this._committedBeamSide = 0;
+			this._dropOutTimer      = 0;
+		}
+		// Not yet committed: pick up the strongest current threat.
+		const fresh = this._findThreat(ctx);
+		if (fresh) {
+			this._committedThreat = fresh.target;
+			this._committedAt     = ctx.now;
+			this._committedBeamSide = 0;       // chosen lazily on first apply()
+			return true;
+		}
+		return false;
+	}
+
+	// Lookup helper: is a specific missile still detectable + in range?
+	// Used by isActive to keep evasion locked on the chosen threat
+	// instead of letting _findThreat pick a different one each frame.
+	_findThreatById(ctx, missile) {
+		const contacts = ctx.unit.contacts;
+		if (!contacts) return null;
+		const c = contacts.get(missile);
+		if (!c) return null;
+		if (!c.radar && !c.ir && !c.visual) return null;
+		const range = (c.radar && c.radar.range) || null;
+		if (range !== null && range > this.triggerRange) return null;
+		return { target: missile, contact: c, range };
+	}
 
 	apply(ctx, cmd, dt) {
-		const threat = this._findThreat(ctx);
+		const threat = (this._committedThreat
+			&& this._findThreatById(ctx, this._committedThreat))
+			|| this._findThreat(ctx);
 		if (!threat) {
 			// No threat → reset the last-ditch jitter so the next
 			// engagement picks a fresh random offset.
@@ -287,9 +345,18 @@ export class MissileEvasionBehavior extends Behavior {
 		const bearingToMsl = bearingFromTo(unit, msl);
 		const leftBeam  = (bearingToMsl + 90) % 360;
 		const rightBeam = (bearingToMsl - 90 + 360) % 360;
-		const dL = angleDiffDeg(unit.heading, leftBeam);
-		const dR = angleDiffDeg(unit.heading, rightBeam);
-		const beamHeading = Math.abs(dL) < Math.abs(dR) ? leftBeam : rightBeam;
+		// Pick a beam direction once and stick with it. Re-evaluating
+		// the closer-beam choice each frame is the second source of
+		// the rolling-back-and-forth pathology: as the missile closes,
+		// its bearing drifts a few degrees, the equidistant midpoint
+		// between leftBeam and rightBeam flips, and the AI commands a
+		// 180° heading reversal. Lock on first apply().
+		if (this._committedBeamSide === 0) {
+			const dL = angleDiffDeg(unit.heading, leftBeam);
+			const dR = angleDiffDeg(unit.heading, rightBeam);
+			this._committedBeamSide = Math.abs(dL) < Math.abs(dR) ? -1 : +1;
+		}
+		const beamHeading = (this._committedBeamSide < 0) ? leftBeam : rightBeam;
 
 		// Altitude-above-terrain, poked in by npcSystem at ~2 Hz. Used to
 		// pull out of the terrain-masking dive as the ground gets close —

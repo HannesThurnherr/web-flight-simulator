@@ -209,6 +209,7 @@ export function npcSystemUpdate(sys, dt, playerState, simTime = 0) {
 			npc.pilot.update({
 				unit: npc,
 				now:  simTime,
+				dt,
 				terrainHeight: npc._cachedTerrainH,
 				projectiles: ctxProjectiles,
 				teamDatalink: getTeamDatalink(npc.team),
@@ -362,7 +363,22 @@ export function npcSystemUpdate(sys, dt, playerState, simTime = 0) {
 			let bankErr = desiredBank - curRoll;
 			while (bankErr < -180) bankErr += 360;
 			while (bankErr >  180) bankErr -= 360;
-			const rollStick  = Math.max(-1, Math.min(1, bankErr * 0.04));
+			const rollStickRaw = Math.max(-1, Math.min(1, bankErr * 0.04));
+			// Stick-rate limiter. Without this the AI can slam the
+			// stick from +1 to -1 in a single frame whenever a
+			// behavior changes the heading target — an unnatural
+			// "instant reversal" that real pilots can't physically
+			// produce. Cap stick rate at ~3.0 per second (full
+			// deflection in ~0.3 s, faster than a human but
+			// physically feasible) so even a 180° heading flip
+			// produces a smooth bank reversal instead of a snap.
+			const prevRoll  = (npc._prevRollStick  != null) ? npc._prevRollStick  : 0;
+			const prevPitch = (npc._prevPitchStick != null) ? npc._prevPitchStick : 0;
+			const STICK_RATE = 3.0; // 1/s
+			const maxStep = STICK_RATE * dt;
+			const rollStick = Math.max(prevRoll - maxStep,
+				Math.min(prevRoll + maxStep, rollStickRaw));
+			npc._prevRollStick = rollStick;
 
 			// Coordinated-turn pitch: when banked, you have to pull
 			// MORE G to hold the same flight-path angle (load factor =
@@ -384,10 +400,15 @@ export function npcSystemUpdate(sys, dt, playerState, simTime = 0) {
 				Math.min(Math.PI / 2.2, curRoll * Math.PI / 180));
 			const pitchScale = 1 / Math.max(0.3, Math.cos(bankRad));
 			const pitchErrDeg = (npc.targetPitch || 0) - (npc.pitch || 0);
-			let pitchStick = Math.max(-1, Math.min(1,
+			let pitchStickRaw = Math.max(-1, Math.min(1,
 				pitchErrDeg * 0.15 * pitchScale));
-			if (rollAbs > 30 && pitchStick < -0.2)  pitchStick = -0.2;
-			if (rollAbs > 100)                      pitchStick = Math.min(0.3, pitchStick);
+			if (rollAbs > 30 && pitchStickRaw < -0.2)  pitchStickRaw = -0.2;
+			if (rollAbs > 100)                          pitchStickRaw = Math.min(0.3, pitchStickRaw);
+			// Same rate-limit story as roll. A clean pull-up shouldn't
+			// be a single-frame stick slam.
+			const pitchStick = Math.max(prevPitch - maxStep,
+				Math.min(prevPitch + maxStep, pitchStickRaw));
+			npc._prevPitchStick = pitchStick;
 
 			// AB discipline: behaviours like to firewall the throttle
 			// + boost during evasion, gun chases, and terrain pull-ups.
