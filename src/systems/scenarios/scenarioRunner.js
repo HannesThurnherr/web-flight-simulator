@@ -41,7 +41,7 @@ import { getTeamDatalink } from '../teamDatalink.js';
 import { makeRng, sample, sampleDiscENU, sampleOnRoute } from './scenarioRandom.js';
 import { MUNITIONS } from '../../weapon/munitions.js';
 import { PLANES } from '../../plane/planes.js';
-import { createPatrolPilot } from '../ai/index.js';
+import { createPatrolPilot, createStrikePilot, createEscortPilot } from '../ai/index.js';
 
 // Resolve scenario.anchor → an absolute reference point used by
 // `origin.relTo: "anchor"`. Two modes:
@@ -362,6 +362,42 @@ export function buildScenarioFromJson(data) {
 								waypoints: params.waypoints || [],
 								loop:      params.loop,
 								captureRadiusM: params.captureRadiusM,
+							});
+						} else if (npc && s.pilot && s.pilot.type === 'strike') {
+							const params = s.pilot.params || {};
+							// Resolve the strike target. JSON can supply
+							// either a literal { lon, lat, alt } or a
+							// { tag } reference. The getTarget closure
+							// re-resolves each frame so a moving target
+							// (rare for strike, but legal) tracks live.
+							const tgt = params.target || {};
+							const getTarget = () => {
+								if (typeof tgt.lon === 'number') return tgt;
+								if (tgt.tag) {
+									const u = _taggedUnits.get(tgt.tag);
+									if (u) return { lon: u.lon, lat: u.lat, alt: u.alt };
+								}
+								return null;
+							};
+							npc.pilot = createStrikePilot(npc, {
+								ingressWaypoints: params.ingressWaypoints,
+								egressWaypoints:  params.egressWaypoints,
+								weaponType:       params.weaponType,
+								terminalRangeM:   params.terminalRangeM,
+								captureRadiusM:   params.captureRadiusM,
+								weaponCount:      params.weaponCount,
+								getTarget,
+							});
+						} else if (npc && s.pilot && s.pilot.type === 'escort') {
+							const params = s.pilot.params || {};
+							// Resolve the escortee from its tag at runtime.
+							const tag = params.escortTag;
+							const getEscort = () => tag ? (_taggedUnits.get(tag) || null) : null;
+							npc.pilot = createEscortPilot(npc, {
+								getEscort,
+								standoffM:         params.standoffM,
+								standoffAltOffset: params.standoffAltOffset,
+								maxEngagementRange: params.engageRangeM,
 							});
 						}
 						// 10d — tag registration. Single-tag spawns put

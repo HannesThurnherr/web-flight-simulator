@@ -14,6 +14,8 @@ import {
 	PatrolRtbBehavior,
 	PatrolCapBehavior,
 	WaypointFollowBehavior,
+	StrikeBehavior,
+	EscortBehavior,
 } from './behaviors.js';
 import {
 	CountermeasureSubsystem,
@@ -88,6 +90,80 @@ export function createPatrolPilot(unit, opts = {}) {
 	p.addBehavior(new CruiseBehavior({
 		alt:   opts.cruiseAlt   ?? 8000,
 		speed: opts.cruiseSpeed ?? 300,
+	}));
+	return p;
+}
+
+// Strike pilot: ingress route → release weapon on target → egress
+// route. EngageBehavior still wins above this; if a fighter
+// intercepts mid-ingress, we defend, then resume. Cruise stays as
+// the post-egress fallback.
+export function createStrikePilot(unit, opts = {}) {
+	const p = new Pilot(unit);
+	p.addSubsystem('countermeasures', new CountermeasureSubsystem({
+		flares: opts.flares ?? 30,
+		chaff:  opts.chaff  ?? 30,
+	}));
+	p.addSubsystem('targetManager', new TargetManagerSubsystem({
+		maxEngagementRange: opts.maxEngagementRange ?? 70000,
+	}));
+	p.addSubsystem('weapons', new WeaponSubsystem({
+		weapons: opts.weapons,
+	}));
+	p.addBehavior(new ForwardTerrainAvoidBehavior());
+	p.addBehavior(new MissileEvasionBehavior());
+	p.addBehavior(new CrankBehavior());
+	p.addBehavior(new TerrainAvoidBehavior());
+	p.addBehavior(new EngageBehavior());
+	p.addBehavior(new StrikeBehavior({
+		ingressWaypoints: opts.ingressWaypoints,
+		egressWaypoints:  opts.egressWaypoints,
+		weaponType:       opts.weaponType,
+		terminalRangeM:   opts.terminalRangeM,
+		captureRadiusM:   opts.captureRadiusM,
+		weaponCount:      opts.weaponCount,
+		getTarget:        opts.getTarget,
+	}));
+	p.addBehavior(new CruiseBehavior({
+		alt:   opts.cruiseAlt   ?? 8000,
+		speed: opts.cruiseSpeed ?? 280,
+	}));
+	return p;
+}
+
+// Escort pilot: hold a slot near a designated unit (the AWACS we're
+// shielding, the strike package we're shepherding). Engage runs
+// above this, so any hostile that comes into the TargetManager's
+// engagement range pulls us off station to intercept; once dealt
+// with, we drift back to slot.
+export function createEscortPilot(unit, opts = {}) {
+	const p = new Pilot(unit);
+	p.addSubsystem('countermeasures', new CountermeasureSubsystem({
+		flares: opts.flares ?? 30,
+		chaff:  opts.chaff  ?? 30,
+	}));
+	p.addSubsystem('targetManager', new TargetManagerSubsystem({
+		// Default engage range tighter than a free CAP fighter — an
+		// escort that races 70 km off station for every bandit
+		// abandons the asset it's supposed to be shielding.
+		maxEngagementRange: opts.maxEngagementRange ?? 35000,
+	}));
+	p.addSubsystem('weapons', new WeaponSubsystem({
+		weapons: opts.weapons,
+	}));
+	p.addBehavior(new ForwardTerrainAvoidBehavior());
+	p.addBehavior(new MissileEvasionBehavior());
+	p.addBehavior(new CrankBehavior());
+	p.addBehavior(new TerrainAvoidBehavior());
+	p.addBehavior(new EngageBehavior());
+	p.addBehavior(new EscortBehavior({
+		getEscort:         opts.getEscort,
+		standoffM:         opts.standoffM,
+		standoffAltOffset: opts.standoffAltOffset,
+	}));
+	p.addBehavior(new CruiseBehavior({
+		alt:   opts.cruiseAlt   ?? 8000,
+		speed: opts.cruiseSpeed ?? 240,
 	}));
 	return p;
 }

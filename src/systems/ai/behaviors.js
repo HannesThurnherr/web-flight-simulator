@@ -157,6 +157,178 @@ export class WaypointFollowBehavior extends Behavior {
 }
 
 // ----------------------------------------------------------------------------
+// StrikeBehavior — Phase 10d (NPC missions, "strike" pilot).
+//
+// Three-phase mission profile: ingress → release → egress.
+//   ingress  Follow ingressWaypoints toward the strike target. The
+//            last waypoint is implicitly "the target itself" if no
+//            explicit egress is configured.
+//   release  Within terminalRangeM of target, fire one weaponType
+//            shot per pass at the target coords. Default: one
+//            weapon per spawn (a single Storm Shadow Su-24 stand-in
+//            for "deliver this cruise then go home"). Authors can
+//            bump weaponCount for multi-weapon strikes.
+//   egress   Follow egressWaypoints back to base. When consumed,
+//            the pilot stays put (CruiseBehavior takes over for the
+//            station-keep tail).
+//
+// Engage still wins above this in the priority chain — if a hostile
+// fighter shows up mid-ingress, the strike pilot defends, then
+// resumes ingress when the threat clears. Same applies to evasion +
+// terrain avoid.
+export class StrikeBehavior extends Behavior {
+	constructor(opts = {}) {
+		super('Strike');
+		this.ingressWaypoints = Array.isArray(opts.ingressWaypoints) ? opts.ingressWaypoints : [];
+		this.egressWaypoints  = Array.isArray(opts.egressWaypoints)  ? opts.egressWaypoints  : [];
+		this.weaponType = opts.weaponType || 'STORM-SHADOW';
+		this.terminalRangeM = opts.terminalRangeM ?? 60000;
+		this.captureRadiusM = opts.captureRadiusM ?? 1500;
+		this._getTarget = opts.getTarget || (() => null);
+		this._phase = 'ingress';
+		this._idx = 0;
+		this._weaponsLeft = opts.weaponCount ?? 1;
+		// Brief settle period after release before transitioning to
+		// egress, so the WeaponSubsystem cooldown lets the shot
+		// actually fire on at least one frame.
+		this._releaseDwellS = 0.5;
+		this._releaseTimer = 0;
+	}
+	isActive() { return this._phase !== 'done'; }
+	apply(ctx, cmd, dt) {
+		const u = ctx.unit;
+		const tgt = this._getTarget();
+		const plat = u.lat * Math.PI / 180;
+		const cosLat = Math.cos(plat) || 1;
+
+		const distTo = (p) => {
+			if (!p) return Infinity;
+			const dE = (p.lon - u.lon) * 111320 * cosLat;
+			const dN = (p.lat - u.lat) * 111320;
+			return Math.hypot(dE, dN);
+		};
+		const flyTo = (p) => {
+			if (!p) return;
+			const dE = (p.lon - u.lon) * 111320 * cosLat;
+			const dN = (p.lat - u.lat) * 111320;
+			cmd.targetHeading = (Math.atan2(dE, dN) * 180 / Math.PI + 360) % 360;
+			const altErr = (p.altM ?? p.alt ?? u.alt) - u.alt;
+			cmd.targetPitch = Math.max(-8, Math.min(8, altErr / 400));
+			cmd.targetSpeed = p.speedMps ?? 260;
+			cmd.throttle    = 0.7;
+			cmd.boost       = false;
+		};
+
+		if (this._phase === 'ingress') {
+			// Ingress consumed → head straight at the target.
+			const wp = this.ingressWaypoints[this._idx] || tgt;
+			if (wp) {
+				flyTo(wp);
+				if (distTo(wp) < this.captureRadiusM
+					&& this._idx + 1 < this.ingressWaypoints.length) {
+					this._idx++;
+				}
+			}
+			// Within terminal range and weapon available → release.
+			if (tgt && distTo(tgt) <= this.terminalRangeM && this._weaponsLeft > 0) {
+				this._phase = 'release';
+				this._releaseTimer = 0;
+			}
+			return;
+		}
+
+		if (this._phase === 'release') {
+			if (tgt) {
+				flyTo(tgt);
+				cmd.fireWeapon   = true;
+				cmd.weaponType   = this.weaponType;
+				cmd.weaponTarget = tgt;
+			}
+			this._releaseTimer += dt;
+			// One weapon per release attempt; subtract on first frame.
+			if (this._releaseTimer === dt) this._weaponsLeft--;
+			if (this._releaseTimer >= this._releaseDwellS) {
+				this._phase = 'egress';
+				this._idx = 0;
+				if (this.egressWaypoints.length === 0) this._phase = 'done';
+			}
+			return;
+		}
+
+		if (this._phase === 'egress') {
+			const wp = this.egressWaypoints[this._idx];
+			if (!wp) { this._phase = 'done'; return; }
+			flyTo(wp);
+			if (distTo(wp) < this.captureRadiusM) {
+				if (this._idx + 1 < this.egressWaypoints.length) {
+					this._idx++;
+				} else {
+					this._phase = 'done';
+				}
+			}
+		}
+	}
+}
+
+// ----------------------------------------------------------------------------
+// EscortBehavior — Phase 10d (NPC missions, "escort" pilot).
+//
+// Hold a slot ~3 km behind the protected unit. EngageBehavior sits
+// above this in priority so any hostile inside the engagement range
+// pulls the escort off station to intercept; once the threat is
+// dealt with, the escort drifts back to its slot. We don't model a
+// "hard tether" yet (escort doesn't refuse to chase a bandit far
+// from the protectee) — a single engageRangeM cap on the
+// TargetManager subsystem is enough for now.
+//
+// `getEscort` returns the protected unit each frame (looked up from
+// the scenario's _taggedUnits map). When the protectee dies, this
+// behavior goes inactive and Cruise takes over for the rest of the
+// sortie.
+export class EscortBehavior extends Behavior {
+	constructor(opts = {}) {
+		super('Escort');
+		this._getEscort = opts.getEscort || (() => null);
+		this.standoffM = opts.standoffM ?? 3000;
+		this.standoffAltOffset = opts.standoffAltOffset ?? 0;
+	}
+	isActive() {
+		const e = this._getEscort();
+		return !!(e && !e.destroyed && e.active !== false);
+	}
+	apply(ctx, cmd) {
+		const u = ctx.unit;
+		const e = this._getEscort();
+		if (!e) return;
+		const plat = e.lat * Math.PI / 180;
+		const cosLat = Math.cos(plat) || 1;
+		// Slot 3 km behind the escortee along its current heading.
+		const hRad = (e.heading || 0) * Math.PI / 180;
+		const slotE = -Math.sin(hRad) * this.standoffM;
+		const slotN = -Math.cos(hRad) * this.standoffM;
+		const tgtLon = e.lon + slotE / (111320 * cosLat);
+		const tgtLat = e.lat + slotN / 111320;
+		const tgtAlt = e.alt + this.standoffAltOffset;
+
+		const myCosLat = Math.cos(u.lat * Math.PI / 180) || 1;
+		const dE = (tgtLon - u.lon) * 111320 * myCosLat;
+		const dN = (tgtLat - u.lat) * 111320;
+		const dist = Math.hypot(dE, dN);
+		// Far from slot → pursuit course. Close in → match the
+		// escortee's heading so we don't oscillate at the slot.
+		cmd.targetHeading = dist > 400
+			? (Math.atan2(dE, dN) * 180 / Math.PI + 360) % 360
+			: (e.heading || 0);
+		const altErr = tgtAlt - u.alt;
+		cmd.targetPitch = Math.max(-5, Math.min(5, altErr / 400));
+		// Match escortee speed with a small catch-up margin when off-slot.
+		cmd.targetSpeed = (e.speed || 220) * (dist > 1000 ? 1.1 : 1.0);
+		cmd.throttle = 0.7;
+		cmd.boost = false;
+	}
+}
+
+// ----------------------------------------------------------------------------
 // ForwardTerrainAvoidBehavior — predictive look-ahead pull-up.
 //
 // The plain TerrainAvoidBehavior below only reads AGL straight under
