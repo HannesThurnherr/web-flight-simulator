@@ -37,7 +37,6 @@ import {
 import { updateSensors, setSensorScene } from './sensorSystem';
 import { collectJamStrobes } from './ew/jammerSubsystem.js';
 import { Contrail } from '../plane/contrail.js';
-import { CloudField } from './cloudField.js';
 import { getTeamDatalink } from './teamDatalink';
 import { getActiveScenario } from './scenarios';
 import { CommanderView } from './commanderView';
@@ -723,17 +722,6 @@ export function update(dt, ctx) {
 			ctx._playerContrail = new Contrail(ctx.scene, getViewer());
 		}
 		if (ctx._playerContrail) ctx._playerContrail.update(dt, state);
-
-		// Phase 9c — particle-cluster cloud field. Lazy on first frame
-		// of flight, centred on the player's current position so the
-		// field shows up wherever the scenario drops them. Built once;
-		// updates every frame to keep matrices baked against the
-		// current camera. ~1-2 ms / frame at 24×24 grid × 3 puffs/cell
-		// (~3 k spheres of 36 tris each).
-		if (!ctx._cloudField && ctx.scene) {
-			ctx._cloudField = new CloudField(ctx.scene, getViewer(), state.lon, state.lat);
-		}
-		if (ctx._cloudField) ctx._cloudField.update();
 		if (jetFlames.length > 0) {
 			// TV nozzle deflection: rotate the flame group so the plume
 			// visibly tilts when the F-22's nozzles vector. Smoothed so the
