@@ -127,10 +127,14 @@ export class TargetManagerSubsystem extends Subsystem {
 		const dl = ctx.teamDatalink;
 		if (dl && dl.isEngaged(cand.target)) score -= 50000; // 50 km penalty
 		// Memory (stale) contacts are still engageable but mildly
-		// deprioritized so a fresh sensor contact wins a tie. Penalty
-		// grows linearly with staleness, so a 10 s-old projection loses
-		// to a 2 s-old one but can still beat a 40-km live contact.
+		// deprioritized so a fresh sensor contact wins a tie.
 		if (cand.isMemory) score -= 500 * cand.age;
+		// Cruise missiles are valid targets but a CAP shouldn't
+		// abandon a fighter for a slow drone unless the cruise is
+		// closer. ~20 km penalty puts a fighter at parity with a
+		// cruise that's 20 km closer.
+		const cls = cand.target && cand.target.signature && cand.target.signature.unitClass;
+		if (cls === 'cruise_missile') score -= 20000;
 		return score;
 	}
 
@@ -227,7 +231,15 @@ export class TargetManagerSubsystem extends Subsystem {
 			if (target.team === unit.team) continue;
 			const sig = target.signature;
 			if (!sig) continue;
-			if (sig.unitClass === 'missile' || sig.unitClass === 'cruise_missile') continue;
+			// Air-to-air missiles in flight aren't shootable targets
+			// for our fighters (no flak / hard-kill on incoming AAMs).
+			// Cruise missiles ARE — they fly straight, don't shoot
+			// back, and a CAP racing to swat one is a real-world
+			// counter-strike-package mission. The candidate score
+			// downweights them vs fighters (see _scoreCandidate)
+			// so a CAP doesn't abandon a real bandit to chase a slow
+			// drone.
+			if (sig.unitClass === 'missile') continue;
 			const cand = this._projectMemory(target, snap, unit, now);
 			if (cand.range > this.maxEngagementRange) continue;
 			candidates.push(cand);

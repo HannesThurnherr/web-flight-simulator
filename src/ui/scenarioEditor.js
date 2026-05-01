@@ -276,6 +276,20 @@ function _dropUnitAt(lon, lat, terrainH) {
 		spawn.platformId = _armedSubId;
 		const isGround = _platformIsGround(_armedSubId);
 		spawn.origin.alt = isGround ? terrainH : _armedAltM;
+		// Orbit-pilot platforms (AWACS, tankers, ISR drones) default
+		// to a 40 km orbit radius around the spawn point — way too
+		// big when the user clicks "place AWACS HERE." Override to
+		// a tighter 8 km circle so the platform stays visible at
+		// the dropped location. Author can hand-edit pilotOverrides
+		// in the JSON for a wider patrol orbit.
+		const plat = PLATFORMS[_armedSubId];
+		if (plat && plat.pilot && plat.pilot.type === 'orbit') {
+			spawn.pilotOverrides = {
+				radiusM:    8000,
+				altitudeM:  _armedAltM,
+				targetSpeed: (plat.pilot.defaultParams && plat.pilot.defaultParams.targetSpeed) || 180,
+			};
+		}
 	}
 	if (!Array.isArray(_activeJson.spawns)) _activeJson.spawns = [];
 	_activeJson.spawns.push(spawn);
