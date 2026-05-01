@@ -99,7 +99,21 @@ export function startAnimateLoop(ctx) {
 
 			if (ctx.mixer) ctx.mixer.update(dt);
 
-			try { if (currentState === 'FLYING') particles.update(dt); } catch (e) { }
+			// Tick particles in CRASHED too. Each particle bakes
+			// its render matrix as `viewMatrix * modelMatrix`, so
+			// freezing the update() call leaves matrices locked in
+			// the *previous* camera's space — when the player died
+			// the wreckage cloud stopped re-baking and got drawn at
+			// fixed camera-relative positions, appearing as a gray
+			// sphere glued to the spectator chase-cam. Keeping the
+			// tick alive keeps the explosion physically anchored to
+			// the death site and lets it age out normally while the
+			// player watches from spectator view.
+			try {
+				if (currentState === 'FLYING' || currentState === 'CRASHED') {
+					particles.update(dt);
+				}
+			} catch (e) { }
 
 			renderer.render(scene, camera);
 

@@ -499,7 +499,20 @@ export function npcSystemUpdate(sys, dt, playerState, simTime = 0) {
 		// the missile's own updateTrail path).
 		if (!npc.isStatic && (npc.kind || 'airborne') === 'airborne') {
 			if (!npc._contrail) npc._contrail = new Contrail(sys.scene, sys.viewer);
-			npc._contrail.update(dt, npc);
+			// Don't emit fresh puffs from the unit the player is
+			// currently chase-camming — the chase-cam sits 40 m
+			// behind the unit, exactly where puffs spawn, and they
+			// grow to ~28 m radius over their lifetime → camera
+			// ends up inside a gray sphere. Existing puffs age out
+			// naturally, so the trail tail still trails behind the
+			// unit, just stops generating new ones at the source
+			// while you're glued to the back of it.
+			const isSpectated = (sys.ctx && sys.ctx.spectatorTarget === npc);
+			if (isSpectated) {
+				npc._contrail._ageOnly(dt);
+			} else {
+				npc._contrail.update(dt, npc);
+			}
 		}
 	}
 
