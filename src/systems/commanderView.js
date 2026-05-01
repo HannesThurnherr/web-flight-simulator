@@ -80,7 +80,15 @@ function colorsForNpc(unit) {
 // tooltip we bail out of the map-input path entirely.
 function _isOverlayTarget(target) {
 	if (!target || !target.closest) return false;
-	return !!target.closest('.commander-tooltip');
+	// Existing tooltip + the scenario editor's right-side panel.
+	// Without the editor selector here, the editor's dropdowns and
+	// SAVE/EXIT buttons get their pointerdown swallowed by the
+	// commander view's pan/tilt handler — which calls preventDefault
+	// and kills the synthetic click that would otherwise reach the
+	// <select> / <button>. Treating the editor panel as an overlay
+	// lets the DOM see those events.
+	return !!(target.closest('.commander-tooltip')
+		|| target.closest('#scenario-editor-panel'));
 }
 // Colors used when a unit (or a trail segment) is behind terrain. Polylines
 // use depthFailMaterial for this natively; points/labels need a manual
@@ -781,6 +789,22 @@ export class CommanderView {
 			}
 		} else {
 			this._clearAllTooltips();
+			// 10b — let the scenario editor (or any other consumer)
+			// react to empty-space clicks on the globe. We dispatch
+			// a CustomEvent with the picked lon/lat so commander
+			// view stays decoupled from editor implementation.
+			const ray = this.viewer.camera.getPickRay(new Cesium.Cartesian2(x, y));
+			const cart = ray && this.viewer.scene.globe.pick(ray, this.viewer.scene);
+			if (cart) {
+				const carto = Cesium.Cartographic.fromCartesian(cart);
+				window.dispatchEvent(new CustomEvent('commander-terrain-click', {
+					detail: {
+						lon: Cesium.Math.toDegrees(carto.longitude),
+						lat: Cesium.Math.toDegrees(carto.latitude),
+						alt: carto.height || 0,
+					},
+				}));
+			}
 		}
 	}
 

@@ -151,28 +151,27 @@ function _close() {
 
 // ----- Click-to-place ------------------------------------------------------
 
+// Listen for commander view's empty-space click event. Trying to
+// install a Cesium ScreenSpaceEventHandler directly here doesn't
+// work because commander view's window-level pointerdown calls
+// preventDefault() — Cesium's LEFT_CLICK never fires. Instead we
+// hook into commander view's own _handleClickAt path via the
+// dispatched `commander-terrain-click` event, which already gives
+// us the picked lon/lat/alt.
 function _installClickHandler() {
-	const viewer = getViewer();
-	if (!viewer || _clickHandler) return;
-	_clickHandler = new Cesium.ScreenSpaceEventHandler(viewer.scene.canvas);
-	_clickHandler.setInputAction((e) => {
-		// commander view also handles left-click for tooltip pinning;
-		// pick lon/lat from the cursor, drop a unit.
-		const ray = viewer.camera.getPickRay(e.position);
-		if (!ray) return;
-		const cart = viewer.scene.globe.pick(ray, viewer.scene);
-		if (!cart) return;
-		const carto = Cesium.Cartographic.fromCartesian(cart);
-		const lon = Cesium.Math.toDegrees(carto.longitude);
-		const lat = Cesium.Math.toDegrees(carto.latitude);
-		const terrainH = carto.height || 0;
-		_dropUnitAt(lon, lat, terrainH);
-	}, Cesium.ScreenSpaceEventType.LEFT_CLICK);
+	if (_clickHandler) return;
+	_clickHandler = (e) => {
+		if (!_activeJson) return;
+		const d = e && e.detail;
+		if (!d) return;
+		_dropUnitAt(d.lon, d.lat, d.alt || 0);
+	};
+	window.addEventListener('commander-terrain-click', _clickHandler);
 }
 
 function _uninstallClickHandler() {
 	if (!_clickHandler) return;
-	try { _clickHandler.destroy(); } catch (err) { void err; }
+	window.removeEventListener('commander-terrain-click', _clickHandler);
 	_clickHandler = null;
 }
 
