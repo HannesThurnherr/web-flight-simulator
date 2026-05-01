@@ -44,6 +44,11 @@ let _clickHandler  = null;
 // click should MOVE it (set by clicking MOVE on a spawn-list row).
 // null = next click drops a new unit instead.
 let _pendingMoveIdx = null;
+// Currently-selected spawn index (set by clicking a marker on the
+// map or a row in the spawn list). The edit form in the panel
+// targets this spawn; null = no selection, panel shows the
+// general placement palette.
+let _selectedIdx = null;
 
 // What the next click drops. Mutable; set by the palette in the side
 // panel.
@@ -179,6 +184,7 @@ function _close() {
 	_activeId = null;
 	_activeJson = null;
 	_pendingMoveIdx = null;
+	_selectedIdx = null;
 }
 
 // ----- Click-to-place ------------------------------------------------------
@@ -196,9 +202,34 @@ function _installClickHandler() {
 		if (!_activeJson) return;
 		const d = e && e.detail;
 		if (!d) return;
+		// Click landed on a tagged editor entity → select that spawn
+		// instead of dropping / moving. Each spawn marker carries
+		// __editorSpawnIdx (see _renderSpawnMarkers).
+		if (d.entity && Number.isFinite(d.entity.__editorSpawnIdx)) {
+			_selectSpawn(d.entity.__editorSpawnIdx);
+			return;
+		}
+		// Empty-terrain click. If a MOVE is armed, _dropUnitAt
+		// relocates that spawn; otherwise it drops a new unit using
+		// the palette settings.
 		_dropUnitAt(d.lon, d.lat, d.alt || 0);
 	};
 	window.addEventListener('commander-terrain-click', _clickHandler);
+}
+
+function _selectSpawn(idx) {
+	if (!_activeJson || !Array.isArray(_activeJson.spawns)) return;
+	if (idx < 0 || idx >= _activeJson.spawns.length) return;
+	_selectedIdx = idx;
+	_pendingMoveIdx = null;
+	_renderSpawnMarkers();
+	_buildPanel();
+}
+
+function _deselect() {
+	_selectedIdx = null;
+	_renderSpawnMarkers();
+	_buildPanel();
 }
 
 function _uninstallClickHandler() {
@@ -315,26 +346,32 @@ function _renderSpawnMarkers() {
 	}
 
 	const spawns = Array.isArray(_activeJson.spawns) ? _activeJson.spawns : [];
-	for (const s of spawns) {
+	for (let i = 0; i < spawns.length; i++) {
+		const s = spawns[i];
 		const pt = _resolveSpawnPositionForDisplay(s, _activeJson);
 		if (!pt) continue;
 		const team  = (typeof s.team === 'string') ? s.team : null;
 		const color = TEAM_COLORS[team] || COLOR_FALLBACK;
 		const isRandom = _spawnIsRandom(s);
+		const isSelected = (i === _selectedIdx);
 		const ent = viewer.entities.add({
 			position: Cesium.Cartesian3.fromDegrees(pt.lon, pt.lat, pt.alt || 0),
 			point: {
-				pixelSize: 12,
+				pixelSize: isSelected ? 16 : 12,
 				color: isRandom ? COLOR_RANDOM : color,
-				outlineColor: Cesium.Color.WHITE.withAlpha(0.7),
-				outlineWidth: 1.5,
+				outlineColor: isSelected
+					? Cesium.Color.YELLOW
+					: Cesium.Color.WHITE.withAlpha(0.7),
+				outlineWidth: isSelected ? 3 : 1.5,
 				disableDepthTestDistance: Number.POSITIVE_INFINITY,
 			},
 			label: {
 				text: _spawnLabel(s),
 				font: '11px AceCombat, monospace',
 				pixelOffset: new Cesium.Cartesian2(14, 0),
-				fillColor: isRandom ? COLOR_RANDOM : color,
+				fillColor: isSelected
+					? Cesium.Color.YELLOW
+					: (isRandom ? COLOR_RANDOM : color),
 				outlineColor: Cesium.Color.BLACK,
 				outlineWidth: 2,
 				style: Cesium.LabelStyle.FILL_AND_OUTLINE,
@@ -342,6 +379,10 @@ function _renderSpawnMarkers() {
 				horizontalOrigin: Cesium.HorizontalOrigin.LEFT,
 			},
 		});
+		// Tag the entity so the click handler can identify it as an
+		// editor marker and route to _selectSpawn instead of dropping
+		// a new unit on top.
+		ent.__editorSpawnIdx = i;
 		_entities.push(ent);
 	}
 }
@@ -534,28 +575,35 @@ function _buildPanel() {
 	panel.querySelector('#se-name').addEventListener('input', (e) => {
 		_activeJson.name = e.target.value;
 	});
-	panel.querySelector('#se-kind').addEventListener('change', (e) => {
+
+	// Palette listeners (only present when NOT editing a spawn).
+	const seKind = panel.querySelector('#se-kind');
+	const seSub  = panel.querySelector('#se-sub');
+	const seTeam = panel.querySelector('#se-team');
+	const seAlt  = panel.querySelector('#se-alt');
+	if (seKind) seKind.addEventListener('change', (e) => {
 		_armedKind = e.target.value;
-		// Reset sub-id to a sane default for the new kind.
 		const sub = panel.querySelector('#se-sub');
 		if (_armedKind === 'fighter') {
 			sub.innerHTML = _optionsFor(Object.keys(PLANES).sort(), _armedSubId);
 		} else {
 			sub.innerHTML = _optionsFor(Object.keys(PLATFORMS).sort(), _armedSubId);
 		}
-		// Force the next sub-id to be valid for the new options list.
 		_armedSubId = sub.value;
 	});
-	panel.querySelector('#se-sub').addEventListener('change', (e) => {
+	if (seSub) seSub.addEventListener('change', (e) => {
 		_armedSubId = e.target.value;
 	});
-	panel.querySelector('#se-team').addEventListener('change', (e) => {
+	if (seTeam) seTeam.addEventListener('change', (e) => {
 		_armedTeam = e.target.value;
 	});
-	panel.querySelector('#se-alt').addEventListener('change', (e) => {
+	if (seAlt) seAlt.addEventListener('change', (e) => {
 		const v = parseFloat(e.target.value);
 		if (Number.isFinite(v)) _armedAltM = v;
 	});
+
+	// Edit-form listeners (only present when a spawn IS selected).
+	_wireEditForm(panel);
 
 	// Anchor mode tabs.
 	panel.querySelector('#se-anc-rel').addEventListener('click', () => {
@@ -640,6 +688,8 @@ function _panelHtml() {
 	const isWorldAnchored = _activeJson.anchor && _activeJson.anchor.mode === 'world';
 	const anchor = _activeJson.anchor || {};
 	const ps = anchor.playerSpawn || {};
+	const selected = (_selectedIdx != null && _activeJson.spawns)
+		? _activeJson.spawns[_selectedIdx] : null;
 
 	const anchorSection = isWorldAnchored
 		? `
@@ -682,6 +732,7 @@ function _panelHtml() {
 		${anchorSection}
 	</div>
 
+	${selected ? _editFormHtml(selected) : `
 	<div style="margin-top:8px;border-top:1px solid rgba(0,220,255,0.2);padding-top:6px;">
 		<div style="opacity:0.7;font-size:10px;margin-bottom:4px;">PALETTE — armed for next click</div>
 		<div style="display:flex;gap:6px;margin-bottom:5px;">
@@ -696,7 +747,7 @@ function _panelHtml() {
 			<span style="opacity:0.7;flex:0 0 auto;">altitude m:</span>
 			<input id="se-alt" type="number" step="500" value="${_armedAltM}" style="${_selectCss()}flex:1;">
 		</div>
-	</div>
+	</div>`}
 
 	<div style="margin-top:8px;border-top:1px solid rgba(0,220,255,0.2);padding-top:6px;">
 		<div style="opacity:0.7;font-size:10px;">SPAWNS</div>
@@ -717,6 +768,196 @@ function _panelHtml() {
 		<button id="se-exit" type="button" style="flex:1;font-family:inherit;font-size:11px;letter-spacing:1px;background:transparent;border:1px solid #ff8080;color:#ff8080;padding:5px;cursor:pointer;">EXIT</button>
 	</div>
 	`;
+}
+
+function _wireEditForm(panel) {
+	if (_selectedIdx == null || !_activeJson || !_activeJson.spawns) return;
+	const s = _activeJson.spawns[_selectedIdx];
+	if (!s) return;
+
+	const deselect = panel.querySelector('#se-deselect');
+	if (deselect) deselect.addEventListener('click', () => _deselect());
+
+	const team = panel.querySelector('#ed-team');
+	if (team) team.addEventListener('change', (e) => {
+		s.team = e.target.value;
+		_renderSpawnMarkers();
+		_renderSpawnList();
+	});
+
+	const hdg = panel.querySelector('#ed-hdg');
+	const hdgRand = panel.querySelector('#ed-hdg-rand');
+	if (hdg) hdg.addEventListener('change', (e) => {
+		const v = parseFloat(e.target.value);
+		s.headingDeg = Number.isFinite(v) ? v : 0;
+	});
+	if (hdgRand) hdgRand.addEventListener('change', (e) => {
+		if (e.target.checked) s.headingDeg = { any: true };
+		else s.headingDeg = 0;
+		_buildPanel();    // re-render to flip the input enabled state
+	});
+
+	const spd = panel.querySelector('#ed-spd');
+	if (spd) spd.addEventListener('change', (e) => {
+		const v = parseFloat(e.target.value);
+		if (Number.isFinite(v)) s.speedMps = v;
+		else delete s.speedMps;
+	});
+
+	const alt = panel.querySelector('#ed-alt');
+	if (alt) alt.addEventListener('change', (e) => {
+		const v = parseFloat(e.target.value);
+		if (!s.origin) s.origin = {};
+		if (Number.isFinite(v)) s.origin.alt = v;
+		_renderSpawnMarkers();
+		_renderSpawnList();
+	});
+
+	const cnt = panel.querySelector('#ed-cnt');
+	const cntMin = panel.querySelector('#ed-cnt-min');
+	const cntMax = panel.querySelector('#ed-cnt-max');
+	const cntRand = panel.querySelector('#ed-cnt-rand');
+	if (cnt) cnt.addEventListener('change', (e) => {
+		const v = parseInt(e.target.value, 10);
+		s.count = Number.isFinite(v) ? v : 1;
+		_renderSpawnMarkers();
+		_renderSpawnList();
+	});
+	if (cntMin) cntMin.addEventListener('change', (e) => {
+		const v = parseInt(e.target.value, 10);
+		if (typeof s.count !== 'object') s.count = { min: 1, max: 1 };
+		if (Number.isFinite(v)) s.count.min = v;
+		_renderSpawnList();
+	});
+	if (cntMax) cntMax.addEventListener('change', (e) => {
+		const v = parseInt(e.target.value, 10);
+		if (typeof s.count !== 'object') s.count = { min: 1, max: 1 };
+		if (Number.isFinite(v)) s.count.max = v;
+		_renderSpawnList();
+	});
+	if (cntRand) cntRand.addEventListener('change', (e) => {
+		if (e.target.checked) {
+			const cur = (typeof s.count === 'number') ? s.count : 1;
+			s.count = { min: cur, max: Math.max(cur, cur + 2) };
+		} else {
+			s.count = (typeof s.count === 'object' && s.count) ? s.count.min : 1;
+		}
+		_buildPanel();
+		_renderSpawnMarkers();
+	});
+
+	const intelEl = panel.querySelector('#ed-intel');
+	if (intelEl) intelEl.addEventListener('change', (e) => {
+		const v = e.target.value;
+		if (v === 'none') delete s.intel;
+		else {
+			s.intel = s.intel || {};
+			s.intel.level = v;
+			if (v === 'suspected' && typeof s.intel.uncertaintyM !== 'number') {
+				s.intel.uncertaintyM = 4000;
+			}
+		}
+		_buildPanel();
+		_renderSpawnMarkers();
+	});
+	const intelUncert = panel.querySelector('#ed-intel-uncert');
+	if (intelUncert) intelUncert.addEventListener('change', (e) => {
+		const v = parseFloat(e.target.value);
+		if (!s.intel) s.intel = { level: 'suspected' };
+		if (Number.isFinite(v)) s.intel.uncertaintyM = v;
+	});
+
+	const magEl = panel.querySelector('#ed-mag');
+	if (magEl) magEl.addEventListener('change', (e) => {
+		const v = parseInt(e.target.value, 10);
+		if (!s.magazine) s.magazine = {};
+		if (Number.isFinite(v)) s.magazine.missile = v;
+		else delete s.magazine.missile;
+	});
+}
+
+function _editFormHtml(s) {
+	const teamOpts = TEAMS.map(t =>
+		`<option value="${t}"${t === s.team ? ' selected' : ''}>${t}</option>`).join('');
+	const isFighter = (s.type === 'fighter');
+	const isPlatform = (s.type === 'platform');
+	const isGround = isPlatform && _platformIsGround(s.platformId);
+	const o = s.origin || {};
+	const headingDeg = (typeof s.headingDeg === 'number') ? s.headingDeg : '';
+	const headingRandom = !!(s.headingDeg && s.headingDeg.any === true);
+	const speed = (typeof s.speedMps === 'number') ? s.speedMps : '';
+	const countLit = (typeof s.count === 'number') ? s.count : (s.count == null ? 1 : '');
+	const countRand = (typeof s.count === 'object' && s.count);
+	const intel = s.intel || {};
+	const intelLevel = intel.level || 'none';
+	const uncert = (typeof intel.uncertaintyM === 'number') ? intel.uncertaintyM : 4000;
+	const mag = s.magazine || {};
+	const subId = s.platformId || s.fighterModel || '?';
+
+	return `
+	<div style="margin-top:8px;border-top:1px solid rgba(0,220,255,0.2);padding-top:6px;">
+		<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
+			<span style="color:#ffd700;font-weight:bold;font-size:11px;">EDITING #${_selectedIdx + 1}: ${escapeHtml(subId)}</span>
+			<button id="se-deselect" type="button" style="${_btnCss()}">DESELECT</button>
+		</div>
+
+		<div style="display:flex;gap:4px;align-items:center;font-size:10px;margin-bottom:4px;">
+			<span style="opacity:0.7;flex:0 0 50px;">team</span>
+			<select id="ed-team" style="${_selectCss()}flex:1;">${teamOpts}</select>
+		</div>
+
+		<div style="display:flex;gap:4px;align-items:center;font-size:10px;margin-bottom:4px;">
+			<span style="opacity:0.7;flex:0 0 50px;">heading</span>
+			<input id="ed-hdg" type="number" step="5" value="${headingDeg}" placeholder="deg" style="${_selectCss()}flex:1;" ${headingRandom ? 'disabled' : ''}>
+			<label style="font-size:9px;display:flex;align-items:center;gap:3px;opacity:0.8;">
+				<input id="ed-hdg-rand" type="checkbox" ${headingRandom ? 'checked' : ''}> rnd
+			</label>
+		</div>
+
+		${isFighter ? `
+		<div style="display:flex;gap:4px;align-items:center;font-size:10px;margin-bottom:4px;">
+			<span style="opacity:0.7;flex:0 0 50px;">speed</span>
+			<input id="ed-spd" type="number" step="20" value="${speed}" placeholder="m/s" style="${_selectCss()}flex:1;">
+		</div>` : ''}
+
+		<div style="display:flex;gap:4px;align-items:center;font-size:10px;margin-bottom:4px;">
+			<span style="opacity:0.7;flex:0 0 50px;">altitude</span>
+			<input id="ed-alt" type="number" step="500" value="${o.alt ?? 0}" placeholder="m" style="${_selectCss()}flex:1;">
+		</div>
+
+		<div style="display:flex;gap:4px;align-items:center;font-size:10px;margin-bottom:4px;">
+			<span style="opacity:0.7;flex:0 0 50px;">count</span>
+			${countRand
+				? `<input id="ed-cnt-min" type="number" step="1" value="${s.count.min}" style="${_selectCss()}flex:1;">
+				   <input id="ed-cnt-max" type="number" step="1" value="${s.count.max}" style="${_selectCss()}flex:1;">`
+				: `<input id="ed-cnt" type="number" step="1" value="${countLit}" style="${_selectCss()}flex:1;">`
+			}
+			<label style="font-size:9px;display:flex;align-items:center;gap:3px;opacity:0.8;">
+				<input id="ed-cnt-rand" type="checkbox" ${countRand ? 'checked' : ''}> rnd
+			</label>
+		</div>
+
+		<div style="display:flex;gap:4px;align-items:center;font-size:10px;margin-bottom:4px;">
+			<span style="opacity:0.7;flex:0 0 50px;">intel</span>
+			<select id="ed-intel" style="${_selectCss()}flex:1;">
+				<option value="none"${intelLevel === 'none' ? ' selected' : ''}>none</option>
+				<option value="known"${intelLevel === 'known' ? ' selected' : ''}>known</option>
+				<option value="suspected"${intelLevel === 'suspected' ? ' selected' : ''}>suspected</option>
+			</select>
+			${intelLevel === 'suspected'
+				? `<input id="ed-intel-uncert" type="number" step="500" value="${uncert}" placeholder="±m" style="${_selectCss()}flex:0 0 70px;">`
+				: ''
+			}
+		</div>
+
+		${isGround ? `
+		<div style="display:flex;gap:4px;align-items:center;font-size:10px;margin-bottom:4px;">
+			<span style="opacity:0.7;flex:0 0 50px;">magazine</span>
+			<input id="ed-mag" type="number" step="1" value="${mag.missile ?? ''}" placeholder="missile count" style="${_selectCss()}flex:1;">
+		</div>` : ''}
+
+		<div style="margin-top:6px;font-size:10px;opacity:0.7;">click another marker / row to switch · click empty terrain to drop a new unit · DESELECT to return to placement mode</div>
+	</div>`;
 }
 
 function _selectCss() {
@@ -750,18 +991,31 @@ function _renderSpawnList() {
 	list.innerHTML = spawns.map((s, i) => {
 		const label = _spawnLabel(s);
 		const isMoving = _pendingMoveIdx === i;
+		const isSelected = _selectedIdx === i;
 		const moveBtnStyle = isMoving
 			? 'background:rgba(255,210,80,0.2);border:1px solid #fd0;color:#fd0;'
 			: 'background:transparent;border:1px solid rgba(0,220,255,0.4);color:#6ff;';
+		const rowStyle = isSelected
+			? 'background:rgba(255,215,0,0.12);border-left:2px solid #ffd700;'
+			: 'border-left:2px solid transparent;';
 		const altText = (s.origin && typeof s.origin.alt === 'number')
 			? `  ${Math.round(s.origin.alt)} m`
 			: '';
-		return `<div class="se-spawn-row" data-idx="${i}" style="padding:2px 4px;border-bottom:1px dotted rgba(0,220,255,0.15);display:flex;justify-content:space-between;align-items:center;gap:4px;">
+		return `<div class="se-spawn-row" data-idx="${i}" style="${rowStyle}padding:2px 4px;border-bottom:1px dotted rgba(0,220,255,0.15);display:flex;justify-content:space-between;align-items:center;gap:4px;cursor:pointer;">
 			<span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;"><span style="opacity:0.5;display:inline-block;width:18px;">${i + 1}.</span>${escapeHtml(label + altText)}</span>
 			<button type="button" class="se-mv" data-idx="${i}" style="${moveBtnStyle}font-size:9px;padding:1px 5px;cursor:pointer;letter-spacing:0.5px;">${isMoving ? 'CLICK MAP' : 'MOVE'}</button>
 			<button type="button" class="se-del" data-idx="${i}" style="background:transparent;border:1px solid rgba(255,128,128,0.4);color:#f88;font-size:9px;padding:1px 5px;cursor:pointer;letter-spacing:0.5px;">DEL</button>
 		</div>`;
 	}).join('');
+	for (const row of list.querySelectorAll('.se-spawn-row')) {
+		row.addEventListener('click', (e) => {
+			// Skip if the click landed on a button — those have their
+			// own handlers + stopPropagation.
+			if (e.target.tagName === 'BUTTON') return;
+			const idx = parseInt(row.getAttribute('data-idx'), 10);
+			if (Number.isFinite(idx)) _selectSpawn(idx);
+		});
+	}
 	for (const btn of list.querySelectorAll('.se-del')) {
 		btn.addEventListener('click', (e) => {
 			e.stopPropagation();
@@ -770,8 +1024,10 @@ function _renderSpawnList() {
 				_activeJson.spawns.splice(idx, 1);
 				if (_pendingMoveIdx === idx) _pendingMoveIdx = null;
 				else if (_pendingMoveIdx != null && _pendingMoveIdx > idx) _pendingMoveIdx--;
+				if (_selectedIdx === idx) _selectedIdx = null;
+				else if (_selectedIdx != null && _selectedIdx > idx) _selectedIdx--;
 				_renderSpawnMarkers();
-				_renderSpawnList();
+				_buildPanel();
 			}
 		});
 	}

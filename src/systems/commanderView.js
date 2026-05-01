@@ -809,9 +809,13 @@ export class CommanderView {
 		} else {
 			this._clearAllTooltips();
 			// 10b — let the scenario editor (or any other consumer)
-			// react to empty-space clicks on the globe. We dispatch
-			// a CustomEvent with the picked lon/lat so commander
-			// view stays decoupled from editor implementation.
+			// react to clicks on the globe. We dispatch a single
+			// `commander-terrain-click` event carrying lon/lat/alt
+			// AND the picked entity (when one was hit). Consumers
+			// that don't care about the entity ignore it; the
+			// editor uses it to distinguish "click on a spawn
+			// marker → select" vs "click on empty terrain → drop /
+			// move."
 			const ray = this.viewer.camera.getPickRay(new Cesium.Cartesian2(x, y));
 			const cart = ray && this.viewer.scene.globe.pick(ray, this.viewer.scene);
 			if (cart) {
@@ -821,6 +825,7 @@ export class CommanderView {
 						lon: Cesium.Math.toDegrees(carto.longitude),
 						lat: Cesium.Math.toDegrees(carto.latitude),
 						alt: carto.height || 0,
+						entity: (picked && picked.id) ? picked.id : null,
 					},
 				}));
 			}
