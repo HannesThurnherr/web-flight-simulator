@@ -164,7 +164,7 @@ export function setCameraToPlane(lon, lat, alt, heading, pitch, roll) {
 // dragging the mouse while spectating orbits the camera around the
 // target the way the pilot cam orbits around the player.
 // zoom: 0.5 .. 3 → scales the trailing distance.
-export function setCameraBehindUnit(unit, orbitYaw = 0, orbitPitch = 0, zoom = 1) {
+export function setCameraBehindUnit(unit, orbitYaw = 0, orbitPitch = 0, zoom = 1, worldFixed = false) {
 	if (!viewer || !unit) return;
 
 	// Baseline trailing offset: 40 m behind, 12 m above. Scaled by zoom so
@@ -173,10 +173,21 @@ export function setCameraBehindUnit(unit, orbitYaw = 0, orbitPitch = 0, zoom = 1
 	const BASE_UP   = 12;
 	const dist = BASE_DIST * Math.max(0.25, zoom);
 
-	// Effective look direction: unit's current heading/pitch plus the
-	// player's mouse-drag orbit offsets.
-	const h = Cesium.Math.toRadians((unit.heading || 0) + orbitYaw);
-	const p = Cesium.Math.toRadians((unit.pitch   || 0) + orbitPitch);
+	// Two orbit modes:
+	//   `worldFixed=false` (pilot chase-cam) — orbit is unit-relative,
+	//      so the camera stays behind the plane as it turns; the
+	//      player feels glued to the airframe.
+	//   `worldFixed=true`  (spectator) — orbit is world-relative, so
+	//      the camera holds whatever angle the user dragged regardless
+	//      of which way the unit is currently pointing. Without this
+	//      a turning bogey would spin the spectator camera around
+	//      with it, which reads as "the camera snaps back to behind
+	//      the model" even though we already disabled the on-release
+	//      decay.
+	const baseHeadingDeg = worldFixed ? 0 : (unit.heading || 0);
+	const basePitchDeg   = worldFixed ? 0 : (unit.pitch   || 0);
+	const h = Cesium.Math.toRadians(baseHeadingDeg + orbitYaw);
+	const p = Cesium.Math.toRadians(basePitchDeg + orbitPitch);
 
 	// Forward unit vector in ENU (east-north-up).
 	const fE = Math.sin(h) * Math.cos(p);

@@ -498,7 +498,7 @@ export function update(dt, ctx) {
 		const orbitYaw   = input ? (input.cameraYaw   || 0) : 0;
 		const orbitPitch = input ? -(input.cameraPitch || 0) : 0;
 		const zoom       = input ? (input.cameraZoom  || 1) : 1;
-		setCameraBehindUnit(ctx.spectatorTarget, orbitYaw, orbitPitch, zoom);
+		setCameraBehindUnit(ctx.spectatorTarget, orbitYaw, orbitPitch, zoom, /* worldFixed */ true);
 	} else if (isFlying) {
 		const planeHPR = new Cesium.HeadingPitchRoll(
 			Cesium.Math.toRadians(state.heading),
