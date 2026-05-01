@@ -48,6 +48,7 @@ import { initSounds, stopAllFlyingSounds } from './utils/gameplaySounds';
 import { setupMeshStripDiagnostic } from './ui/debugMeshStrip';
 import { setupLocationSearch } from './ui/locationSearch';
 import { setupScenarioPicker } from './ui/scenarioPicker';
+import { setupScenarioEditor } from './ui/scenarioEditor';
 import { setupPlanePicker } from './ui/planePicker';
 import {
 	enterSpawnPicking, exitSpawnPicking, quickRespawn,
@@ -445,6 +446,7 @@ setupFormationPanel();
 
 // Main-menu scenario picker — see src/ui/scenarioPicker.js.
 setupScenarioPicker();
+setupScenarioEditor(ctx);
 
 // Plane picker (compact badge + modal detail) — src/ui/planePicker.js.
 // loadPlayerPlane is still owned by main.js so we pass it through.

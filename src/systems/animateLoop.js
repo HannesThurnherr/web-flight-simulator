@@ -45,7 +45,8 @@ export function startAnimateLoop(ctx) {
 		const { state } = ctx;
 
 		if (currentState === 'FLYING' || currentState === 'PAUSED' ||
-			currentState === 'TRANSITIONING' || currentState === 'CRASHED') {
+			currentState === 'TRANSITIONING' || currentState === 'CRASHED' ||
+			currentState === 'EDITING') {
 			const viewer = getViewer();
 			const renderer = ctx.renderer;
 			const camera   = ctx.camera;
@@ -68,6 +69,16 @@ export function startAnimateLoop(ctx) {
 			// player-specific work on isFlying internally.
 			if (currentState === 'FLYING' || currentState === 'CRASHED') {
 				update(dt, ctx);
+			} else if (currentState === 'EDITING') {
+				// Phase 10b — scenario editor mode. Tick the commander
+				// view so its pan/tilt/zoom drives the Cesium camera
+				// (input handlers update the local state every drag,
+				// _applyCamera in update() pushes that to Cesium).
+				// Pass dt=0 so trail sampling, contact ageing etc.
+				// stay frozen — the editor isn't simulating anything.
+				if (ctx.commanderView && ctx.commanderView.active) {
+					ctx.commanderView.update(0, state, [], []);
+				}
 			} else if (currentState === 'PAUSED') {
 				ctx.hud.updatePauseMenu(state, ctx.getCurrentRegionName(),
 					ctx.npcSystem ? ctx.npcSystem.npcs : []);
