@@ -474,6 +474,7 @@ function _buildPanel() {
 	// listeners don't accumulate on each rebuild.
 	if (_panel && _panel.parentNode) _panel.parentNode.removeChild(_panel);
 	_panel = null;
+	const panel = document.createElement('div');
 	panel.id = 'scenario-editor-panel';
 	panel.style.cssText = `
 		position: fixed;
