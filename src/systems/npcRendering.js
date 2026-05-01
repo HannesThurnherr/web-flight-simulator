@@ -61,8 +61,17 @@ export function applyNpcMeshMatrix(npcSys, npc, viewMatrix) {
 		if (!npc.mesh.visible) npc.mesh.visible = true;
 	}
 
+	// NOTE: pitch and roll are deliberately swapped here to match the
+	// model's local-axis convention after the +X-then-+Y rotation in
+	// npcSystem (the GLB is authored with +Y=up and we pre-rotate so
+	// the body axes match Cesium's ENU+HPR expectations). The roll
+	// sign is negated because, after the swap, positive npc.roll
+	// (right wing down per physics) was producing left-wing-down
+	// visually — the bogeys orbiting the jamming-test scenario were
+	// banked outward (head pointing AWAY from the orbit center)
+	// instead of inward, the opposite of a real coordinated turn.
 	npcSys._scratchHPR.heading = Cesium.Math.toRadians(npc.heading);
-	npcSys._scratchHPR.pitch   = Cesium.Math.toRadians(npc.roll);
+	npcSys._scratchHPR.pitch   = Cesium.Math.toRadians(-npc.roll);
 	npcSys._scratchHPR.roll    = Cesium.Math.toRadians(npc.pitch);
 
 	const modelMatrix = Cesium.Transforms.headingPitchRollToFixedFrame(
