@@ -352,16 +352,59 @@ export function npcSystemUpdate(sys, dt, playerState, simTime = 0) {
 			const MAX_BANK = 70;                    // degrees
 			const BANK_GAIN = MAX_BANK / 40;        // sat at ±40° heading err
 			const desiredBank = Math.max(-MAX_BANK, Math.min(MAX_BANK, headingErr * BANK_GAIN));
-			const bankErr = desiredBank - npc.roll; // npc.roll kept in sync below
-			const rollStick  = Math.max(-1, Math.min(1,  bankErr   * 0.04));
-			const pitchStick = Math.max(-1, Math.min(1, (npc.targetPitch - npc.pitch) * 0.15));
+			// Shortest-path roll: an inverted NPC at +160° asked to bank
+			// to +30° should roll the short way (-50° via 0°) rather
+			// than the long way (+230° around through inverted again).
+			// Without the wrap, NPCs that fell into negative-roll
+			// territory would corkscrew on their backs forever instead
+			// of rolling upright.
+			const curRoll = npc.roll || 0;
+			let bankErr = desiredBank - curRoll;
+			while (bankErr < -180) bankErr += 360;
+			while (bankErr >  180) bankErr -= 360;
+			const rollStick  = Math.max(-1, Math.min(1, bankErr * 0.04));
+
+			// Coordinated-turn pitch: when banked, you have to pull
+			// MORE G to hold the same flight-path angle (load factor =
+			// 1/cos(bank)). Without this scaling the AI was under-
+			// pulling in turns and the nose dropped — the "always
+			// banked, never level" effect the player is seeing.
+			//
+			// Discipline rules layered on top:
+			//   - At high bank (>30°) refuse to push more than a tiny
+			//     bit of negative G. Real pilots roll wings-level
+			//     before descending; dumping forward stick while
+			//     banked produces the "negative-G turn" oddity.
+			//   - When seriously inverted (|roll| > 100°), CAP the
+			//     pitch input so the AI rolls upright before it
+			//     resumes pulling. Pulling positive G while inverted
+			//     drives you straight at the ground.
+			const rollAbs = Math.abs(curRoll);
+			const bankRad = Math.max(-Math.PI / 2.2,
+				Math.min(Math.PI / 2.2, curRoll * Math.PI / 180));
+			const pitchScale = 1 / Math.max(0.3, Math.cos(bankRad));
+			const pitchErrDeg = (npc.targetPitch || 0) - (npc.pitch || 0);
+			let pitchStick = Math.max(-1, Math.min(1,
+				pitchErrDeg * 0.15 * pitchScale));
+			if (rollAbs > 30 && pitchStick < -0.2)  pitchStick = -0.2;
+			if (rollAbs > 100)                      pitchStick = Math.min(0.3, pitchStick);
+
+			// AB discipline: behaviours like to firewall the throttle
+			// + boost during evasion, gun chases, and terrain pull-ups.
+			// Cap AB by speed — once you're past Mach 1.4-ish there's
+			// no aerodynamic benefit to staying lit, and continuously
+			// burning AB at top speed is what the player perceives as
+			// "they always have AB on." This trims the high-speed tail
+			// without affecting the transient bursts where AB matters.
+			let useBoost = !!npc.isBoosting;
+			if (useBoost && (npc.speed || 0) > 480) useBoost = false;
 
 			const input = {
 				pitch:    pitchStick,
 				roll:     rollStick,
 				yaw:      0,
 				throttle: (npc.throttle != null) ? npc.throttle : 0.75,
-				boost:    !!npc.isBoosting,
+				boost:    useBoost,
 			};
 
 			// Feed PlanePhysics the current altitude so its density
