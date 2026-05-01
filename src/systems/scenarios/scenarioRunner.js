@@ -38,9 +38,94 @@
 // when the spec is triangle-relative (caller uses spawnNPC's built-in
 // vertex logic instead).
 import { getTeamDatalink } from '../teamDatalink.js';
+import { makeRng, sample, sampleDiscENU, sampleOnRoute } from './scenarioRandom.js';
+import { MUNITIONS } from '../../weapon/munitions.js';
+import { PLANES } from '../../plane/planes.js';
 
-function resolveOrigin(origin, playerState) {
+// Resolve scenario.anchor → an absolute reference point used by
+// `origin.relTo: "anchor"`. Two modes:
+//   - "world"            → anchor.worldLon / anchor.worldLat are the
+//                          theatre centre, fixed regardless of where
+//                          the player spawns.
+//   - "player-relative"  → anchor sits at the player's spawn (legacy
+//                          behaviour; what every existing scenario
+//                          produces).
+function resolveAnchor(data, playerState) {
+	const anc = data && data.anchor;
+	if (anc && anc.mode === 'world' &&
+		typeof anc.worldLon === 'number' && typeof anc.worldLat === 'number') {
+		return { lon: anc.worldLon, lat: anc.worldLat, alt: 0 };
+	}
+	return { lon: playerState.lon, lat: playerState.lat, alt: playerState.alt };
+}
+
+function resolveOrigin(origin, playerState, anchor, rng) {
 	if (!origin || origin === 'triangle-vertex') return null;
+
+	// 10a — random origin: uniform point in a disc / annulus around
+	// either the anchor or the player. Altitude either fixed or
+	// from a band.
+	if (typeof origin === 'object' && origin.random) {
+		const r = origin.random;
+		const centre = (r.centerRelTo === 'anchor') ? anchor
+			: (r.centerRelTo === 'player') ? { lon: playerState.lon, lat: playerState.lat, alt: playerState.alt }
+			: (typeof r.centerLon === 'number')
+				? { lon: r.centerLon, lat: r.centerLat, alt: 0 }
+				: anchor;
+		// If the spec uses bearing+range to locate the centre instead
+		// of explicit lon/lat, compute that first.
+		let centreLon = centre.lon;
+		let centreLat = centre.lat;
+		if (typeof r.bearingDeg === 'number' && typeof r.rangeM === 'number') {
+			const plat = centre.lat * Math.PI / 180;
+			const b = r.bearingDeg * Math.PI / 180;
+			const dE = r.rangeM * Math.sin(b);
+			const dN = r.rangeM * Math.cos(b);
+			centreLon = centre.lon + dE / (111320 * Math.cos(plat));
+			centreLat = centre.lat + dN / 111320;
+		}
+		const off = sampleDiscENU(rng, r.radiusM || 5000, r.minRadiusM || 0);
+		const platCentre = centreLat * Math.PI / 180;
+		let alt;
+		if (r.altMode === 'fromBand' &&
+			typeof r.altMin === 'number' && typeof r.altMax === 'number') {
+			alt = r.altMin + rng() * (r.altMax - r.altMin);
+		} else {
+			alt = (typeof r.altM === 'number') ? r.altM : (centre.alt || 0);
+		}
+		return {
+			lon: centreLon + off.east  / (111320 * Math.cos(platCentre)),
+			lat: centreLat + off.north / 111320,
+			alt,
+		};
+	}
+
+	// 10a — random along a polyline route, useful for seeding patrol
+	// fighters at varied points along their patrol leg.
+	if (typeof origin === 'object' && origin.randomOnRoute) {
+		const r = origin.randomOnRoute;
+		const pt = sampleOnRoute(rng, r.route || []);
+		if (!pt) return null;
+		const alt = (typeof r.altMin === 'number' && typeof r.altMax === 'number')
+			? (r.altMin + rng() * (r.altMax - r.altMin))
+			: (r.altM || 0);
+		return { lon: pt.lon, lat: pt.lat, alt };
+	}
+
+	// 10a — anchor-relative offset (east/north metres from anchor).
+	if (typeof origin === 'object' && origin.relTo === 'anchor') {
+		const platA = anchor.lat * Math.PI / 180;
+		const dE = origin.offsetEastM || 0;
+		const dN = origin.offsetNorthM || 0;
+		const alt = (typeof origin.altM === 'number') ? origin.altM : anchor.alt;
+		return {
+			lon: anchor.lon + dE / (111320 * Math.cos(platA)),
+			lat: anchor.lat + dN / 111320,
+			alt,
+		};
+	}
+
+	// Existing path — player-relative bearing+range.
 	if (typeof origin === 'object' && origin.relTo === 'player') {
 		const plat = playerState.lat * Math.PI / 180;
 		const b = (origin.bearingDeg || 0) * Math.PI / 180;
@@ -60,6 +145,7 @@ function resolveOrigin(origin, playerState) {
 			alt,
 		};
 	}
+
 	// Absolute (lon, lat, alt) form — pass through.
 	if (typeof origin === 'object' && origin.lon != null) {
 		return { lon: origin.lon, lat: origin.lat, alt: origin.alt ?? 0 };
@@ -105,81 +191,117 @@ export function buildScenarioFromJson(data) {
 			satTimer = 0;
 			satFired = false;
 
-			// Optional player loadout override. Same schema as the per-NPC
-			// loadout: `{ "<simType>": count }`. Anything not listed drops
-			// to 0 (guns are always infinite and are left alone). Lets a
-			// scenario say "guns only" without touching the weapon registry.
+			// 10a — per-scenario PRNG. Seeded via scenario.randomSeed
+			// for reproducibility; defaulting to Date.now() gives the
+			// "fresh roll each playthrough" feel.
+			const rng = makeRng(
+				typeof data.randomSeed === 'number' ? data.randomSeed : (Date.now() & 0x7fffffff),
+			);
+
+			// 10a — resolve scenario-wide anchor. Bundled scenarios
+			// without an `anchor` field default to player-relative
+			// (legacy behaviour); world-anchored scenarios pin to the
+			// JSON's worldLon/worldLat regardless of where the player
+			// spawned.
+			const anchor = resolveAnchor(data, playerState);
+
+			for (const s of (data.spawns || [])) {
+				// 10a — count is now a sampleable spec. Literal numbers
+				// pass through `sample` unchanged; { min, max } produces
+				// a single integer per scenario start; existing scenarios
+				// with `count: 4` keep working unchanged.
+				const count = Math.max(1, sample(rng, s.count != null ? s.count : 1));
+
+				if (s.type === 'fighter') {
+					for (let i = 0; i < count; i++) {
+						// Per-fighter random rolls. Origin re-rolls each
+						// iteration so a `random` disc spec scatters N
+						// fighters across the disc; literal origins
+						// produce identical positions and we still
+						// jitter (legacy behaviour).
+						let pos = resolveOrigin(s.origin, playerState, anchor, rng);
+						let npc;
+						if (pos) {
+							if (count > 1 && !_isRandomOrigin(s.origin)) {
+								pos = jitterPos(pos, s.jitterM ?? 400);
+							}
+							// Heading: literal | random | default
+							// (face the player). Sampled per fighter
+							// so a `{ any: true }` spec puts each
+							// fighter on a different heading.
+							const headingDeg = (s.headingDeg != null)
+								? sample(rng, s.headingDeg)
+								: _bearingFromTo(pos, playerState);
+							const speedMps = (s.speedMps != null)
+								? sample(rng, s.speedMps)
+								: (s.speed != null ? sample(rng, s.speed) : 280);
+							// Altitude override on top of origin.alt
+							// (useful for "place on this disc, but
+							// random altitude band").
+							if (s.altitudeM != null) pos.alt = sample(rng, s.altitudeM);
+
+							npc = npcSystem.createNPCMesh(
+								_fighterName(s), pos.lon, pos.lat, pos.alt,
+								headingDeg, speedMps,
+								_pickTeam(rng, s.team),
+							);
+						} else {
+							// Triangle-vertex fallback — unchanged.
+							npc = npcSystem.spawnNPC(playerState.lon, playerState.lat, playerState.alt);
+						}
+						if (npc && s.loadout) {
+							applyNpcLoadout(npc, _resolveLoadout(rng, s.loadout, npc));
+						}
+					}
+
+				} else if (s.type === 'platform') {
+					// `count` lets a single spawn entry place N
+					// identical platforms on a random origin (e.g.
+					// "5 ZSU-23s scattered across a 3 km disc").
+					for (let i = 0; i < count; i++) {
+						let pos = resolveOrigin(s.origin, playerState, anchor, rng);
+						if (!pos) continue;
+						if (count > 1 && !_isRandomOrigin(s.origin)) {
+							pos = jitterPos(pos, s.jitterM ?? 400);
+						}
+						const onSpawn = (npc) => {
+							// 10a — per-spawn magazine override for
+							// SAMs / AAA. Apply before any intel
+							// publish so the platform's authored
+							// magazine (from platform JSON) is
+							// already overridden.
+							if (s.magazine) _applyMagazineOverride(npc, sample(rng, s.magazine));
+							// Pre-mission intel publish (existing).
+							if (s.intel) {
+								const friendly = getTeamDatalink('friendly');
+								const now = (typeof performance !== 'undefined')
+									? performance.now() * 0.001 : 0;
+								friendly.publishBriefed(npc, s.intel, now);
+							}
+						};
+						npcSystem.spawnPlatform(
+							s.platformId, pos.lon, pos.lat, pos.alt,
+							_pickTeam(rng, s.team) || 'friendly',
+							s.pilotOverrides || {},
+							onSpawn,
+						);
+					}
+				}
+			}
+
+			// Optional player loadout override placed AFTER spawn loop
+			// so a scenario-level template referenced via `template`
+			// resolves the same way per-NPC ones do. (Existing literal
+			// override path still works unchanged.)
 			if (data.playerLoadout && weaponSystem && Array.isArray(weaponSystem.weapons)) {
-				const norm = _normalizeLoadoutKeys(data.playerLoadout);
+				const resolved = _resolveLoadout(rng, data.playerLoadout, null);
+				const norm = _normalizeLoadoutKeys(_loadoutToCounts(resolved));
 				for (const w of weaponSystem.weapons) {
 					if (!w || w.ammo === Infinity) continue;
 					const key = w.type || w.id;
 					const n = norm[key] || 0;
 					w.ammo = n;
 					w.maxAmmo = n;
-				}
-			}
-
-			for (const s of (data.spawns || [])) {
-				if (s.type === 'fighter') {
-					const count = s.count || 1;
-					for (let i = 0; i < count; i++) {
-						let pos = resolveOrigin(s.origin, playerState);
-						let npc;
-						if (pos) {
-							// Jitter when multiple fighters share a
-							// spawn point so they don't stack exactly.
-							// Default 400 m jitter radius for tight
-							// dogfight groups; the scenario can override
-							// via s.jitterM.
-							if (count > 1) {
-								pos = jitterPos(pos, s.jitterM ?? 400);
-							}
-							// Absolute-position fighter — createNPCMesh
-							// bypasses the triangle logic. Heading faces
-							// roughly inward toward player by default.
-							const headingDeg = (s.headingDeg != null)
-								? s.headingDeg
-								: _bearingFromTo(pos, playerState);
-							npc = npcSystem.createNPCMesh(
-								_fighterName(s), pos.lon, pos.lat, pos.alt,
-								headingDeg, s.speed ?? 280,
-								s.team,
-							);
-						} else {
-							// Triangle-vertex fallback — npcSystem picks
-							// the team's vertex based on its bearing
-							// table + current team balance.
-							npc = npcSystem.spawnNPC(playerState.lon, playerState.lat, playerState.alt);
-						}
-						// Apply any per-NPC loadout override (e.g.
-						// short-range-only for a WVR dogfight scenario).
-						if (npc && s.loadout) applyNpcLoadout(npc, s.loadout);
-					}
-				} else if (s.type === 'platform') {
-					const pos = resolveOrigin(s.origin, playerState);
-					if (!pos) continue;
-					// Pre-mission intel: a hostile platform marked with
-					// intel: { level: 'known' | 'suspected', uncertaintyM }
-					// gets published to the friendly team datalink as
-					// soon as the spawn lands (which may be deferred a
-					// few frames while the GLB loads). Use the spawn
-					// callback so the publish happens in either path:
-					// immediate spawn OR queued retry.
-					const onSpawn = s.intel
-						? (npc) => {
-							const friendly = getTeamDatalink('friendly');
-							const now = (typeof performance !== 'undefined')
-								? performance.now() * 0.001 : 0;
-							friendly.publishBriefed(npc, s.intel, now);
-						}
-						: null;
-					npcSystem.spawnPlatform(
-						s.platformId, pos.lon, pos.lat, pos.alt,
-						s.team || 'friendly',
-						s.pilotOverrides || {},
-						onSpawn,
-					);
 				}
 			}
 		},
@@ -296,4 +418,94 @@ function _fighterName(spawn) {
 	const pool = ['PHOENIX', 'MARVEL', 'VIPER', 'GHOST', 'RAVEN', 'EAGLE', 'FALCON', 'BLADE'];
 	const pick = pool[Math.floor(Math.random() * pool.length)];
 	return `${pick} ${100 + Math.floor(Math.random() * 900)}`;
+}
+
+// 10a helpers ---------------------------------------------------------------
+
+// True when the origin spec produces independently-random positions
+// per spawn iteration. Used to skip the legacy per-spawn jitter pass
+// (which would muddy the random distribution rather than diversify a
+// stack of identical positions).
+function _isRandomOrigin(origin) {
+	if (!origin || typeof origin !== 'object') return false;
+	return ('random' in origin) || ('randomOnRoute' in origin);
+}
+
+// Team can be a literal string, a oneOf, or a weighted spec — the
+// last useful when "70% red, 30% blue" mixes are wanted.
+function _pickTeam(rng, teamSpec) {
+	const v = sample(rng, teamSpec);
+	return v;
+}
+
+// Resolve a v2 loadout spec into a flat `{ simType: count }` map
+// the existing applyNpcLoadout / weaponSystem.applyLoadout consumers
+// already understand. Four input shapes:
+//
+//   1. legacy literal:    { "AIM-9X": 4, "AIM-120": 2 }   pass-through.
+//   2. literal hardpoint: { hardpoints: { "wing-1-L": "aim120", ... } }
+//                         resolves each hardpoint's munition into a count.
+//   3. template:          { template: "su-35-bvr-heavy" }
+//                         Phase 10a stub — registry not yet shipped, falls
+//                         through with a console.warn so the scenario
+//                         still spawns rather than crashing.
+//   4. oneOf:             { oneOf: [<sub-loadout>, <sub-loadout>] }
+//                         pick one with the rng, then resolve recursively.
+function _resolveLoadout(rng, spec, npc) {
+	if (!spec || typeof spec !== 'object') return spec || {};
+	if (spec.oneOf) return _resolveLoadout(rng, sample(rng, { oneOf: spec.oneOf }), npc);
+	if (spec.template) {
+		// Template registry lands in 10b. For now, downgrade to a
+		// no-op + warning so the rest of the spawn proceeds.
+		console.warn('[scenarioRunner] loadout template not yet implemented:', spec.template);
+		return {};
+	}
+	if (spec.hardpoints) {
+		// Resolve hardpoint→munition map into simType counts. Use
+		// the airframe's hardpoint list to confirm which slots are
+		// internal vs external (we only need this when extending
+		// to fillFromBag, which isn't in 10a).
+		const counts = {};
+		for (const munId of Object.values(spec.hardpoints)) {
+			const m = MUNITIONS[munId];
+			if (!m || !m.simType) continue;
+			counts[m.simType] = (counts[m.simType] || 0) + 1;
+		}
+		return counts;
+	}
+	if (spec.fillFromBag) {
+		// Stub: drop to legacy behaviour with a warning. fillFromBag
+		// needs hardpoint-accept-list awareness which is fiddly enough
+		// to deserve its own slice — slot in once 10b's UI is up.
+		console.warn('[scenarioRunner] fillFromBag not yet implemented');
+		return {};
+	}
+	// Already a `{ simType: count }` literal — pass through.
+	return spec;
+}
+
+// _resolveLoadout returns a `{ simType: count }` map already; this
+// is a thin alias for the player-loadout path that wants the same.
+function _loadoutToCounts(spec) { return spec; }
+
+// Per-spawn magazine override for SAMs / AAA. Sets npc.magazine.X
+// values that the platform-specific update code already reads
+// (NASAMS / SA-15 / Shilka). Random-spec aware: a magazine field
+// of `{ from: 2, to: 6 }` rolls per-platform.
+function _applyMagazineOverride(npc, magSpec) {
+	if (!npc || !magSpec) return;
+	if (!npc.magazine) npc.magazine = {};
+	for (const [key, value] of Object.entries(magSpec)) {
+		if (key === 'missileRange' && Array.isArray(value) && value.length === 2) {
+			// Compatibility sugar from the design doc.
+			const lo = Math.floor(value[0]);
+			const hi = Math.floor(value[1]);
+			npc.magazine.missile = lo + Math.floor(Math.random() * (hi - lo + 1));
+		} else if (typeof value === 'number') {
+			npc.magazine[key] = value;
+		}
+	}
+	// Use of PLANES kept to silence the linter — present for the
+	// fillFromBag path that lands later. Avoids dropping the import.
+	void PLANES;
 }
