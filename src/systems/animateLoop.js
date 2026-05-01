@@ -115,17 +115,7 @@ export function startAnimateLoop(ctx) {
 				}
 			} catch (e) { }
 
-			// World layer: route through the cloud layer if present so
-			// takram's CloudsEffect composites volumetric clouds on
-			// top of Cesium's rendered globe. Falls back to a direct
-			// render if cloud-layer init failed (e.g. WebGL2 / shader
-			// issue). Layer 1 (cockpit overlay) still goes through
-			// the bare renderer — clouds don't belong on the HUD.
-			if (ctx.cloudLayer) {
-				ctx.cloudLayer.render(getViewer());
-			} else {
-				renderer.render(scene, camera);
-			}
+			renderer.render(scene, camera);
 
 			renderer.clearDepth();
 

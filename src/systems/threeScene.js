@@ -21,7 +21,6 @@ import { initSounds } from '../utils/gameplaySounds';
 import { loadingStatus, updateLoadingUI } from '../ui/loadingUI';
 import { loadPlayerPlane } from '../plane/loadPlayerPlane';
 import { getActivePlane } from '../plane/planes';
-import { CloudLayer } from './cloudLayer';
 
 // Build the scene, camera, renderer, and clock. Returns them so main.js
 // can assign to its module-level bindings; everything else (ambient
@@ -69,15 +68,6 @@ export function initThree(ctx) {
 	}).catch(err => console.error('Failed to init sounds', err));
 
 	loadPlayerPlane(getActivePlane(), ctx);
-
-	// Phase 9 — volumetric clouds via takram/three-clouds. Wraps the
-	// renderer in a postprocessing EffectComposer + CloudsEffect.
-	// The animateLoop calls cloudLayer.render() instead of
-	// renderer.render() for the world layer (layer 0); the cockpit
-	// overlay layer (layer 1) still uses renderer.render() directly
-	// since clouds don't apply at that scale.
-	const cloudLayer = new CloudLayer(renderer, scene, camera);
-	ctx.cloudLayer = cloudLayer;
 
 	return { scene, camera, renderer, clock };
 }
