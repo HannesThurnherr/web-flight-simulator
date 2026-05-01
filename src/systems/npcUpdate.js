@@ -380,30 +380,37 @@ export function npcSystemUpdate(sys, dt, playerState, simTime = 0) {
 				Math.min(prevRoll + maxStep, rollStickRaw));
 			npc._prevRollStick = rollStick;
 
-			// Coordinated-turn pitch: when banked, you have to pull
-			// MORE G to hold the same flight-path angle (load factor =
-			// 1/cos(bank)). Without this scaling the AI was under-
-			// pulling in turns and the nose dropped — the "always
-			// banked, never level" effect the player is seeing.
+			// Coordinated-turn pitch — the "pull G into the turn"
+			// model. Real pilots NEVER push negative G to descend in
+			// a turn; they roll into the bank, pull positive stick,
+			// and the lift vector (now angled by the bank) curves the
+			// flight path both laterally and slightly downward. The
+			// autopilot was directly comparing world-frame pitch
+			// targets to current pitch and pushing forward stick when
+			// it wanted to lose altitude — exactly the "roll wrong-
+			// way, then pitch down" pathology the player observes.
 			//
-			// Discipline rules layered on top:
-			//   - At high bank (>30°) refuse to push more than a tiny
-			//     bit of negative G. Real pilots roll wings-level
-			//     before descending; dumping forward stick while
-			//     banked produces the "negative-G turn" oddity.
-			//   - When seriously inverted (|roll| > 100°), CAP the
-			//     pitch input so the AI rolls upright before it
-			//     resumes pulling. Pulling positive G while inverted
-			//     drives you straight at the ground.
+			// New scheme: stick = pitchErr correction + a baseline
+			// "coordinated-turn pull" that grows with bank angle.
+			// In any bank, the load factor needed for level flight is
+			// 1/cos(bank); we add (1/cos(bank) − 1) × 0.4 as a stick
+			// bias, so a 60° bank baselines at +0.4 stick (≈ 2 G turn).
+			// Negative stick is hard-capped at −0.3 universally — a
+			// small forward push is allowed for shallow descent on
+			// straight-and-level, but the AI never produces an
+			// uncomfortable / unrealistic negative-G pushover.
 			const rollAbs = Math.abs(curRoll);
 			const bankRad = Math.max(-Math.PI / 2.2,
 				Math.min(Math.PI / 2.2, curRoll * Math.PI / 180));
-			const pitchScale = 1 / Math.max(0.3, Math.cos(bankRad));
+			const cosBank = Math.max(0.2, Math.cos(bankRad));
+			const coordPull = Math.max(0, (1 / cosBank) - 1) * 0.4;
 			const pitchErrDeg = (npc.targetPitch || 0) - (npc.pitch || 0);
-			let pitchStickRaw = Math.max(-1, Math.min(1,
-				pitchErrDeg * 0.15 * pitchScale));
-			if (rollAbs > 30 && pitchStickRaw < -0.2)  pitchStickRaw = -0.2;
-			if (rollAbs > 100)                          pitchStickRaw = Math.min(0.3, pitchStickRaw);
+			let pitchStickRaw = pitchErrDeg * 0.15 + coordPull;
+			pitchStickRaw = Math.max(-0.3, Math.min(1, pitchStickRaw));
+			// Inverted / heavily rolled → don't pull positive G; the
+			// lift vector points at the ground. Cap upward stick so
+			// the airplane rolls upright before it resumes loading.
+			if (rollAbs > 100) pitchStickRaw = Math.min(0.2, pitchStickRaw);
 			// Same rate-limit story as roll. A clean pull-up shouldn't
 			// be a single-frame stick slam.
 			const pitchStick = Math.max(prevPitch - maxStep,
