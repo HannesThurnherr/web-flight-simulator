@@ -40,12 +40,17 @@ let _entities   = [];
 let _panel      = null;
 let _previousState = null;
 let _clickHandler  = null;
+// Index into _activeJson.spawns of the spawn whose next terrain
+// click should MOVE it (set by clicking MOVE on a spawn-list row).
+// null = next click drops a new unit instead.
+let _pendingMoveIdx = null;
 
 // What the next click drops. Mutable; set by the palette in the side
 // panel.
 let _armedKind = 'fighter';        // 'fighter' | 'platform'
 let _armedSubId = 'f-15';          // plane id (when fighter) OR platform id
 let _armedTeam = 'hostile-red';
+let _armedAltM = 8000;             // air-unit altitude for the next click
 
 // Ground-class platforms (depth-tested via the platform's `kind`
 // field). Used to decide whether to clamp to terrain altitude
@@ -64,6 +69,8 @@ const TEAM_COLORS = {
 };
 const COLOR_FALLBACK = Cesium.Color.fromCssColorString('#cccccc');
 const COLOR_RANDOM   = Cesium.Color.fromCssColorString('#a070ff');
+const COLOR_ANCHOR   = Cesium.Color.fromCssColorString('#ffd700'); // gold
+const COLOR_PSPAWN   = Cesium.Color.fromCssColorString('#00ffaa'); // bright green-cyan
 
 const TEAMS = ['friendly', 'hostile-red', 'hostile-blue', 'neutral'];
 
@@ -113,18 +120,24 @@ function open(id, providedJson = null) {
 	const view = _ctx && _ctx.commanderView;
 	if (view) {
 		view.setActive(true, _firstAnchorLikePoint(_activeJson));
-		// Force a wide regional zoom-out on entry so the user sees
-		// where the scenario lives in geographic context. The
-		// commander view's own _everActivated guard normally
-		// preserves whatever distance the user last left it at;
-		// for the editor we want to start zoomed out regardless.
-		view.distance = 800000;          // 800 km slant distance
-		view.tilt     = 12;              // mostly top-down
+		view.distance = 800000;
+		view.tilt     = 12;
+		_applyPlayerMarkerSuppression(view);
 	}
 
 	_installClickHandler();
 	_renderSpawnMarkers();
 	_buildPanel();
+}
+
+// World-anchored scenarios show their own ANCHOR + PLAYER START
+// markers; the live commander-view PLAYER marker is irrelevant and
+// confusing. Player-relative scenarios DO use the player position
+// as their reference, so the live marker stays.
+function _applyPlayerMarkerSuppression(view) {
+	if (!view || !_activeJson) return;
+	const isWorldAnchored = _activeJson.anchor && _activeJson.anchor.mode === 'world';
+	view.suppressPlayerMarker = isWorldAnchored;
 }
 
 function _close() {
@@ -150,6 +163,7 @@ function _close() {
 
 	_activeId = null;
 	_activeJson = null;
+	_pendingMoveIdx = null;
 }
 
 // ----- Click-to-place ------------------------------------------------------
@@ -180,6 +194,29 @@ function _uninstallClickHandler() {
 
 function _dropUnitAt(lon, lat, terrainH) {
 	if (!_activeJson) return;
+
+	// Pending MOVE? Relocate the spawn we previously armed for move
+	// instead of dropping a new one.
+	if (_pendingMoveIdx != null
+		&& Array.isArray(_activeJson.spawns)
+		&& _activeJson.spawns[_pendingMoveIdx]) {
+		const s = _activeJson.spawns[_pendingMoveIdx];
+		const wasGround = _platformIsGround(s.platformId);
+		// Only mutate origin to a literal lon/lat/alt — drop random
+		// origin specs, since "click here" doesn't make sense for a
+		// random-disc spawn.
+		const newAlt = wasGround
+			? terrainH
+			: ((s.origin && typeof s.origin.alt === 'number')
+				? s.origin.alt
+				: _armedAltM);
+		s.origin = { lon, lat, alt: newAlt };
+		_pendingMoveIdx = null;
+		_renderSpawnMarkers();
+		_renderSpawnList();
+		return;
+	}
+
 	const spawn = {
 		type: _armedKind,
 		team: _armedTeam,
@@ -187,12 +224,12 @@ function _dropUnitAt(lon, lat, terrainH) {
 	};
 	if (_armedKind === 'fighter') {
 		spawn.fighterModel = _armedSubId;
-		spawn.origin.alt = DEFAULT_AIR_ALT_M;
+		spawn.origin.alt = _armedAltM;
 		spawn.speedMps = DEFAULT_FIGHTER_SPD;
 	} else {
 		spawn.platformId = _armedSubId;
 		const isGround = _platformIsGround(_armedSubId);
-		spawn.origin.alt = isGround ? terrainH : DEFAULT_AIR_ALT_M;
+		spawn.origin.alt = isGround ? terrainH : _armedAltM;
 	}
 	if (!Array.isArray(_activeJson.spawns)) _activeJson.spawns = [];
 	_activeJson.spawns.push(spawn);
@@ -207,6 +244,60 @@ function _renderSpawnMarkers() {
 	if (!viewer || !_activeJson) return;
 	for (const e of _entities) viewer.entities.remove(e);
 	_entities.length = 0;
+
+	// World-anchored mode: draw ANCHOR + PLAYER START markers so the
+	// user can see where the scenario "lives" geographically and
+	// where they themselves spawn. Player-relative mode skips both —
+	// the commander view's live PLAYER marker handles it.
+	if (_activeJson.anchor && _activeJson.anchor.mode === 'world'
+		&& typeof _activeJson.anchor.worldLon === 'number') {
+		const a = _activeJson.anchor;
+		_entities.push(viewer.entities.add({
+			position: Cesium.Cartesian3.fromDegrees(a.worldLon, a.worldLat, 0),
+			point: {
+				pixelSize: 14,
+				color: COLOR_ANCHOR,
+				outlineColor: Cesium.Color.BLACK,
+				outlineWidth: 2,
+				disableDepthTestDistance: Number.POSITIVE_INFINITY,
+			},
+			label: {
+				text: 'ANCHOR',
+				font: '11px AceCombat, monospace',
+				pixelOffset: new Cesium.Cartesian2(16, 0),
+				fillColor: COLOR_ANCHOR,
+				outlineColor: Cesium.Color.BLACK,
+				outlineWidth: 2,
+				style: Cesium.LabelStyle.FILL_AND_OUTLINE,
+				disableDepthTestDistance: Number.POSITIVE_INFINITY,
+				horizontalOrigin: Cesium.HorizontalOrigin.LEFT,
+			},
+		}));
+		const ps = a.playerSpawn;
+		if (ps && typeof ps.lon === 'number') {
+			_entities.push(viewer.entities.add({
+				position: Cesium.Cartesian3.fromDegrees(ps.lon, ps.lat, ps.alt || 0),
+				point: {
+					pixelSize: 14,
+					color: COLOR_PSPAWN,
+					outlineColor: Cesium.Color.BLACK,
+					outlineWidth: 2,
+					disableDepthTestDistance: Number.POSITIVE_INFINITY,
+				},
+				label: {
+					text: `PLAYER START${ps.alt ? ` ${Math.round(ps.alt)} m` : ''}`,
+					font: '11px AceCombat, monospace',
+					pixelOffset: new Cesium.Cartesian2(16, 0),
+					fillColor: COLOR_PSPAWN,
+					outlineColor: Cesium.Color.BLACK,
+					outlineWidth: 2,
+					style: Cesium.LabelStyle.FILL_AND_OUTLINE,
+					disableDepthTestDistance: Number.POSITIVE_INFINITY,
+					horizontalOrigin: Cesium.HorizontalOrigin.LEFT,
+				},
+			}));
+		}
+	}
 
 	const spawns = Array.isArray(_activeJson.spawns) ? _activeJson.spawns : [];
 	for (const s of spawns) {
@@ -339,8 +430,50 @@ function _firstAnchorLikePoint(json) {
 
 // ----- Side panel ----------------------------------------------------------
 
+// Ensure anchor.playerSpawn exists with sensible defaults so the
+// later chain of edits doesn't have to null-check.
+function _ensurePlayerSpawn() {
+	if (!_activeJson.anchor) _activeJson.anchor = { mode: 'world' };
+	if (!_activeJson.anchor.playerSpawn) {
+		const view = _ctx && _ctx.commanderView;
+		_activeJson.anchor.playerSpawn = {
+			lon: (view && view.centerLon) || _activeJson.anchor.worldLon || 0,
+			lat: (view && view.centerLat) || _activeJson.anchor.worldLat || 0,
+			alt: 6000,
+			heading: 0,
+			speed: 250,
+		};
+	}
+}
+
+// Switch anchor mode. WORLD prefills worldLon/Lat from the current
+// view centre + a player spawn at the same location at a sensible
+// cruise altitude. Switching back to player-relative drops the
+// world fields entirely (clean JSON).
+function _setAnchorMode(mode) {
+	if (!_activeJson.anchor) _activeJson.anchor = {};
+	if (mode === 'world') {
+		const view = _ctx && _ctx.commanderView;
+		_activeJson.anchor = {
+			mode: 'world',
+			worldLon: (view && view.centerLon) || 0,
+			worldLat: (view && view.centerLat) || 0,
+		};
+		_ensurePlayerSpawn();
+	} else {
+		_activeJson.anchor = { mode: 'player-relative' };
+	}
+	const view = _ctx && _ctx.commanderView;
+	_applyPlayerMarkerSuppression(view);
+	_buildPanel();
+	_renderSpawnMarkers();
+}
+
 function _buildPanel() {
-	const panel = document.createElement('div');
+	// Tear down any existing panel before re-rendering so the
+	// listeners don't accumulate on each rebuild.
+	if (_panel && _panel.parentNode) _panel.parentNode.removeChild(_panel);
+	_panel = null;
 	panel.id = 'scenario-editor-panel';
 	panel.style.cssText = `
 		position: fixed;
@@ -384,6 +517,69 @@ function _buildPanel() {
 	panel.querySelector('#se-team').addEventListener('change', (e) => {
 		_armedTeam = e.target.value;
 	});
+	panel.querySelector('#se-alt').addEventListener('change', (e) => {
+		const v = parseFloat(e.target.value);
+		if (Number.isFinite(v)) _armedAltM = v;
+	});
+
+	// Anchor mode tabs.
+	panel.querySelector('#se-anc-rel').addEventListener('click', () => {
+		_setAnchorMode('player-relative');
+	});
+	panel.querySelector('#se-anc-abs').addEventListener('click', () => {
+		_setAnchorMode('world');
+	});
+
+	// Anchor + player-spawn inputs (only present in world-anchored).
+	const ancLon = panel.querySelector('#se-anc-lon');
+	const ancLat = panel.querySelector('#se-anc-lat');
+	const ancHere = panel.querySelector('#se-anc-here');
+	const psLon = panel.querySelector('#se-ps-lon');
+	const psLat = panel.querySelector('#se-ps-lat');
+	const psAlt = panel.querySelector('#se-ps-alt');
+	const psHere = panel.querySelector('#se-ps-here');
+	if (ancLon) ancLon.addEventListener('change', (e) => {
+		_activeJson.anchor.worldLon = parseFloat(e.target.value);
+		_renderSpawnMarkers();
+	});
+	if (ancLat) ancLat.addEventListener('change', (e) => {
+		_activeJson.anchor.worldLat = parseFloat(e.target.value);
+		_renderSpawnMarkers();
+	});
+	if (ancHere) ancHere.addEventListener('click', () => {
+		const view = _ctx && _ctx.commanderView;
+		if (!view) return;
+		_activeJson.anchor.worldLon = view.centerLon;
+		_activeJson.anchor.worldLat = view.centerLat;
+		_buildPanel();   // refresh inputs
+		_renderSpawnMarkers();
+	});
+	if (psLon) psLon.addEventListener('change', (e) => {
+		_ensurePlayerSpawn();
+		_activeJson.anchor.playerSpawn.lon = parseFloat(e.target.value);
+		_renderSpawnMarkers();
+	});
+	if (psLat) psLat.addEventListener('change', (e) => {
+		_ensurePlayerSpawn();
+		_activeJson.anchor.playerSpawn.lat = parseFloat(e.target.value);
+		_renderSpawnMarkers();
+	});
+	if (psAlt) psAlt.addEventListener('change', (e) => {
+		_ensurePlayerSpawn();
+		const v = parseFloat(e.target.value);
+		if (Number.isFinite(v)) _activeJson.anchor.playerSpawn.alt = v;
+		_renderSpawnMarkers();
+	});
+	if (psHere) psHere.addEventListener('click', () => {
+		const view = _ctx && _ctx.commanderView;
+		if (!view) return;
+		_ensurePlayerSpawn();
+		_activeJson.anchor.playerSpawn.lon = view.centerLon;
+		_activeJson.anchor.playerSpawn.lat = view.centerLat;
+		_buildPanel();
+		_renderSpawnMarkers();
+	});
+
 	panel.querySelector('#se-save').addEventListener('click', () => {
 		saveUserScenario(_activeId, _activeJson);
 		refreshScenarios();
@@ -406,10 +602,34 @@ function _panelHtml() {
 	const teamOpts  = TEAMS.map(t =>
 		`<option value="${t}"${t === _armedTeam ? ' selected' : ''}>${t}</option>`).join('');
 
+	const isWorldAnchored = _activeJson.anchor && _activeJson.anchor.mode === 'world';
+	const anchor = _activeJson.anchor || {};
+	const ps = anchor.playerSpawn || {};
+
+	const anchorSection = isWorldAnchored
+		? `
+		<div style="font-size:10px;opacity:0.7;margin-bottom:3px;">WORLD ANCHOR (lon, lat) — units placed here are absolute</div>
+		<div style="display:flex;gap:4px;font-size:10px;margin-bottom:5px;">
+			<input id="se-anc-lon" type="number" step="0.0001" value="${anchor.worldLon ?? ''}" style="${_selectCss()}flex:1;" placeholder="lon">
+			<input id="se-anc-lat" type="number" step="0.0001" value="${anchor.worldLat ?? ''}" style="${_selectCss()}flex:1;" placeholder="lat">
+			<button id="se-anc-here" type="button" style="${_btnCss()}">HERE</button>
+		</div>
+		<div style="font-size:10px;opacity:0.7;margin-bottom:3px;">PLAYER START (lon, lat, alt m)</div>
+		<div style="display:flex;gap:4px;font-size:10px;margin-bottom:5px;">
+			<input id="se-ps-lon" type="number" step="0.0001" value="${ps.lon ?? ''}" style="${_selectCss()}flex:1;" placeholder="lon">
+			<input id="se-ps-lat" type="number" step="0.0001" value="${ps.lat ?? ''}" style="${_selectCss()}flex:1;" placeholder="lat">
+		</div>
+		<div style="display:flex;gap:4px;font-size:10px;">
+			<input id="se-ps-alt" type="number" step="100" value="${ps.alt ?? 6000}" style="${_selectCss()}flex:1;" placeholder="alt m">
+			<button id="se-ps-here" type="button" style="${_btnCss()}">HERE</button>
+		</div>
+		`
+		: `<div style="font-size:10px;opacity:0.7;">Spawns are placed RELATIVE TO THE PLAYER. The player marker on the map shows where the player will spawn.</div>`;
+
 	return `
 	<div style="color:#6ff;font-weight:bold;border-bottom:1px solid rgba(0,220,255,0.35);padding-bottom:5px;margin-bottom:8px;display:flex;justify-content:space-between;">
 		<span>SCENARIO EDITOR</span>
-		<span style="opacity:0.6;font-size:10px;">10b.4</span>
+		<span style="opacity:0.6;font-size:10px;">10b.5</span>
 	</div>
 
 	<div style="margin-bottom:6px;">
@@ -417,6 +637,15 @@ function _panelHtml() {
 			style="width:100%;background:rgba(0,0,0,0.4);border:1px solid rgba(0,220,255,0.35);color:#c0eeff;font-family:inherit;font-size:12px;padding:3px 6px;letter-spacing:0.5px;">
 	</div>
 	<div style="opacity:0.7;margin-bottom:8px;font-size:10px;">id: <span style="color:#fff">${escapeHtml(_activeId)}</span></div>
+
+	<div style="margin-top:8px;border-top:1px solid rgba(0,220,255,0.2);padding-top:6px;">
+		<div style="opacity:0.7;font-size:10px;margin-bottom:4px;">ANCHOR MODE</div>
+		<div style="display:flex;gap:0;margin-bottom:5px;">
+			<button id="se-anc-rel" type="button" style="${_tabBtnCss(!isWorldAnchored)}flex:1;">PLAYER-RELATIVE</button>
+			<button id="se-anc-abs" type="button" style="${_tabBtnCss(isWorldAnchored)}flex:1;">WORLD-ANCHORED</button>
+		</div>
+		${anchorSection}
+	</div>
 
 	<div style="margin-top:8px;border-top:1px solid rgba(0,220,255,0.2);padding-top:6px;">
 		<div style="opacity:0.7;font-size:10px;margin-bottom:4px;">PALETTE — armed for next click</div>
@@ -427,7 +656,11 @@ function _panelHtml() {
 			</select>
 			<select id="se-sub" style="${_selectCss()}flex:1;">${subOpts}</select>
 		</div>
-		<select id="se-team" style="${_selectCss()}width:100%;">${teamOpts}</select>
+		<select id="se-team" style="${_selectCss()}width:100%;margin-bottom:5px;">${teamOpts}</select>
+		<div style="display:flex;gap:6px;align-items:center;font-size:10px;">
+			<span style="opacity:0.7;flex:0 0 auto;">altitude m:</span>
+			<input id="se-alt" type="number" step="500" value="${_armedAltM}" style="${_selectCss()}flex:1;">
+		</div>
 	</div>
 
 	<div style="margin-top:8px;border-top:1px solid rgba(0,220,255,0.2);padding-top:6px;">
@@ -437,11 +670,11 @@ function _panelHtml() {
 
 	<div style="margin-top:8px;border-top:1px solid rgba(0,220,255,0.2);padding-top:6px;font-size:10px;opacity:0.75;">
 		<div style="opacity:0.7;margin-bottom:4px;">CONTROLS</div>
-		<div>· LEFT-CLICK on terrain — drop selected unit</div>
+		<div>· LEFT-CLICK on terrain — drop the armed unit</div>
+		<div>· LEFT-CLICK on a spawn list MOVE button + click map — relocate</div>
 		<div>· LEFT-DRAG — pan map</div>
 		<div>· RIGHT-DRAG — tilt map</div>
 		<div>· WHEEL — zoom</div>
-		<div style="opacity:0.5;margin-top:3px;">drag-to-move + edit-form on markers in 10b.5</div>
 	</div>
 
 	<div style="display:flex;gap:8px;margin-top:10px;">
@@ -453,6 +686,15 @@ function _panelHtml() {
 
 function _selectCss() {
 	return `background:rgba(0,0,0,0.4);border:1px solid rgba(0,220,255,0.35);color:#c0eeff;font-family:inherit;font-size:11px;padding:2px 4px;letter-spacing:0.5px;`;
+}
+function _btnCss() {
+	return `background:rgba(0,0,0,0.4);border:1px solid rgba(0,220,255,0.45);color:#6ff;font-family:inherit;font-size:10px;padding:2px 6px;letter-spacing:0.5px;cursor:pointer;`;
+}
+function _tabBtnCss(isActive) {
+	const c = isActive
+		? 'background:rgba(0,220,255,0.18);color:#6ff;border:1px solid #6ff;'
+		: 'background:rgba(0,0,0,0.3);color:rgba(192,238,255,0.6);border:1px solid rgba(0,220,255,0.25);';
+	return `${c}font-family:inherit;font-size:10px;letter-spacing:1px;padding:4px;cursor:pointer;`;
 }
 
 function _optionsFor(ids, selected) {
@@ -472,8 +714,16 @@ function _renderSpawnList() {
 	}
 	list.innerHTML = spawns.map((s, i) => {
 		const label = _spawnLabel(s);
-		return `<div class="se-spawn-row" data-idx="${i}" style="padding:2px 4px;border-bottom:1px dotted rgba(0,220,255,0.15);display:flex;justify-content:space-between;align-items:center;">
-			<span><span style="opacity:0.5;display:inline-block;width:18px;">${i + 1}.</span>${escapeHtml(label)}</span>
+		const isMoving = _pendingMoveIdx === i;
+		const moveBtnStyle = isMoving
+			? 'background:rgba(255,210,80,0.2);border:1px solid #fd0;color:#fd0;'
+			: 'background:transparent;border:1px solid rgba(0,220,255,0.4);color:#6ff;';
+		const altText = (s.origin && typeof s.origin.alt === 'number')
+			? `  ${Math.round(s.origin.alt)} m`
+			: '';
+		return `<div class="se-spawn-row" data-idx="${i}" style="padding:2px 4px;border-bottom:1px dotted rgba(0,220,255,0.15);display:flex;justify-content:space-between;align-items:center;gap:4px;">
+			<span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;"><span style="opacity:0.5;display:inline-block;width:18px;">${i + 1}.</span>${escapeHtml(label + altText)}</span>
+			<button type="button" class="se-mv" data-idx="${i}" style="${moveBtnStyle}font-size:9px;padding:1px 5px;cursor:pointer;letter-spacing:0.5px;">${isMoving ? 'CLICK MAP' : 'MOVE'}</button>
 			<button type="button" class="se-del" data-idx="${i}" style="background:transparent;border:1px solid rgba(255,128,128,0.4);color:#f88;font-size:9px;padding:1px 5px;cursor:pointer;letter-spacing:0.5px;">DEL</button>
 		</div>`;
 	}).join('');
@@ -483,9 +733,21 @@ function _renderSpawnList() {
 			const idx = parseInt(btn.getAttribute('data-idx'), 10);
 			if (Number.isFinite(idx)) {
 				_activeJson.spawns.splice(idx, 1);
+				if (_pendingMoveIdx === idx) _pendingMoveIdx = null;
+				else if (_pendingMoveIdx != null && _pendingMoveIdx > idx) _pendingMoveIdx--;
 				_renderSpawnMarkers();
 				_renderSpawnList();
 			}
+		});
+	}
+	for (const btn of list.querySelectorAll('.se-mv')) {
+		btn.addEventListener('click', (e) => {
+			e.stopPropagation();
+			const idx = parseInt(btn.getAttribute('data-idx'), 10);
+			if (!Number.isFinite(idx)) return;
+			// Toggle: clicking MOVE again on the armed row cancels.
+			_pendingMoveIdx = (_pendingMoveIdx === idx) ? null : idx;
+			_renderSpawnList();
 		});
 	}
 }

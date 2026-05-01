@@ -145,6 +145,13 @@ export class CommanderView {
 		this.debugRadarEnabled    = false;
 		this.debugDatalinkEnabled = false;
 		this.debugJammerEnabled   = false;
+		// Phase 10b — when set, the per-frame _syncMarkers skips
+		// the `__player` marker. The editor flips this true while a
+		// world-anchored scenario is loaded (player position is
+		// irrelevant to a geographically-pinned scenario; showing
+		// it makes the user think the spawns are placed relative
+		// to it).
+		this.suppressPlayerMarker = false;
 		// Show every team's mesh by default when datalink debug is on
 		// (hostile teams in their own colors, friendly in cyan). Flip
 		// to false to see only the player's team.
@@ -680,10 +687,16 @@ export class CommanderView {
 			seen.add(id);
 		};
 
-		if (playerState) {
+		if (playerState && !this.suppressPlayerMarker) {
 			this._ensureMarker('__player', COLOR_PLAYER, 'PLAYER');
 			updateOne('__player', playerState, COLOR_PLAYER,
 				{ kind: 'player', ref: playerState });
+		} else {
+			// Hide an existing __player marker if it was created
+			// before the suppression flag flipped (e.g. user came
+			// from a flight session where the map was already up).
+			const m = this._markers.get('__player');
+			if (m) m.show = false;
 		}
 		if (units) {
 			for (const u of units) {
