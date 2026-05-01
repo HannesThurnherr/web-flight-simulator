@@ -70,11 +70,15 @@ export function update(dt, ctx) {
 
 	const controller = ctx.controller;
 	// Spectator chase-cam: hold whatever orbit the user dragged on
-	// RMB release instead of recentering. Unit-relative orbit stays
-	// (as the unit turns, the camera follows so the unit stays
-	// framed), but no decay-toward-zero. Pilot chase-cam keeps the
-	// recentering behavior so it snaps back to behind-the-plane.
-	if (controller) controller.holdCameraOrbit = isSpectating && !isFlying;
+	// RMB release instead of recentering. Drop the !isFlying gate
+	// from the previous attempt — the test should be "is the camera
+	// currently slaved to a spectator target," not "is the player
+	// dead." A live player who clicks VIEW also spectates, and the
+	// camera dispatch below (line ~494) chooses the spectator
+	// branch over the pilot branch whenever ctx.spectatorTarget is
+	// set, so the pilot's own cameraYaw recentering is irrelevant
+	// in that frame.
+	if (controller) controller.holdCameraOrbit = !!ctx.spectatorTarget;
 	const input = (isFlying || isSpectating) ? controller.update() : null;
 
 	// Commander view suspends pilot control: stick goes neutral,
