@@ -318,13 +318,16 @@ export function setupGlobalKeybinds(ctx) {
 			if (ctx.spectatorTarget) {
 				ctx.setSpectatorTarget(null);
 				// If we entered spectator mode while dead, the crash
-				// menu was hidden on the way in (main.js spectator-
-				// request handler). Restore it on the way out so the
-				// player still has access to RESPAWN / RESPAWN ELSEWHERE
-				// from where they left off.
+				// menu was hidden + the THREE canvas was unhidden on
+				// the way in (main.js spectator-request handler).
+				// Restore the CRASHED-only state on the way out so
+				// the player still has access to RESPAWN / RESPAWN
+				// ELSEWHERE from where they left off.
 				if (ctx.currentState === 'CRASHED') {
 					const crashMenu = document.getElementById('crashMenu');
 					if (crashMenu) crashMenu.classList.remove('hidden');
+					const threeContainer = document.getElementById('threeContainer');
+					if (threeContainer) threeContainer.classList.add('hidden');
 				}
 				e.preventDefault();
 				return;

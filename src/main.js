@@ -202,11 +202,15 @@ window.addEventListener('spectator-request', (e) => {
 		commanderView.setActive(false);
 	}
 	// If the player is dead, the crash menu (RESPAWN / RESPAWN ELSEWHERE)
-	// is currently overlaid. Hide it while spectating — the player is
-	// watching another unit, not deciding whether to revive theirs.
-	// Escape restores it (see the spectator-exit branch in menus.js).
+	// is currently overlaid AND the THREE canvas was hidden by
+	// doCrashTransition so the player only sees the menu. To make
+	// spectator view actually show the chase-cam world, we have to
+	// unhide #threeContainer too. Escape / target-death paths revert
+	// both back to the CRASHED-only state.
 	const crashMenu = document.getElementById('crashMenu');
 	if (crashMenu) crashMenu.classList.add('hidden');
+	const threeContainer = document.getElementById('threeContainer');
+	if (threeContainer) threeContainer.classList.remove('hidden');
 });
 let npcSystem;
 let weaponSystem;

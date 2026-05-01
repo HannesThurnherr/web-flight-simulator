@@ -61,9 +61,15 @@ export function update(dt, ctx) {
 	// the battle play out from above. Only player-specific updates
 	// are gated.
 	const isFlying = currentState === 'FLYING';
+	// Tick the controller while spectating too — we need its
+	// cameraYaw / cameraPitch (right-click drag) for the chase-cam
+	// orbit. Weapon and number-key input from the controller stays
+	// gated downstream on isFlying, so a dead spectator can't fire
+	// or change loadout slots even though the controller is awake.
+	const isSpectating = !isFlying && !!ctx.spectatorTarget;
 
 	const controller = ctx.controller;
-	const input = isFlying ? controller.update() : null;
+	const input = (isFlying || isSpectating) ? controller.update() : null;
 
 	// Commander view suspends pilot control: stick goes neutral,
 	// weapons safed, AB cut. Throttle stays at its last value so the
@@ -439,12 +445,15 @@ export function update(dt, ctx) {
 			(typeof ctx.spectatorTarget.lon !== 'number');
 		if (gone) {
 			ctx.setSpectatorTarget(null);
-			// If we were spectating while dead, the crash menu was
-			// hidden on entry. Restore it now that we've fallen back
-			// off the spectator unit so the player can still respawn.
+			// If we were spectating while dead, both the crash menu
+			// (hidden on entry) and the THREE canvas (unhidden on
+			// entry) need to flip back to the CRASHED-only state so
+			// the player gets the RESPAWN overlay back.
 			if (ctx.currentState === 'CRASHED') {
 				const crashMenu = document.getElementById('crashMenu');
 				if (crashMenu) crashMenu.classList.remove('hidden');
+				const threeContainer = document.getElementById('threeContainer');
+				if (threeContainer) threeContainer.classList.add('hidden');
 			}
 		}
 	}
