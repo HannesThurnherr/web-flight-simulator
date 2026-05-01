@@ -119,9 +119,24 @@ function open(id, providedJson = null) {
 	}
 	const view = _ctx && _ctx.commanderView;
 	if (view) {
-		view.setActive(true, _firstAnchorLikePoint(_activeJson));
-		view.distance = 800000;
-		view.tilt     = 12;
+		const lookAt = _firstAnchorLikePoint(_activeJson);
+		view.setActive(true, lookAt);
+		// If we have a sensible center (anchor / first spawn / saved
+		// player position), zoom in to a regional level. If we DON'T
+		// (empty scenario, geolocation hasn't completed, etc.), open
+		// at near-planet zoom so the user can pan around to find
+		// where they want to work instead of being stranded over
+		// Jakarta — main.js's default state.lon/lat — until they
+		// figure out how to fly the camera.
+		if (lookAt) {
+			view.centerLon = lookAt.lon;
+			view.centerLat = lookAt.lat;
+			view.distance  = 800000;     // 800 km regional
+			view.tilt      = 12;
+		} else {
+			view.distance  = 20000000;   // 20 000 km — full-globe
+			view.tilt      = 5;
+		}
 		_applyPlayerMarkerSuppression(view);
 	}
 
@@ -418,12 +433,31 @@ function _scenarioAnchorPoint(json) {
 }
 
 function _firstAnchorLikePoint(json) {
-	const anc = _scenarioAnchorPoint(json);
-	if (anc.lon !== 0 || anc.lat !== 0) return { lon: anc.lon, lat: anc.lat, alt: anc.alt };
-	const spawns = json.spawns || [];
+	// Only return a location if the scenario itself supplies one — a
+	// world anchor or an existing spawn. We deliberately don't fall
+	// back to ctx.state.lon/lat here: state defaults to Jakarta in
+	// main.js and is only later overwritten by an async ipapi.co
+	// geolocation. New scenarios opened before geolocation completes
+	// would otherwise center on Jakarta and force the user to pan
+	// across the planet to find where they actually want to work.
+	// Returning null lets the editor open at a near-planet zoom so
+	// the user can pan to anywhere visible.
+	if (json && json.anchor && json.anchor.mode === 'world'
+		&& typeof json.anchor.worldLon === 'number') {
+		return { lon: json.anchor.worldLon, lat: json.anchor.worldLat, alt: 0 };
+	}
+	if (json && json.anchor && json.anchor.playerSpawn
+		&& typeof json.anchor.playerSpawn.lon === 'number') {
+		return {
+			lon: json.anchor.playerSpawn.lon,
+			lat: json.anchor.playerSpawn.lat,
+			alt: json.anchor.playerSpawn.alt || 0,
+		};
+	}
+	const spawns = (json && json.spawns) || [];
 	for (const s of spawns) {
 		const pt = _resolveSpawnPositionForDisplay(s, json);
-		if (pt) return pt;
+		if (pt && (pt.lon !== 0 || pt.lat !== 0)) return pt;
 	}
 	return null;
 }

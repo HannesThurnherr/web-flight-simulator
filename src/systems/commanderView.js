@@ -579,7 +579,13 @@ export class CommanderView {
 			// it), this scales the visible ground area equally at any tilt,
 			// not only top-down.
 			const factor = e.deltaY > 0 ? 1.25 : 1 / 1.25;
-			this.distance = Math.max(500, Math.min(2000000, this.distance * factor));
+			// Allow zooming out far enough to see the whole planet —
+			// 30 000 km slant distance gets the camera comfortably
+			// outside the globe, useful when authoring a scenario in
+			// the editor and you need to fly the camera between
+			// continents. Lower bound stays at 500 m so you can get
+			// in close to a single SAM site.
+			this.distance = Math.max(500, Math.min(30000000, this.distance * factor));
 			e.preventDefault();
 			this.viewer.scene.requestRender();
 		}, { passive: false, capture: true });
