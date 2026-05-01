@@ -44,6 +44,11 @@ let _clickHandler  = null;
 // click should MOVE it (set by clicking MOVE on a spawn-list row).
 // null = next click drops a new unit instead.
 let _pendingMoveIdx = null;
+// When non-null, the next terrain-click ADDS a waypoint to the
+// selected spawn's pilot.params.<route>. Format: { spawnIdx, route }
+// where route is 'waypoints' (patrol) or 'ingressWaypoints' /
+// 'egressWaypoints' (strike).
+let _pendingAddWaypoint = null;
 // Currently-selected spawn index (set by clicking a marker on the
 // map or a row in the spawn list). The edit form in the panel
 // targets this spawn; null = no selection, panel shows the
@@ -241,6 +246,28 @@ function _uninstallClickHandler() {
 function _dropUnitAt(lon, lat, terrainH) {
 	if (!_activeJson) return;
 
+	// Pending ADD WAYPOINT — append to the spawn's pilot route.
+	if (_pendingAddWaypoint) {
+		const { spawnIdx, route } = _pendingAddWaypoint;
+		const s = _activeJson.spawns && _activeJson.spawns[spawnIdx];
+		if (!s || !s.pilot) { _pendingAddWaypoint = null; }
+		else {
+			s.pilot.params = s.pilot.params || {};
+			s.pilot.params[route] = s.pilot.params[route] || [];
+			s.pilot.params[route].push({
+				lon, lat,
+				altM: _armedAltM,
+				speedMps: 250,
+			});
+			// Stay armed so the user can keep clicking to add a chain
+			// of waypoints. Click "DONE" in the panel (re-clicking the
+			// ADD button) to disarm.
+			_renderSpawnMarkers();
+			_renderWaypointPanel();
+		}
+		return;
+	}
+
 	// Pending MOVE? Relocate the spawn we previously armed for move
 	// instead of dropping a new one.
 	if (_pendingMoveIdx != null
@@ -399,6 +426,73 @@ function _renderSpawnMarkers() {
 		ent.__editorSpawnIdx = i;
 		_entities.push(ent);
 	}
+
+	// Waypoint visualisation — only for the currently-selected
+	// spawn. Rendering every spawn's waypoints on the map at once
+	// gets cluttered fast, and the selected-spawn case is when the
+	// user actually cares.
+	if (_selectedIdx != null && _activeJson.spawns) {
+		const sel = _activeJson.spawns[_selectedIdx];
+		if (sel && sel.pilot && sel.pilot.params) {
+			const params = sel.pilot.params;
+			const ptype = sel.pilot.type;
+			if (ptype === 'patrol') {
+				_drawRoute(viewer, params.waypoints, '#00ffaa', 'WP', !!params.loop);
+			} else if (ptype === 'strike') {
+				_drawRoute(viewer, params.ingressWaypoints, '#ffaa44', 'IN', false);
+				_drawRoute(viewer, params.egressWaypoints,  '#aa88ff', 'EG', false);
+			}
+		}
+	}
+}
+
+// Draw a polyline between waypoints + a numbered marker at each
+// vertex. Polyline closes the loop when `loop` is true (patrol). The
+// markers are pushed to _entities so they get cleaned up on the
+// next render or on close.
+function _drawRoute(viewer, list, hex, prefix, loop) {
+	if (!Array.isArray(list) || list.length === 0) return;
+	const colour = Cesium.Color.fromCssColorString(hex);
+	const positions = [];
+	for (let i = 0; i < list.length; i++) {
+		const wp = list[i];
+		positions.push(Cesium.Cartesian3.fromDegrees(wp.lon, wp.lat, wp.altM || 0));
+		_entities.push(viewer.entities.add({
+			position: Cesium.Cartesian3.fromDegrees(wp.lon, wp.lat, wp.altM || 0),
+			point: {
+				pixelSize: 9,
+				color: colour,
+				outlineColor: Cesium.Color.BLACK,
+				outlineWidth: 1.5,
+				disableDepthTestDistance: Number.POSITIVE_INFINITY,
+			},
+			label: {
+				text: `${prefix}${i + 1}`,
+				font: '10px AceCombat, monospace',
+				pixelOffset: new Cesium.Cartesian2(11, 0),
+				fillColor: colour,
+				outlineColor: Cesium.Color.BLACK,
+				outlineWidth: 2,
+				style: Cesium.LabelStyle.FILL_AND_OUTLINE,
+				disableDepthTestDistance: Number.POSITIVE_INFINITY,
+				horizontalOrigin: Cesium.HorizontalOrigin.LEFT,
+			},
+		}));
+	}
+	if (positions.length < 2) return;
+	if (loop) positions.push(positions[0]);
+	_entities.push(viewer.entities.add({
+		polyline: {
+			positions,
+			width: 2,
+			material: new Cesium.PolylineDashMaterialProperty({
+				color: colour.withAlpha(0.8),
+				dashLength: 16.0,
+			}),
+			arcType: Cesium.ArcType.NONE,
+			clampToGround: false,
+		},
+	}));
 }
 
 function _spawnIsRandom(s) {
@@ -888,6 +982,90 @@ function _wireEditForm(panel) {
 		if (Number.isFinite(v)) s.magazine.missile = v;
 		else delete s.magazine.missile;
 	});
+
+	// Pilot type — switching kinds rebuilds the whole edit form so
+	// the relevant sub-section (waypoint editor / target tag inputs)
+	// shows up.
+	const pilotEl = panel.querySelector('#ed-pilot');
+	if (pilotEl) pilotEl.addEventListener('change', (e) => {
+		const v = e.target.value;
+		if (v === 'default') {
+			delete s.pilot;
+		} else {
+			s.pilot = s.pilot || {};
+			s.pilot.type = v;
+			s.pilot.params = s.pilot.params || {};
+			if (v === 'patrol' && !Array.isArray(s.pilot.params.waypoints)) {
+				s.pilot.params.waypoints = [];
+				s.pilot.params.loop = true;
+			}
+			if (v === 'strike') {
+				s.pilot.params.ingressWaypoints = s.pilot.params.ingressWaypoints || [];
+				s.pilot.params.egressWaypoints  = s.pilot.params.egressWaypoints  || [];
+				s.pilot.params.weaponType = s.pilot.params.weaponType || 'STORM-SHADOW';
+				s.pilot.params.target = s.pilot.params.target || {};
+			}
+		}
+		_pendingAddWaypoint = null;
+		_buildPanel();
+	});
+
+	// Strike target tag + weapon dropdown.
+	const strikeTag = panel.querySelector('#ed-strike-tag');
+	if (strikeTag) strikeTag.addEventListener('change', (e) => {
+		s.pilot.params.target = { tag: e.target.value || undefined };
+	});
+	const strikeWpn = panel.querySelector('#ed-strike-wpn');
+	if (strikeWpn) strikeWpn.addEventListener('change', (e) => {
+		s.pilot.params.weaponType = e.target.value;
+	});
+
+	// Escort tag.
+	const escortTag = panel.querySelector('#ed-escort-tag');
+	if (escortTag) escortTag.addEventListener('change', (e) => {
+		s.pilot.params.escortTag = e.target.value || undefined;
+	});
+
+	// ADD WAYPOINT toggles. Each ADD button arms / disarms
+	// click-to-add for its specific route key; clicking a different
+	// route while one is already armed re-points the click target.
+	for (const btn of panel.querySelectorAll('.ed-wp-add')) {
+		btn.addEventListener('click', () => {
+			const route = btn.getAttribute('data-route');
+			const samePending = _pendingAddWaypoint
+				&& _pendingAddWaypoint.spawnIdx === _selectedIdx
+				&& _pendingAddWaypoint.route === route;
+			_pendingAddWaypoint = samePending
+				? null
+				: { spawnIdx: _selectedIdx, route };
+			_renderWaypointPanel();
+		});
+	}
+	// DEL on individual waypoint rows.
+	for (const btn of panel.querySelectorAll('.ed-wp-del')) {
+		btn.addEventListener('click', () => {
+			const route = btn.getAttribute('data-route');
+			const idx = parseInt(btn.getAttribute('data-idx'), 10);
+			if (s.pilot && s.pilot.params && Array.isArray(s.pilot.params[route])) {
+				s.pilot.params[route].splice(idx, 1);
+				_renderSpawnMarkers();
+				_renderWaypointPanel();
+			}
+		});
+	}
+}
+
+// Repaint just the pilot/route sub-section after a waypoint
+// add / delete or arm-toggle, without rebuilding the entire panel
+// (which would lose focus on any active input).
+function _renderWaypointPanel() {
+	if (!_panel || _selectedIdx == null) return;
+	const s = _activeJson && _activeJson.spawns && _activeJson.spawns[_selectedIdx];
+	if (!s) return;
+	// Cheapest route: rebuild the whole edit-form section. It only
+	// holds dropdowns + small inputs; rebuilding doesn't lose
+	// information unlike rebuilding the whole panel.
+	_buildPanel();
 }
 
 function _editFormHtml(s) {
@@ -970,7 +1148,94 @@ function _editFormHtml(s) {
 			<input id="ed-mag" type="number" step="1" value="${mag.missile ?? ''}" placeholder="missile count" style="${_selectCss()}flex:1;">
 		</div>` : ''}
 
+		${isFighter ? _pilotSectionHtml(s) : ''}
+
 		<div style="margin-top:6px;font-size:10px;opacity:0.7;">click another marker / row to switch · click empty terrain to drop a new unit · DESELECT to return to placement mode</div>
+	</div>`;
+}
+
+// Pilot-type sub-section (fighter spawns only). Default = no
+// pilot (engage-on-sight CAP). Selecting patrol exposes a waypoint
+// editor; strike adds an additional target-tag + weapon-type input
+// pair (one waypoint editor per route — ingress and egress);
+// escort adds an escortTag input.
+function _pilotSectionHtml(s) {
+	const ptype = (s.pilot && s.pilot.type) || 'default';
+	const params = (s.pilot && s.pilot.params) || {};
+	const isAddingHere = (route) =>
+		_pendingAddWaypoint && _pendingAddWaypoint.spawnIdx === _selectedIdx
+		&& _pendingAddWaypoint.route === route;
+
+	const wpListHtml = (route) => {
+		const list = Array.isArray(params[route]) ? params[route] : [];
+		if (list.length === 0) {
+			return '<div style="opacity:0.5;font-size:10px;font-style:italic;padding:2px 0;">no waypoints — click ADD then click on the map</div>';
+		}
+		return list.map((wp, i) =>
+			`<div style="display:flex;gap:4px;font-size:10px;padding:1px 0;align-items:center;">
+				<span style="opacity:0.6;width:18px;">${i + 1}.</span>
+				<span style="flex:1;font-family:monospace;opacity:0.8;">${wp.lon.toFixed(3)}, ${wp.lat.toFixed(3)} · ${Math.round(wp.altM || 0)} m</span>
+				<button type="button" class="ed-wp-del" data-route="${route}" data-idx="${i}" style="background:transparent;border:1px solid rgba(255,128,128,0.4);color:#f88;font-size:9px;padding:1px 4px;cursor:pointer;letter-spacing:0.5px;">DEL</button>
+			</div>`,
+		).join('');
+	};
+
+	const wpSection = (route, label) => {
+		const adding = isAddingHere(route);
+		const btnStyle = adding
+			? 'background:rgba(255,210,80,0.2);border:1px solid #fd0;color:#fd0;'
+			: 'background:transparent;border:1px solid rgba(0,220,255,0.4);color:#6ff;';
+		return `
+		<div style="margin-top:4px;font-size:10px;opacity:0.85;">
+			<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:3px;">
+				<span>${label} ROUTE</span>
+				<button type="button" class="ed-wp-add" data-route="${route}" style="${btnStyle}font-size:9px;padding:1px 6px;cursor:pointer;letter-spacing:0.5px;">${adding ? 'CLICK MAP · DONE TO STOP' : 'ADD'}</button>
+			</div>
+			<div data-wp-list="${route}">${wpListHtml(route)}</div>
+		</div>`;
+	};
+
+	let routeUI = '';
+	if (ptype === 'patrol') {
+		routeUI = wpSection('waypoints', 'PATROL');
+	} else if (ptype === 'strike') {
+		const targetTag = (params.target && params.target.tag) || '';
+		const weapon = params.weaponType || 'STORM-SHADOW';
+		routeUI = `
+		<div style="display:flex;gap:4px;align-items:center;font-size:10px;margin-top:4px;">
+			<span style="opacity:0.7;flex:0 0 60px;">target tag</span>
+			<input id="ed-strike-tag" type="text" value="${escapeAttr(targetTag)}" placeholder="ewr-A" style="${_selectCss()}flex:1;">
+		</div>
+		<div style="display:flex;gap:4px;align-items:center;font-size:10px;margin-top:3px;">
+			<span style="opacity:0.7;flex:0 0 60px;">weapon</span>
+			<select id="ed-strike-wpn" style="${_selectCss()}flex:1;">
+				${['STORM-SHADOW', 'AGM-86', 'GBU-31', 'GBU-38', 'GBU-39'].map(w =>
+					`<option value="${w}"${w === weapon ? ' selected' : ''}>${w}</option>`).join('')}
+			</select>
+		</div>
+		${wpSection('ingressWaypoints', 'INGRESS')}
+		${wpSection('egressWaypoints',  'EGRESS')}`;
+	} else if (ptype === 'escort') {
+		const tag = params.escortTag || '';
+		routeUI = `
+		<div style="display:flex;gap:4px;align-items:center;font-size:10px;margin-top:4px;">
+			<span style="opacity:0.7;flex:0 0 70px;">escort tag</span>
+			<input id="ed-escort-tag" type="text" value="${escapeAttr(tag)}" placeholder="awacs-1" style="${_selectCss()}flex:1;">
+		</div>`;
+	}
+
+	return `
+	<div style="margin-top:6px;border-top:1px dotted rgba(0,220,255,0.2);padding-top:4px;">
+		<div style="display:flex;gap:4px;align-items:center;font-size:10px;margin-bottom:3px;">
+			<span style="opacity:0.7;flex:0 0 50px;">pilot</span>
+			<select id="ed-pilot" style="${_selectCss()}flex:1;">
+				<option value="default"${ptype === 'default' ? ' selected' : ''}>default (engage-on-sight)</option>
+				<option value="patrol"${ptype === 'patrol'   ? ' selected' : ''}>patrol</option>
+				<option value="strike"${ptype === 'strike'   ? ' selected' : ''}>strike</option>
+				<option value="escort"${ptype === 'escort'   ? ' selected' : ''}>escort</option>
+			</select>
+		</div>
+		${routeUI}
 	</div>`;
 }
 
