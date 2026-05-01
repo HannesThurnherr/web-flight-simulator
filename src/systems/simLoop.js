@@ -449,6 +449,13 @@ export function update(dt, ctx) {
 	// freezing on the death pose. Also clears if the unit is an NPC
 	// that's been spliced out of the world (active === false or
 	// detached).
+	// Spectator info panel: corner-pinned readout (name, alt, spd,
+	// heading, pitch, throttle/AB, AI behavior) mirroring the
+	// commander-view tooltip so the player can still see what
+	// they're chasing once the map closes. Lives outside any other
+	// view container so it stays visible during chase-cam.
+	updateSpectatorInfoPanel(ctx);
+
 	if (ctx.spectatorTarget) {
 		const gone = ctx.spectatorTarget.destroyed ||
 			ctx.spectatorTarget.active === false ||
@@ -737,4 +744,65 @@ export function update(dt, ctx) {
 			});
 		}
 	}
+}
+
+// Corner-pinned info panel for the unit currently being spectated.
+// Hidden when no spectator target. Built lazily on first show so the
+// DOM cost is zero until the player actually enters spectator mode.
+// Mirrors the commander-view tooltip's data layout (name + alt + spd
+// + hdg + pitch + AI behavior) so the user gets the same situational
+// readout once the map closes and they're chasing the unit live.
+function updateSpectatorInfoPanel(ctx) {
+	const target = ctx.spectatorTarget;
+	let panel = document.getElementById('spectator-info-panel');
+	if (!target) {
+		if (panel) panel.style.display = 'none';
+		return;
+	}
+	if (!panel) {
+		panel = document.createElement('div');
+		panel.id = 'spectator-info-panel';
+		panel.style.cssText = `
+			position: fixed;
+			right: 16px;
+			bottom: 16px;
+			min-width: 200px;
+			padding: 8px 12px;
+			background: rgba(0, 20, 25, 0.78);
+			border: 1px solid rgba(0, 220, 180, 0.45);
+			color: #a8ffe4;
+			font-family: 'AceCombat', 'Courier New', monospace;
+			font-size: 11px;
+			line-height: 1.5;
+			z-index: 55;
+			pointer-events: none;
+			letter-spacing: 0.5px;
+		`;
+		document.body.appendChild(panel);
+	}
+	panel.style.display = '';
+	const dir = (d) => `${Math.round(((d % 360) + 360) % 360).toString().padStart(3, '0')}°`;
+	const name  = target.name || (target.type ? `${target.type}` : 'UNIT');
+	const altM  = Math.max(0, Math.round(target.alt || 0));
+	const spd   = Math.round(((target.speed || 0)) * 3.6);          // km/h
+	const hdg   = (typeof target.heading === 'number') ? dir(target.heading) : '—';
+	const pit   = (typeof target.pitch === 'number')   ? `${target.pitch.toFixed(1)}°` : '—';
+	const row = (lbl, val, color = '#a8ffe4') =>
+		`<div><span style="display:inline-block;width:48px;opacity:0.6">${lbl}</span><span style="color:${color}">${val}</span></div>`;
+	let html = `<div style="color:#00ffb4;font-weight:bold;border-bottom:1px solid rgba(0,220,180,0.3);padding-bottom:3px;margin-bottom:5px;">${name}</div>`;
+	html += row('ALT', `${altM.toLocaleString()} m`);
+	html += row('SPD', `${spd} km/h`);
+	html += row('HDG', hdg);
+	html += row('PIT', pit);
+	if (target.pilot && target.pilot.command) {
+		const beh = target.pilot.command.activeBehaviorName || '—';
+		html += row('AI',  beh);
+		const cm = target.pilot.subsystems && target.pilot.subsystems.countermeasures;
+		if (cm) html += row('CM', `${cm.flareCount}F / ${cm.chaffCount}C`);
+	}
+	if (typeof target.throttle === 'number') {
+		const thr = `${Math.round(target.throttle * 100)}%${target.isBoosting ? ' AB' : ''}`;
+		html += row('THR', thr);
+	}
+	panel.innerHTML = html;
 }
