@@ -41,6 +41,7 @@ import { getTeamDatalink } from '../teamDatalink.js';
 import { makeRng, sample, sampleDiscENU, sampleOnRoute } from './scenarioRandom.js';
 import { MUNITIONS } from '../../weapon/munitions.js';
 import { PLANES } from '../../plane/planes.js';
+import { createPatrolPilot } from '../ai/index.js';
 
 // Resolve scenario.anchor → an absolute reference point used by
 // `origin.relTo: "anchor"`. Two modes:
@@ -345,6 +346,23 @@ export function buildScenarioFromJson(data) {
 						}
 						if (npc && s.loadout) {
 							applyNpcLoadout(npc, _resolveLoadout(rng, s.loadout, npc));
+						}
+						// 10d — pilot type override. The default
+						// createFighterPilot is engage-on-sight + Cruise
+						// fallback, which produces the "fighters spawn
+						// far apart, see nothing, fly random circles"
+						// behaviour at long-range BVR scales. Author
+						// can opt into `pilot: { type: "patrol",
+						// params: { waypoints: [...], loop: true } }`
+						// to drive the NPC down a route until a
+						// hostile is spotted, then engage.
+						if (npc && s.pilot && s.pilot.type === 'patrol') {
+							const params = s.pilot.params || {};
+							npc.pilot = createPatrolPilot(npc, {
+								waypoints: params.waypoints || [],
+								loop:      params.loop,
+								captureRadiusM: params.captureRadiusM,
+							});
 						}
 						// 10d — tag registration. Single-tag spawns put
 						// the first npc on the tag. Multi-count spawns

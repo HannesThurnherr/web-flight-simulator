@@ -13,6 +13,7 @@ import {
 	FormationBehavior,
 	PatrolRtbBehavior,
 	PatrolCapBehavior,
+	WaypointFollowBehavior,
 } from './behaviors.js';
 import {
 	CountermeasureSubsystem,
@@ -47,6 +48,43 @@ export function createFighterPilot(unit, opts = {}) {
 	p.addBehavior(new CrankBehavior());
 	p.addBehavior(new TerrainAvoidBehavior());
 	p.addBehavior(new EngageBehavior());
+	p.addBehavior(new CruiseBehavior({
+		alt:   opts.cruiseAlt   ?? 8000,
+		speed: opts.cruiseSpeed ?? 300,
+	}));
+	return p;
+}
+
+// Patrol pilot: a fighter pilot that follows a waypoint route when
+// no enemy is in sight, and engages-on-sight the moment one is.
+// Same priority chain as createFighterPilot, with WaypointFollow
+// inserted between Engage and Cruise — Engage still wins when a
+// bandit is in range, so the pilot intercepts; once the engagement
+// is over (target dead, defended, or out of range) the pilot
+// resumes the route. Cruise stays at the bottom as a fallback for
+// edge cases (waypoints all consumed in non-loop mode).
+export function createPatrolPilot(unit, opts = {}) {
+	const p = new Pilot(unit);
+	p.addSubsystem('countermeasures', new CountermeasureSubsystem({
+		flares: opts.flares ?? 30,
+		chaff:  opts.chaff  ?? 30,
+	}));
+	p.addSubsystem('targetManager', new TargetManagerSubsystem({
+		maxEngagementRange: opts.maxEngagementRange ?? 70000,
+	}));
+	p.addSubsystem('weapons', new WeaponSubsystem({
+		weapons: opts.weapons,
+	}));
+	p.addBehavior(new ForwardTerrainAvoidBehavior());
+	p.addBehavior(new MissileEvasionBehavior());
+	p.addBehavior(new CrankBehavior());
+	p.addBehavior(new TerrainAvoidBehavior());
+	p.addBehavior(new EngageBehavior());
+	p.addBehavior(new WaypointFollowBehavior({
+		waypoints: opts.waypoints || [],
+		loop:      opts.loop !== false,
+		captureRadiusM: opts.captureRadiusM,
+	}));
 	p.addBehavior(new CruiseBehavior({
 		alt:   opts.cruiseAlt   ?? 8000,
 		speed: opts.cruiseSpeed ?? 300,

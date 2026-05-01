@@ -90,6 +90,73 @@ export class CruiseBehavior extends Behavior {
 }
 
 // ----------------------------------------------------------------------------
+// WaypointFollowBehavior — Phase 10d (NPC missions, "patrol" pilot).
+//
+// Drives the NPC along an ordered list of waypoints when no higher-
+// priority behavior (engage / evade / terrain) wants control. Sits
+// just above CruiseBehavior so an aimless fighter follows its route
+// instead of drifting in random circles, but yields to engage the
+// instant a hostile is spotted.
+//
+// Each waypoint: { lon, lat, altM, speedMps?, captureRadiusM? }.
+// Default capture radius 1500 m (the NPC turns to the next leg once
+// it's that close). `loop: true` cycles back to the first waypoint
+// after the last; otherwise the NPC orbits the final waypoint as a
+// station. `engageOnSight: true` (the default) keeps EngageBehavior
+// active over this one — see priority order in createPatrolPilot.
+// Setting it false would mean "fly the route regardless of contacts"
+// (useful for non-combatant patrols once we model that), but
+// implementing the toggle isn't in 10d's scope.
+export class WaypointFollowBehavior extends Behavior {
+	constructor(opts = {}) {
+		super('WaypointFollow');
+		this.waypoints = Array.isArray(opts.waypoints) ? opts.waypoints : [];
+		this.loop = opts.loop !== false;
+		this.captureRadiusM = opts.captureRadiusM ?? 1500;
+		this._idx = 0;
+	}
+	isActive() { return this.waypoints.length > 0; }
+	apply(ctx, cmd) {
+		const u = ctx.unit;
+		const wp = this.waypoints[this._idx];
+		if (!wp) return;
+
+		// Capture-and-advance. Use a flat-Earth metre distance — at
+		// the leg-length scales we care about (km), the great-circle
+		// correction is in the noise, and we need the cheap version
+		// running every frame on every patrolling NPC.
+		const plat = u.lat * Math.PI / 180;
+		const dE = (wp.lon - u.lon) * 111320 * Math.cos(plat);
+		const dN = (wp.lat - u.lat) * 111320;
+		const dist = Math.hypot(dE, dN);
+		if (dist < this.captureRadiusM) {
+			if (this._idx + 1 < this.waypoints.length) {
+				this._idx++;
+			} else if (this.loop) {
+				this._idx = 0;
+			}
+			// If not looping and we're past the last waypoint, the
+			// NPC just keeps orbiting the final point — same heading
+			// math below (dist→0, heading degenerates) drifts into a
+			// station-keeping circle. Acceptable for a patrol.
+		}
+
+		const target = this.waypoints[this._idx];
+		const tdE = (target.lon - u.lon) * 111320 * Math.cos(plat);
+		const tdN = (target.lat - u.lat) * 111320;
+		cmd.targetHeading = (Math.atan2(tdE, tdN) * 180 / Math.PI + 360) % 360;
+
+		// Gentle climb/descent toward the leg's nominal altitude.
+		// Cap pitch at ±8° so the NPC doesn't yo-yo on long climbs.
+		const altErr = (target.altM ?? u.alt) - u.alt;
+		cmd.targetPitch = Math.max(-8, Math.min(8, altErr / 400));
+		cmd.targetSpeed = target.speedMps ?? 280;
+		cmd.throttle    = 0.7;
+		cmd.boost       = false;
+	}
+}
+
+// ----------------------------------------------------------------------------
 // ForwardTerrainAvoidBehavior — predictive look-ahead pull-up.
 //
 // The plain TerrainAvoidBehavior below only reads AGL straight under

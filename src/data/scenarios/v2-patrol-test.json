@@ -1,0 +1,50 @@
+{
+	"schemaVersion": 2,
+	"id": "v2-patrol-test",
+	"name": "V2 — Patrol CAP Test",
+	"description": "Two hostile CAPs flying programmed waypoint routes 200 km apart. Friendly two-ship CAP also patrols its own orbit. Use to verify NPCs follow waypoints + engage-on-sight at long BVR ranges. Author the patrols however you want — these are just sane defaults to test the pilot type.",
+	"autoSpawn": false,
+
+	"spawns": [
+		{
+			"type": "fighter",
+			"team": "hostile-red",
+			"count": 2,
+			"origin": { "relTo": "player", "bearingDeg": 0, "rangeM": 120000, "altM": 9000 },
+			"speedMps": 260,
+			"loadout": { "AIM-120": 4, "AIM-9X": 2 },
+			"pilot": {
+				"type": "patrol",
+				"params": {
+					"loop": true,
+					"waypoints": [
+						{ "lon": 7.6, "lat": 47.8, "altM": 9000, "speedMps": 250 },
+						{ "lon": 8.6, "lat": 47.8, "altM": 9000, "speedMps": 250 },
+						{ "lon": 8.6, "lat": 48.2, "altM": 9000, "speedMps": 250 },
+						{ "lon": 7.6, "lat": 48.2, "altM": 9000, "speedMps": 250 }
+					]
+				}
+			}
+		},
+		{
+			"type": "fighter",
+			"team": "friendly",
+			"count": 2,
+			"origin": { "relTo": "player", "bearingDeg": 180, "rangeM": 50000, "altM": 9000 },
+			"speedMps": 260,
+			"loadout": { "AIM-120": 4, "AIM-9X": 2 },
+			"pilot": {
+				"type": "patrol",
+				"params": {
+					"loop": true,
+					"waypoints": [
+						{ "lon": 7.8, "lat": 46.6, "altM": 9000, "speedMps": 250 },
+						{ "lon": 8.4, "lat": 46.6, "altM": 9000, "speedMps": 250 },
+						{ "lon": 8.4, "lat": 47.0, "altM": 9000, "speedMps": 250 },
+						{ "lon": 7.8, "lat": 47.0, "altM": 9000, "speedMps": 250 }
+					]
+				}
+			}
+		}
+	]
+}
