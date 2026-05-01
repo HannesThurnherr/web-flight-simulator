@@ -32,7 +32,7 @@ import { PlanePhysics } from '../plane/planePhysics';
 import { getActivePlane, getActivePlaneId, PLANES } from '../plane/planes';
 import { simTypeCounts, effectiveRcsM2, buildHardpointPlan } from '../plane/loadout';
 import { SIGNATURES } from './signatures';
-import { getActiveScenario } from './scenarios';
+import { getActiveScenario, getActiveScenarioId, getRawScenario } from './scenarios';
 import { getViewer, setControlsEnabled, setRenderOptimization } from '../world/cesiumWorld';
 import { reverseGeocode } from '../world/regions';
 import { soundManager } from '../utils/soundManager';
@@ -369,6 +369,26 @@ export function setupConfirmSpawn(ctx) {
 			ctx.setLastIsBoosting(false);
 
 			ctx.controller.reset();
+
+			// 10b — world-anchored scenario override. If the active
+			// scenario JSON has anchor.mode === 'world' and a
+			// playerSpawn block, that's the authored-in player start.
+			// Override whatever the user picked / inherited from
+			// last-spawn so the editor's PLAYER START marker is
+			// authoritative when flying the scenario.
+			{
+				const raw = getRawScenario(getActiveScenarioId());
+				const ps = raw && raw.anchor && raw.anchor.mode === 'world'
+					? raw.anchor.playerSpawn : null;
+				if (ps && typeof ps.lon === 'number' && typeof ps.lat === 'number') {
+					state.lon = ps.lon;
+					state.lat = ps.lat;
+					if (typeof ps.alt === 'number')      state.alt = ps.alt;
+					if (typeof ps.heading === 'number')  state.heading = ps.heading;
+					if (typeof ps.speed === 'number')    state.speed = ps.speed;
+				}
+			}
+
 			// Rebuild physics from the active plane's spec — strict-spec
 			// PlanePhysics requires a complete physicsOverrides block.
 			const activePlane = getActivePlane();
