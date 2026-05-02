@@ -218,16 +218,23 @@ function _installClickHandler() {
 		if (!_activeJson) return;
 		const d = e && e.detail;
 		if (!d) return;
-		// Click landed on a tagged editor entity → select that spawn
-		// instead of dropping / moving. Each spawn marker carries
-		// __editorSpawnIdx (see _renderSpawnMarkers).
-		if (d.entity && Number.isFinite(d.entity.__editorSpawnIdx)) {
-			_selectSpawn(d.entity.__editorSpawnIdx);
+		// Marker clicks are handled by the capture-phase pointerdown
+		// elsewhere — by the time commander view dispatches this
+		// event the click is already empty-terrain.
+		// Empty-terrain click semantics:
+		//   - waypoint-add armed → add a waypoint (auto-armed when a
+		//     patrol/strike spawn is selected; tab-switched per
+		//     route for strike).
+		//   - spawn selected but no waypoint mode → deselect.
+		//   - nothing selected → drop the armed-palette unit.
+		if (_pendingAddWaypoint) {
+			_dropUnitAt(d.lon, d.lat, d.alt || 0);
 			return;
 		}
-		// Empty-terrain click. If a MOVE is armed, _dropUnitAt
-		// relocates that spawn; otherwise it drops a new unit using
-		// the palette settings.
+		if (_selectedIdx != null) {
+			_deselect();
+			return;
+		}
 		_dropUnitAt(d.lon, d.lat, d.alt || 0);
 	};
 	window.addEventListener('commander-terrain-click', _clickHandler);
@@ -252,14 +259,40 @@ function _selectSpawn(idx) {
 	if (idx < 0 || idx >= _activeJson.spawns.length) return;
 	_selectedIdx = idx;
 	_pendingMoveIdx = null;
+	_autoArmWaypoint(_activeJson.spawns[idx]);
 	_renderSpawnMarkers();
 	_buildPanel();
 }
 
 function _deselect() {
 	_selectedIdx = null;
+	_pendingAddWaypoint = null;
 	_renderSpawnMarkers();
 	_buildPanel();
+}
+
+// When a spawn becomes selected (or its pilot type changes), arm
+// waypoint-adding mode automatically based on the pilot type. No
+// ADD button needed for the common case — clicking the map just
+// adds a waypoint while a patrol pilot is selected. For strike,
+// default to ingress; user clicks INGRESS / EGRESS tabs to switch.
+function _autoArmWaypoint(s) {
+	if (!s || !s.pilot) { _pendingAddWaypoint = null; return; }
+	const t = s.pilot.type;
+	const idx = _selectedIdx;
+	if (t === 'patrol') {
+		_pendingAddWaypoint = { spawnIdx: idx, route: 'waypoints' };
+	} else if (t === 'strike') {
+		const stillStrike = _pendingAddWaypoint
+			&& _pendingAddWaypoint.spawnIdx === idx
+			&& (_pendingAddWaypoint.route === 'ingressWaypoints'
+				|| _pendingAddWaypoint.route === 'egressWaypoints');
+		if (!stillStrike) {
+			_pendingAddWaypoint = { spawnIdx: idx, route: 'ingressWaypoints' };
+		}
+	} else {
+		_pendingAddWaypoint = null;
+	}
 }
 
 function _uninstallClickHandler() {
@@ -853,8 +886,14 @@ function _buildPanel() {
 	// Palette listeners (only present when NOT editing a spawn).
 	const seKind = panel.querySelector('#se-kind');
 	const seSub  = panel.querySelector('#se-sub');
-	const seTeam = panel.querySelector('#se-team');
 	const seAlt  = panel.querySelector('#se-alt');
+	// Team pills (palette).
+	for (const btn of panel.querySelectorAll('[id^="se-team-pill-"]')) {
+		btn.addEventListener('click', () => {
+			_armedTeam = btn.getAttribute('data-team');
+			_buildPanel();
+		});
+	}
 	if (seKind) seKind.addEventListener('change', (e) => {
 		_armedKind = e.target.value;
 		const sub = panel.querySelector('#se-sub');
@@ -867,9 +906,6 @@ function _buildPanel() {
 	});
 	if (seSub) seSub.addEventListener('change', (e) => {
 		_armedSubId = e.target.value;
-	});
-	if (seTeam) seTeam.addEventListener('change', (e) => {
-		_armedTeam = e.target.value;
 	});
 	if (seAlt) seAlt.addEventListener('change', (e) => {
 		const v = parseFloat(e.target.value);
@@ -1016,7 +1052,7 @@ function _panelHtml() {
 			</select>
 			<select id="se-sub" style="${_selectCss()}flex:1;">${subOpts}</select>
 		</div>
-		<select id="se-team" style="${_selectCss()}width:100%;margin-bottom:5px;">${teamOpts}</select>
+		<div style="display:flex;gap:3px;margin-bottom:5px;">${_teamPillRow('se-team-pill', _armedTeam)}</div>
 		<div style="display:flex;gap:6px;align-items:center;font-size:10px;">
 			<span style="opacity:0.7;flex:0 0 auto;">altitude m:</span>
 			<input id="se-alt" type="number" step="500" value="${_armedAltM}" style="${_selectCss()}flex:1;">
@@ -1030,12 +1066,11 @@ function _panelHtml() {
 
 	<div style="margin-top:8px;border-top:1px solid rgba(0,220,255,0.2);padding-top:6px;font-size:10px;opacity:0.75;">
 		<div style="opacity:0.7;margin-bottom:4px;">CONTROLS</div>
-		<div>· LEFT-CLICK terrain — drop armed unit (when nothing selected)</div>
-		<div>· LEFT-CLICK marker — select</div>
 		<div>· DRAG marker — move</div>
 		<div>· RIGHT-CLICK marker — delete</div>
-		<div>· LEFT-DRAG empty space — pan map</div>
-		<div>· RIGHT-DRAG empty space — tilt map</div>
+		<div>· CLICK marker — select</div>
+		<div>· CLICK empty terrain — drop unit (or add waypoint when patrol/strike selected)</div>
+		<div>· DRAG empty space — pan / tilt</div>
 		<div>· WHEEL — zoom</div>
 	</div>
 
@@ -1054,12 +1089,13 @@ function _wireEditForm(panel) {
 	const deselect = panel.querySelector('#se-deselect');
 	if (deselect) deselect.addEventListener('click', () => _deselect());
 
-	const team = panel.querySelector('#ed-team');
-	if (team) team.addEventListener('change', (e) => {
-		s.team = e.target.value;
-		_renderSpawnMarkers();
-		_renderSpawnList();
-	});
+	for (const btn of panel.querySelectorAll('[id^="ed-team-pill-"]')) {
+		btn.addEventListener('click', () => {
+			s.team = btn.getAttribute('data-team');
+			_renderSpawnMarkers();
+			_buildPanel();
+		});
+	}
 
 	const hdg = panel.querySelector('#ed-hdg');
 	const hdgRand = panel.querySelector('#ed-hdg-rand');
@@ -1151,42 +1187,58 @@ function _wireEditForm(panel) {
 		else delete s.magazine.missile;
 	});
 
-	// Pilot type — switching kinds rebuilds the whole edit form so
-	// the relevant sub-section (waypoint editor / target tag inputs)
-	// shows up.
-	const pilotEl = panel.querySelector('#ed-pilot');
-	if (pilotEl) pilotEl.addEventListener('change', (e) => {
-		const v = e.target.value;
-		if (v === 'default') {
-			delete s.pilot;
-		} else {
-			s.pilot = s.pilot || {};
-			s.pilot.type = v;
-			s.pilot.params = s.pilot.params || {};
-			if (v === 'patrol' && !Array.isArray(s.pilot.params.waypoints)) {
-				s.pilot.params.waypoints = [];
-				s.pilot.params.loop = true;
+	// Pilot type pill row. Switching kinds rebuilds the whole edit
+	// form so the relevant sub-section (waypoint editor / target
+	// tag inputs) shows up.
+	for (const btn of panel.querySelectorAll('.ed-pilot-pill')) {
+		btn.addEventListener('click', () => {
+			const v = btn.getAttribute('data-kind');
+			if (v === 'default') {
+				delete s.pilot;
+			} else {
+				s.pilot = s.pilot || {};
+				s.pilot.type = v;
+				s.pilot.params = s.pilot.params || {};
+				if (v === 'patrol' && !Array.isArray(s.pilot.params.waypoints)) {
+					s.pilot.params.waypoints = [];
+					s.pilot.params.loop = true;
+				}
+				if (v === 'strike') {
+					s.pilot.params.ingressWaypoints = s.pilot.params.ingressWaypoints || [];
+					s.pilot.params.egressWaypoints  = s.pilot.params.egressWaypoints  || [];
+					s.pilot.params.weaponType = s.pilot.params.weaponType || 'STORM-SHADOW';
+					s.pilot.params.target = s.pilot.params.target || {};
+				}
 			}
-			if (v === 'strike') {
-				s.pilot.params.ingressWaypoints = s.pilot.params.ingressWaypoints || [];
-				s.pilot.params.egressWaypoints  = s.pilot.params.egressWaypoints  || [];
-				s.pilot.params.weaponType = s.pilot.params.weaponType || 'STORM-SHADOW';
-				s.pilot.params.target = s.pilot.params.target || {};
-			}
-		}
-		_pendingAddWaypoint = null;
-		_buildPanel();
-	});
+			// Auto-arm waypoint adding for the new pilot type.
+			_autoArmWaypoint(s);
+			_buildPanel();
+		});
+	}
 
-	// Strike target tag + weapon dropdown.
+	// Strike target tag + weapon pills.
 	const strikeTag = panel.querySelector('#ed-strike-tag');
 	if (strikeTag) strikeTag.addEventListener('change', (e) => {
 		s.pilot.params.target = { tag: e.target.value || undefined };
 	});
-	const strikeWpn = panel.querySelector('#ed-strike-wpn');
-	if (strikeWpn) strikeWpn.addEventListener('change', (e) => {
-		s.pilot.params.weaponType = e.target.value;
-	});
+	for (const btn of panel.querySelectorAll('.ed-strike-wpn-pill')) {
+		btn.addEventListener('click', () => {
+			s.pilot.params.weaponType = btn.getAttribute('data-w');
+			_buildPanel();
+		});
+	}
+
+	// Strike route tabs (INGRESS / EGRESS) — clicking switches which
+	// route the next map click adds to. For patrol there's only one
+	// route, so the tab is informational + the auto-arm always points
+	// at it.
+	for (const btn of panel.querySelectorAll('.ed-route-tab')) {
+		btn.addEventListener('click', () => {
+			const route = btn.getAttribute('data-route');
+			_pendingAddWaypoint = { spawnIdx: _selectedIdx, route };
+			_renderWaypointPanel();
+		});
+	}
 
 	// Escort tag.
 	const escortTag = panel.querySelector('#ed-escort-tag');
@@ -1194,22 +1246,9 @@ function _wireEditForm(panel) {
 		s.pilot.params.escortTag = e.target.value || undefined;
 	});
 
-	// ADD WAYPOINT toggles. Each ADD button arms / disarms
-	// click-to-add for its specific route key; clicking a different
-	// route while one is already armed re-points the click target.
-	for (const btn of panel.querySelectorAll('.ed-wp-add')) {
-		btn.addEventListener('click', () => {
-			const route = btn.getAttribute('data-route');
-			const samePending = _pendingAddWaypoint
-				&& _pendingAddWaypoint.spawnIdx === _selectedIdx
-				&& _pendingAddWaypoint.route === route;
-			_pendingAddWaypoint = samePending
-				? null
-				: { spawnIdx: _selectedIdx, route };
-			_renderWaypointPanel();
-		});
-	}
-	// DEL on individual waypoint rows.
+	// DEL on individual waypoint rows. Right-click on the map marker
+	// is the primary delete gesture; this stays as a keyboard-
+	// accessible fallback for users without a mouse.
 	for (const btn of panel.querySelectorAll('.ed-wp-del')) {
 		btn.addEventListener('click', () => {
 			const route = btn.getAttribute('data-route');
@@ -1263,7 +1302,7 @@ function _editFormHtml(s) {
 
 		<div style="display:flex;gap:4px;align-items:center;font-size:10px;margin-bottom:4px;">
 			<span style="opacity:0.7;flex:0 0 50px;">team</span>
-			<select id="ed-team" style="${_selectCss()}flex:1;">${teamOpts}</select>
+			<div style="display:flex;gap:3px;flex:1;">${_teamPillRow('ed-team-pill', s.team)}</div>
 		</div>
 
 		<div style="display:flex;gap:4px;align-items:center;font-size:10px;margin-bottom:4px;">
@@ -1348,41 +1387,40 @@ function _pilotSectionHtml(s) {
 		).join('');
 	};
 
-	const wpSection = (route, label) => {
+	const routeBlock = (route, label, color) => {
 		const adding = isAddingHere(route);
-		const btnStyle = adding
-			? 'background:rgba(255,210,80,0.2);border:1px solid #fd0;color:#fd0;'
-			: 'background:transparent;border:1px solid rgba(0,220,255,0.4);color:#6ff;';
+		const list = Array.isArray(params[route]) ? params[route] : [];
+		// For strike, both routes are switchable tabs; for patrol the
+		// single section is always the active one (still rendered as a
+		// tab for visual consistency, but no other route to swap to).
+		const headerStyle = adding
+			? `background:${color}33;border:1px solid ${color};color:${color};`
+			: `background:transparent;border:1px solid ${color}55;color:${color}aa;`;
 		return `
-		<div style="margin-top:4px;font-size:10px;opacity:0.85;">
-			<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:3px;">
-				<span>${label} ROUTE</span>
-				<button type="button" class="ed-wp-add" data-route="${route}" style="${btnStyle}font-size:9px;padding:1px 6px;cursor:pointer;letter-spacing:0.5px;">${adding ? 'CLICK MAP · DONE TO STOP' : 'ADD'}</button>
-			</div>
-			<div data-wp-list="${route}">${wpListHtml(route)}</div>
-		</div>`;
+		<button type="button" class="ed-route-tab" data-route="${route}" style="${headerStyle}width:100%;font-family:inherit;font-size:9px;padding:3px 6px;letter-spacing:1px;cursor:pointer;text-align:left;margin-top:4px;">
+			${adding ? '◉ ' : '○ '}${label}  ${adding ? '— click map to add' : ''}  (${list.length})
+		</button>
+		<div data-wp-list="${route}">${wpListHtml(route)}</div>`;
 	};
 
 	let routeUI = '';
 	if (ptype === 'patrol') {
-		routeUI = wpSection('waypoints', 'PATROL');
+		routeUI = routeBlock('waypoints', 'PATROL ROUTE', '#00ffaa');
 	} else if (ptype === 'strike') {
 		const targetTag = (params.target && params.target.tag) || '';
 		const weapon = params.weaponType || 'STORM-SHADOW';
+		const wpnPill = (w) =>
+			`<button type="button" class="ed-strike-wpn-pill" data-w="${w}" style="${_pillCss(w === weapon)}">${w}</button>`;
 		routeUI = `
 		<div style="display:flex;gap:4px;align-items:center;font-size:10px;margin-top:4px;">
 			<span style="opacity:0.7;flex:0 0 60px;">target tag</span>
 			<input id="ed-strike-tag" type="text" value="${escapeAttr(targetTag)}" placeholder="ewr-A" style="${_selectCss()}flex:1;">
 		</div>
-		<div style="display:flex;gap:4px;align-items:center;font-size:10px;margin-top:3px;">
-			<span style="opacity:0.7;flex:0 0 60px;">weapon</span>
-			<select id="ed-strike-wpn" style="${_selectCss()}flex:1;">
-				${['STORM-SHADOW', 'AGM-86', 'GBU-31', 'GBU-38', 'GBU-39'].map(w =>
-					`<option value="${w}"${w === weapon ? ' selected' : ''}>${w}</option>`).join('')}
-			</select>
+		<div style="display:flex;gap:3px;flex-wrap:wrap;margin-top:3px;">
+			${['STORM-SHADOW', 'AGM-86', 'GBU-31', 'GBU-38', 'GBU-39'].map(wpnPill).join('')}
 		</div>
-		${wpSection('ingressWaypoints', 'INGRESS')}
-		${wpSection('egressWaypoints',  'EGRESS')}`;
+		${routeBlock('ingressWaypoints', 'INGRESS', '#ffaa44')}
+		${routeBlock('egressWaypoints',  'EGRESS',  '#aa88ff')}`;
 	} else if (ptype === 'escort') {
 		const tag = params.escortTag || '';
 		routeUI = `
@@ -1392,16 +1430,16 @@ function _pilotSectionHtml(s) {
 		</div>`;
 	}
 
+	const pilotPill = (kind, label) =>
+		`<button type="button" class="ed-pilot-pill" data-kind="${kind}" style="${_pillCss(ptype === kind)}">${label}</button>`;
 	return `
 	<div style="margin-top:6px;border-top:1px dotted rgba(0,220,255,0.2);padding-top:4px;">
-		<div style="display:flex;gap:4px;align-items:center;font-size:10px;margin-bottom:3px;">
-			<span style="opacity:0.7;flex:0 0 50px;">pilot</span>
-			<select id="ed-pilot" style="${_selectCss()}flex:1;">
-				<option value="default"${ptype === 'default' ? ' selected' : ''}>default (engage-on-sight)</option>
-				<option value="patrol"${ptype === 'patrol'   ? ' selected' : ''}>patrol</option>
-				<option value="strike"${ptype === 'strike'   ? ' selected' : ''}>strike</option>
-				<option value="escort"${ptype === 'escort'   ? ' selected' : ''}>escort</option>
-			</select>
+		<div style="opacity:0.7;font-size:10px;margin-bottom:3px;">PILOT</div>
+		<div style="display:flex;gap:3px;margin-bottom:4px;">
+			${pilotPill('default', 'CAP')}
+			${pilotPill('patrol',  'PATROL')}
+			${pilotPill('strike',  'STRIKE')}
+			${pilotPill('escort',  'ESCORT')}
 		</div>
 		${routeUI}
 	</div>`;
@@ -1412,6 +1450,32 @@ function _selectCss() {
 }
 function _btnCss() {
 	return `background:rgba(0,0,0,0.4);border:1px solid rgba(0,220,255,0.45);color:#6ff;font-family:inherit;font-size:10px;padding:2px 6px;letter-spacing:0.5px;cursor:pointer;`;
+}
+// Color-coded team pill. Active pill gets a saturated background +
+// thick outline; inactive pills are washed-out + thin outline. The
+// chip color matches the on-map marker color so authoring + flying
+// share the same visual language.
+function _teamPillCss(team, active) {
+	const c = team === 'friendly'     ? '#40d0ff'
+		: team === 'hostile-red'  ? '#ff4040'
+		: team === 'hostile-blue' ? '#ff8080'
+		: /* neutral */              '#ffd040';
+	const bg = active ? `${c}33` : 'rgba(0,0,0,0.3)';
+	const border = active ? c : `${c}55`;
+	const fg = active ? c : `${c}aa`;
+	return `background:${bg};border:1px solid ${border};color:${fg};font-family:inherit;font-size:9px;letter-spacing:1px;padding:3px 6px;cursor:pointer;flex:1;`;
+}
+// Generic pill — used for kind / pilot-type rows where there's no
+// per-option color signal.
+function _pillCss(active) {
+	return active
+		? 'background:rgba(0,220,255,0.18);color:#6ff;border:1px solid #6ff;font-family:inherit;font-size:9px;letter-spacing:1px;padding:3px 6px;cursor:pointer;flex:1;'
+		: 'background:rgba(0,0,0,0.3);color:rgba(192,238,255,0.55);border:1px solid rgba(0,220,255,0.25);font-family:inherit;font-size:9px;letter-spacing:1px;padding:3px 6px;cursor:pointer;flex:1;';
+}
+function _teamPillRow(idPrefix, current) {
+	return TEAMS.map(t =>
+		`<button type="button" id="${idPrefix}-${t}" data-team="${t}" style="${_teamPillCss(t, t === current)}">${t.replace('hostile-', 'hr-').replace('hr-red', 'RED').replace('hr-blue', 'BLUE').replace('friendly', 'FRIEND').replace('neutral', 'NEUT')}</button>`,
+	).join('');
 }
 function _tabBtnCss(isActive) {
 	const c = isActive
