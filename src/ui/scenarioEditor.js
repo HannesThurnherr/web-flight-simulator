@@ -49,6 +49,17 @@ let _pendingMoveIdx = null;
 // where route is 'waypoints' (patrol) or 'ingressWaypoints' /
 // 'egressWaypoints' (strike).
 let _pendingAddWaypoint = null;
+// Active drag state. While set, pointermove updates the dragged
+// thing's coords. Cleared on pointerup.
+//   { kind: 'spawn'    , spawnIdx }
+//   { kind: 'waypoint' , spawnIdx, route, wpIdx }
+let _drag = null;
+// Direct DOM listener handles, captured at install so we can
+// removeEventListener on close.
+let _editorPointerDown = null;
+let _editorPointerMove = null;
+let _editorPointerUp   = null;
+let _editorContextMenu = null;
 // Currently-selected spawn index (set by clicking a marker on the
 // map or a row in the spawn list). The edit form in the panel
 // targets this spawn; null = no selection, panel shows the
@@ -220,6 +231,20 @@ function _installClickHandler() {
 		_dropUnitAt(d.lon, d.lat, d.alt || 0);
 	};
 	window.addEventListener('commander-terrain-click', _clickHandler);
+
+	// Capture-phase pointer handlers run BEFORE commander view's
+	// pan/tilt logic, so we can intercept marker drags without the
+	// camera also panning. If the pointerdown isn't on one of our
+	// markers we don't preventDefault — commander view's bubble-
+	// phase listener gets the event and handles pan as usual.
+	_editorPointerDown = (e) => _onEditorPointerDown(e);
+	_editorPointerMove = (e) => _onEditorPointerMove(e);
+	_editorPointerUp   = (e) => _onEditorPointerUp(e);
+	_editorContextMenu = (e) => _onEditorContextMenu(e);
+	window.addEventListener('pointerdown', _editorPointerDown, true);
+	window.addEventListener('pointermove', _editorPointerMove, true);
+	window.addEventListener('pointerup',   _editorPointerUp,   true);
+	window.addEventListener('contextmenu', _editorContextMenu, true);
 }
 
 function _selectSpawn(idx) {
@@ -238,9 +263,144 @@ function _deselect() {
 }
 
 function _uninstallClickHandler() {
-	if (!_clickHandler) return;
-	window.removeEventListener('commander-terrain-click', _clickHandler);
-	_clickHandler = null;
+	if (_clickHandler) {
+		window.removeEventListener('commander-terrain-click', _clickHandler);
+		_clickHandler = null;
+	}
+	if (_editorPointerDown) {
+		window.removeEventListener('pointerdown', _editorPointerDown, true);
+		window.removeEventListener('pointermove', _editorPointerMove, true);
+		window.removeEventListener('pointerup',   _editorPointerUp,   true);
+		window.removeEventListener('contextmenu', _editorContextMenu, true);
+		_editorPointerDown = _editorPointerMove = _editorPointerUp = _editorContextMenu = null;
+	}
+	_drag = null;
+}
+
+// ----- Direct manipulation: drag-to-move + right-click delete ------------
+
+// Pick whatever editor entity is under the screen cursor. Returns
+// the entity (with our __editor* tags) or null.
+function _pickEditorEntity(x, y) {
+	const viewer = getViewer();
+	if (!viewer) return null;
+	const picked = viewer.scene.pick(new Cesium.Cartesian2(x, y));
+	if (!picked || !picked.id) return null;
+	const id = picked.id;
+	if (Number.isFinite(id.__editorSpawnIdx)) return id;
+	if (id.__editorWaypointRoute && Number.isFinite(id.__editorWaypointIdx)) return id;
+	return null;
+}
+
+// Convert screen coords to lon/lat/alt by ray-casting the globe.
+function _pickTerrain(x, y) {
+	const viewer = getViewer();
+	if (!viewer) return null;
+	const ray = viewer.camera.getPickRay(new Cesium.Cartesian2(x, y));
+	if (!ray) return null;
+	const cart = viewer.scene.globe.pick(ray, viewer.scene);
+	if (!cart) return null;
+	const carto = Cesium.Cartographic.fromCartesian(cart);
+	return {
+		lon: Cesium.Math.toDegrees(carto.longitude),
+		lat: Cesium.Math.toDegrees(carto.latitude),
+		alt: carto.height || 0,
+	};
+}
+
+function _onEditorPointerDown(e) {
+	if (!_activeJson || e.button !== 0) return;
+	if (_isPanelTarget(e.target)) return;
+	const ent = _pickEditorEntity(e.clientX, e.clientY);
+	if (!ent) return;
+	if (Number.isFinite(ent.__editorSpawnIdx)) {
+		_drag = { kind: 'spawn', spawnIdx: ent.__editorSpawnIdx };
+		_selectSpawn(ent.__editorSpawnIdx);
+	} else {
+		_drag = {
+			kind: 'waypoint',
+			spawnIdx: _selectedIdx,
+			route: ent.__editorWaypointRoute,
+			wpIdx: ent.__editorWaypointIdx,
+		};
+	}
+	// Capture-phase + stopPropagation prevents commander view's
+	// bubble-phase pointerdown from also starting a pan drag.
+	e.stopPropagation();
+	e.preventDefault();
+}
+
+function _onEditorPointerMove(e) {
+	if (!_drag) return;
+	const pt = _pickTerrain(e.clientX, e.clientY);
+	if (!pt) return;
+	if (_drag.kind === 'spawn') {
+		const s = _activeJson.spawns && _activeJson.spawns[_drag.spawnIdx];
+		if (!s) return;
+		if (!s.origin || typeof s.origin.lon !== 'number') s.origin = { lon: 0, lat: 0, alt: 0 };
+		s.origin.lon = pt.lon;
+		s.origin.lat = pt.lat;
+		// Ground platforms re-clamp altitude to terrain on drag so
+		// they don't end up underground when moved across hills.
+		if (s.platformId && _platformIsGround(s.platformId)) s.origin.alt = pt.alt;
+	} else if (_drag.kind === 'waypoint') {
+		const s = _activeJson.spawns && _activeJson.spawns[_drag.spawnIdx];
+		if (!s || !s.pilot || !s.pilot.params) return;
+		const list = s.pilot.params[_drag.route];
+		if (!Array.isArray(list) || !list[_drag.wpIdx]) return;
+		list[_drag.wpIdx].lon = pt.lon;
+		list[_drag.wpIdx].lat = pt.lat;
+	}
+	_renderSpawnMarkers();
+	e.stopPropagation();
+	e.preventDefault();
+}
+
+function _onEditorPointerUp(e) {
+	if (!_drag) return;
+	_drag = null;
+	_renderSpawnList();
+	_renderWaypointPanel();
+	e.stopPropagation();
+	e.preventDefault();
+}
+
+function _onEditorContextMenu(e) {
+	if (!_activeJson) return;
+	if (_isPanelTarget(e.target)) return;
+	const ent = _pickEditorEntity(e.clientX, e.clientY);
+	if (!ent) {
+		// Suppress browser context menu while in editor mode —
+		// right-drag tilts the camera and a stray menu would
+		// interrupt.
+		e.preventDefault();
+		return;
+	}
+	if (Number.isFinite(ent.__editorSpawnIdx)) {
+		const idx = ent.__editorSpawnIdx;
+		_activeJson.spawns.splice(idx, 1);
+		if (_pendingMoveIdx === idx) _pendingMoveIdx = null;
+		else if (_pendingMoveIdx != null && _pendingMoveIdx > idx) _pendingMoveIdx--;
+		if (_selectedIdx === idx) _selectedIdx = null;
+		else if (_selectedIdx != null && _selectedIdx > idx) _selectedIdx--;
+		_renderSpawnMarkers();
+		_buildPanel();
+	} else if (ent.__editorWaypointRoute && Number.isFinite(ent.__editorWaypointIdx)) {
+		const s = _activeJson.spawns && _activeJson.spawns[_selectedIdx];
+		if (s && s.pilot && s.pilot.params) {
+			const list = s.pilot.params[ent.__editorWaypointRoute];
+			if (Array.isArray(list)) list.splice(ent.__editorWaypointIdx, 1);
+			_renderSpawnMarkers();
+			_renderWaypointPanel();
+		}
+	}
+	e.stopPropagation();
+	e.preventDefault();
+}
+
+function _isPanelTarget(target) {
+	if (!target || !target.closest) return false;
+	return !!target.closest('#scenario-editor-panel');
 }
 
 function _dropUnitAt(lon, lat, terrainH) {
@@ -437,10 +597,10 @@ function _renderSpawnMarkers() {
 			const params = sel.pilot.params;
 			const ptype = sel.pilot.type;
 			if (ptype === 'patrol') {
-				_drawRoute(viewer, params.waypoints, '#00ffaa', 'WP', !!params.loop);
+				_drawRoute(viewer, params.waypoints, '#00ffaa', 'WP', !!params.loop, 'waypoints');
 			} else if (ptype === 'strike') {
-				_drawRoute(viewer, params.ingressWaypoints, '#ffaa44', 'IN', false);
-				_drawRoute(viewer, params.egressWaypoints,  '#aa88ff', 'EG', false);
+				_drawRoute(viewer, params.ingressWaypoints, '#ffaa44', 'IN', false, 'ingressWaypoints');
+				_drawRoute(viewer, params.egressWaypoints,  '#aa88ff', 'EG', false, 'egressWaypoints');
 			}
 		}
 	}
@@ -450,17 +610,17 @@ function _renderSpawnMarkers() {
 // vertex. Polyline closes the loop when `loop` is true (patrol). The
 // markers are pushed to _entities so they get cleaned up on the
 // next render or on close.
-function _drawRoute(viewer, list, hex, prefix, loop) {
+function _drawRoute(viewer, list, hex, prefix, loop, routeKey) {
 	if (!Array.isArray(list) || list.length === 0) return;
 	const colour = Cesium.Color.fromCssColorString(hex);
 	const positions = [];
 	for (let i = 0; i < list.length; i++) {
 		const wp = list[i];
 		positions.push(Cesium.Cartesian3.fromDegrees(wp.lon, wp.lat, wp.altM || 0));
-		_entities.push(viewer.entities.add({
+		const ent = viewer.entities.add({
 			position: Cesium.Cartesian3.fromDegrees(wp.lon, wp.lat, wp.altM || 0),
 			point: {
-				pixelSize: 9,
+				pixelSize: 11,
 				color: colour,
 				outlineColor: Cesium.Color.BLACK,
 				outlineWidth: 1.5,
@@ -477,7 +637,13 @@ function _drawRoute(viewer, list, hex, prefix, loop) {
 				disableDepthTestDistance: Number.POSITIVE_INFINITY,
 				horizontalOrigin: Cesium.HorizontalOrigin.LEFT,
 			},
-		}));
+		});
+		// Tags so the drag + right-click handlers can resolve which
+		// waypoint was picked. Stored on the entity itself; we look
+		// them up in _pickEditorEntity.
+		ent.__editorWaypointRoute = routeKey;
+		ent.__editorWaypointIdx   = i;
+		_entities.push(ent);
 	}
 	if (positions.length < 2) return;
 	if (loop) positions.push(positions[0]);
@@ -864,10 +1030,12 @@ function _panelHtml() {
 
 	<div style="margin-top:8px;border-top:1px solid rgba(0,220,255,0.2);padding-top:6px;font-size:10px;opacity:0.75;">
 		<div style="opacity:0.7;margin-bottom:4px;">CONTROLS</div>
-		<div>· LEFT-CLICK on terrain — drop the armed unit</div>
-		<div>· LEFT-CLICK on a spawn list MOVE button + click map — relocate</div>
-		<div>· LEFT-DRAG — pan map</div>
-		<div>· RIGHT-DRAG — tilt map</div>
+		<div>· LEFT-CLICK terrain — drop armed unit (when nothing selected)</div>
+		<div>· LEFT-CLICK marker — select</div>
+		<div>· DRAG marker — move</div>
+		<div>· RIGHT-CLICK marker — delete</div>
+		<div>· LEFT-DRAG empty space — pan map</div>
+		<div>· RIGHT-DRAG empty space — tilt map</div>
 		<div>· WHEEL — zoom</div>
 	</div>
 
@@ -1269,21 +1437,21 @@ function _renderSpawnList() {
 	}
 	list.innerHTML = spawns.map((s, i) => {
 		const label = _spawnLabel(s);
-		const isMoving = _pendingMoveIdx === i;
 		const isSelected = _selectedIdx === i;
-		const moveBtnStyle = isMoving
-			? 'background:rgba(255,210,80,0.2);border:1px solid #fd0;color:#fd0;'
-			: 'background:transparent;border:1px solid rgba(0,220,255,0.4);color:#6ff;';
 		const rowStyle = isSelected
 			? 'background:rgba(255,215,0,0.12);border-left:2px solid #ffd700;'
 			: 'border-left:2px solid transparent;';
 		const altText = (s.origin && typeof s.origin.alt === 'number')
 			? `  ${Math.round(s.origin.alt)} m`
 			: '';
+		// Drag-on-the-map handles repositioning + right-click on the
+		// marker handles deletion. Spawn-list rows therefore only
+		// need a select gesture (click the row) — we kept a small
+		// DEL button as a keyboard-accessible fallback for users
+		// who don't have right-click handy.
 		return `<div class="se-spawn-row" data-idx="${i}" style="${rowStyle}padding:2px 4px;border-bottom:1px dotted rgba(0,220,255,0.15);display:flex;justify-content:space-between;align-items:center;gap:4px;cursor:pointer;">
 			<span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;"><span style="opacity:0.5;display:inline-block;width:18px;">${i + 1}.</span>${escapeHtml(label + altText)}</span>
-			<button type="button" class="se-mv" data-idx="${i}" style="${moveBtnStyle}font-size:9px;padding:1px 5px;cursor:pointer;letter-spacing:0.5px;">${isMoving ? 'CLICK MAP' : 'MOVE'}</button>
-			<button type="button" class="se-del" data-idx="${i}" style="background:transparent;border:1px solid rgba(255,128,128,0.4);color:#f88;font-size:9px;padding:1px 5px;cursor:pointer;letter-spacing:0.5px;">DEL</button>
+			<button type="button" class="se-del" data-idx="${i}" style="background:transparent;border:1px solid rgba(255,128,128,0.4);color:#f88;font-size:9px;padding:1px 5px;cursor:pointer;letter-spacing:0.5px;">×</button>
 		</div>`;
 	}).join('');
 	for (const row of list.querySelectorAll('.se-spawn-row')) {
@@ -1308,16 +1476,6 @@ function _renderSpawnList() {
 				_renderSpawnMarkers();
 				_buildPanel();
 			}
-		});
-	}
-	for (const btn of list.querySelectorAll('.se-mv')) {
-		btn.addEventListener('click', (e) => {
-			e.stopPropagation();
-			const idx = parseInt(btn.getAttribute('data-idx'), 10);
-			if (!Number.isFinite(idx)) return;
-			// Toggle: clicking MOVE again on the armed row cancels.
-			_pendingMoveIdx = (_pendingMoveIdx === idx) ? null : idx;
-			_renderSpawnList();
 		});
 	}
 }
