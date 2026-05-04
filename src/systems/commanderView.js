@@ -508,6 +508,10 @@ export class CommanderView {
 			// the synthetic click that would otherwise fire on mouse-up,
 			// and our button listener never runs.
 			if (_isOverlayTarget(e.target)) return;
+			// Editor mode: if the click landed on a marker that the
+			// scenario editor owns (spawn pin or waypoint), let the
+			// editor's drag handler take it — don't pan the camera.
+			if (e.button === 0 && this._isEditorMarkerAt(e.clientX, e.clientY)) return;
 			if (e.button === 0)      this._dragMode = 'pan';
 			else if (e.button === 2) this._dragMode = 'tilt';
 			else return;
@@ -754,6 +758,19 @@ export class CommanderView {
 
 	// Pick the entity under the pointer. Left-click on a marker toggles its
 	// tooltip. Left-click on empty space closes every open tooltip.
+	// Returns true if the canvas pixel (x, y) is over a Cesium entity
+	// the scenario editor tagged as one of its draggable markers
+	// (spawn pin or waypoint). Lets the editor's window-capture
+	// pointerdown win the drag without us also panning the camera.
+	_isEditorMarkerAt(x, y) {
+		if (!this.viewer || !this.viewer.scene) return false;
+		const picked = this.viewer.scene.pick(new Cesium.Cartesian2(x, y));
+		const id = picked && picked.id;
+		if (!id) return false;
+		return Number.isFinite(id.__editorSpawnIdx)
+			|| (id.__editorWaypointRoute && Number.isFinite(id.__editorWaypointIdx));
+	}
+
 	_handleClickAt(x, y) {
 		const picked = this.viewer.scene.pick(new Cesium.Cartesian2(x, y));
 		if (picked && picked.id && picked.id.__commanderMeta) {

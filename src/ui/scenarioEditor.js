@@ -25,6 +25,7 @@
 
 import * as Cesium from 'cesium';
 import { getRawScenario, refreshScenarios } from '../systems/scenarios';
+import { MUNITIONS, munitionsForHardpoint } from '../weapon/munitions';
 import {
 	loadUserScenarios, saveUserScenario,
 } from '../systems/scenarios/userScenarios.js';
@@ -49,6 +50,21 @@ let _pendingMoveIdx = null;
 // where route is 'waypoints' (patrol) or 'ingressWaypoints' /
 // 'egressWaypoints' (strike).
 let _pendingAddWaypoint = null;
+// When non-null, the next terrain-click sets the zone center for the
+// objective at this index. Format: { objIdx }.
+let _pendingZoneObj = null;
+// Undo stack — snapshots of _activeJson taken before each structural
+// mutation (drop, delete, drag-start, waypoint/zone/objective edits).
+// Bounded to keep memory in check; field-text edits are deliberately
+// NOT snapshotted (too granular, easy to redo by hand).
+const _UNDO_LIMIT = 50;
+let _undoStack = [];
+let _editorKeydown = null;
+
+// When non-null, the next click on a spawn marker writes its tag
+// into the selected spawn's pilot params (escort.tag or strike target).
+// Format: { spawnIdx, field: 'escortTag' | 'strikeTarget' }.
+let _pendingTagPick = null;
 // Active drag state. While set, pointermove updates the dragged
 // thing's coords. Cleared on pointerup.
 //   { kind: 'spawn'    , spawnIdx }
@@ -200,6 +216,9 @@ function _close() {
 	_activeId = null;
 	_activeJson = null;
 	_pendingMoveIdx = null;
+	_pendingAddWaypoint = null;
+	_pendingZoneObj = null;
+	_pendingTagPick = null;
 	_selectedIdx = null;
 }
 
@@ -227,7 +246,7 @@ function _installClickHandler() {
 		//     route for strike).
 		//   - spawn selected but no waypoint mode → deselect.
 		//   - nothing selected → drop the armed-palette unit.
-		if (_pendingAddWaypoint) {
+		if (_pendingZoneObj || _pendingAddWaypoint) {
 			_dropUnitAt(d.lon, d.lat, d.alt || 0);
 			return;
 		}
@@ -252,6 +271,20 @@ function _installClickHandler() {
 	window.addEventListener('pointermove', _editorPointerMove, true);
 	window.addEventListener('pointerup',   _editorPointerUp,   true);
 	window.addEventListener('contextmenu', _editorContextMenu, true);
+	_editorKeydown = (e) => {
+		if (!_activeJson) return;
+		const isUndo = (e.key === 'z' || e.key === 'Z')
+			&& (e.metaKey || e.ctrlKey) && !e.shiftKey && !e.altKey;
+		if (!isUndo) return;
+		// Don't hijack undo while the user is editing text in a panel
+		// input — let the browser's native field-level undo handle it.
+		const t = e.target;
+		if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT')) return;
+		e.preventDefault();
+		e.stopPropagation();
+		_undo();
+	};
+	window.addEventListener('keydown', _editorKeydown, true);
 }
 
 function _selectSpawn(idx) {
@@ -267,6 +300,7 @@ function _selectSpawn(idx) {
 function _deselect() {
 	_selectedIdx = null;
 	_pendingAddWaypoint = null;
+	_pendingTagPick = null;
 	_renderSpawnMarkers();
 	_buildPanel();
 }
@@ -307,6 +341,11 @@ function _uninstallClickHandler() {
 		window.removeEventListener('contextmenu', _editorContextMenu, true);
 		_editorPointerDown = _editorPointerMove = _editorPointerUp = _editorContextMenu = null;
 	}
+	if (_editorKeydown) {
+		window.removeEventListener('keydown', _editorKeydown, true);
+		_editorKeydown = null;
+	}
+	_undoStack = [];
 	_drag = null;
 }
 
@@ -346,6 +385,16 @@ function _onEditorPointerDown(e) {
 	if (_isPanelTarget(e.target)) return;
 	const ent = _pickEditorEntity(e.clientX, e.clientY);
 	if (!ent) return;
+	// Pending TAG PICK — clicking any spawn marker writes its tag
+	// into the selected spawn's pilot params. Auto-assign a tag to
+	// the picked unit if it has none yet.
+	if (_pendingTagPick && Number.isFinite(ent.__editorSpawnIdx)) {
+		_consumeTagPick(ent.__editorSpawnIdx);
+		e.stopPropagation();
+		e.preventDefault();
+		return;
+	}
+	_pushUndo();
 	if (Number.isFinite(ent.__editorSpawnIdx)) {
 		_drag = { kind: 'spawn', spawnIdx: ent.__editorSpawnIdx };
 		_selectSpawn(ent.__editorSpawnIdx);
@@ -410,6 +459,7 @@ function _onEditorContextMenu(e) {
 		return;
 	}
 	if (Number.isFinite(ent.__editorSpawnIdx)) {
+		_pushUndo();
 		const idx = ent.__editorSpawnIdx;
 		_activeJson.spawns.splice(idx, 1);
 		if (_pendingMoveIdx === idx) _pendingMoveIdx = null;
@@ -421,6 +471,7 @@ function _onEditorContextMenu(e) {
 	} else if (ent.__editorWaypointRoute && Number.isFinite(ent.__editorWaypointIdx)) {
 		const s = _activeJson.spawns && _activeJson.spawns[_selectedIdx];
 		if (s && s.pilot && s.pilot.params) {
+			_pushUndo();
 			const list = s.pilot.params[ent.__editorWaypointRoute];
 			if (Array.isArray(list)) list.splice(ent.__editorWaypointIdx, 1);
 			_renderSpawnMarkers();
@@ -431,6 +482,76 @@ function _onEditorContextMenu(e) {
 	e.preventDefault();
 }
 
+function _pushUndo() {
+	if (!_activeJson) return;
+	try {
+		_undoStack.push(JSON.stringify(_activeJson));
+		if (_undoStack.length > _UNDO_LIMIT) _undoStack.shift();
+	} catch (_) {}
+}
+
+function _undo() {
+	if (!_activeJson || _undoStack.length === 0) return;
+	const snap = _undoStack.pop();
+	try {
+		const restored = JSON.parse(snap);
+		// Mutate in place so the local _activeJson reference held by
+		// open() / save handlers stays valid.
+		for (const k of Object.keys(_activeJson)) delete _activeJson[k];
+		Object.assign(_activeJson, restored);
+	} catch (_) { return; }
+	// Reset transient placement modes — their referenced indices may
+	// no longer be valid after the restore.
+	_pendingMoveIdx = null;
+	_pendingZoneObj = null;
+	_pendingTagPick = null;
+	if (_selectedIdx != null && (!_activeJson.spawns || !_activeJson.spawns[_selectedIdx])) {
+		_selectedIdx = null;
+		_pendingAddWaypoint = null;
+	} else if (_selectedIdx != null) {
+		_autoArmWaypoint(_activeJson.spawns[_selectedIdx]);
+	}
+	_renderSpawnMarkers();
+	_buildPanel();
+}
+
+// Resolve a tag pick: auto-assign a tag to the target spawn if it
+// has none, then write it into the source spawn's pilot params.
+function _consumeTagPick(targetIdx) {
+	if (!_pendingTagPick || !_activeJson || !Array.isArray(_activeJson.spawns)) {
+		_pendingTagPick = null;
+		return;
+	}
+	const { spawnIdx, field } = _pendingTagPick;
+	if (targetIdx === spawnIdx) {
+		// Can't escort / target yourself. Clear the pick silently.
+		_pendingTagPick = null;
+		_buildPanel();
+		return;
+	}
+	const target = _activeJson.spawns[targetIdx];
+	const source = _activeJson.spawns[spawnIdx];
+	if (!target || !source) { _pendingTagPick = null; return; }
+	_pushUndo();
+	if (!target.tag) {
+		const base = target.platformId || target.fighterModel || 'unit';
+		let n = 1;
+		const used = new Set(_activeJson.spawns.map(s => s.tag).filter(Boolean));
+		while (used.has(`${base}-${n}`)) n++;
+		target.tag = `${base}-${n}`;
+	}
+	source.pilot = source.pilot || {};
+	source.pilot.params = source.pilot.params || {};
+	if (field === 'escortTag') {
+		source.pilot.params.escortTag = target.tag;
+	} else if (field === 'strikeTarget') {
+		source.pilot.params.target = { tag: target.tag };
+	}
+	_pendingTagPick = null;
+	_renderSpawnMarkers();
+	_buildPanel();
+}
+
 function _isPanelTarget(target) {
 	if (!target || !target.closest) return false;
 	return !!target.closest('#scenario-editor-panel');
@@ -438,6 +559,34 @@ function _isPanelTarget(target) {
 
 function _dropUnitAt(lon, lat, terrainH) {
 	if (!_activeJson) return;
+	_pushUndo();
+
+	// Pending ZONE CENTER — set objective.zone.lon/lat. World-anchored
+	// scenarios store absolute lon/lat; player-relative scenarios store
+	// metres-east / metres-north of the player spawn (matches the
+	// scenarioRunner's _evalObjectives convention).
+	if (_pendingZoneObj) {
+		const o = (_activeJson.objectives || [])[_pendingZoneObj.objIdx];
+		if (o && o.kind === 'reach-zone') {
+			o.zone = o.zone || { radiusM: 5000 };
+			const isWorld = _activeJson.anchor && _activeJson.anchor.mode === 'world';
+			if (isWorld) {
+				o.zone.lon = lon;
+				o.zone.lat = lat;
+				delete o.zone.relTo;
+			} else {
+				const base = _scenarioAnchorPoint(_activeJson);
+				const plat = base.lat * Math.PI / 180;
+				o.zone.relTo = 'player';
+				o.zone.lon = (lon - base.lon) * 111320 * Math.cos(plat); // dE metres
+				o.zone.lat = (lat - base.lat) * 111320;                  // dN metres
+			}
+		}
+		_pendingZoneObj = null;
+		_renderSpawnMarkers();
+		_buildPanel();
+		return;
+	}
 
 	// Pending ADD WAYPOINT — append to the spawn's pilot route.
 	if (_pendingAddWaypoint) {
@@ -618,6 +767,52 @@ function _renderSpawnMarkers() {
 		// a new unit on top.
 		ent.__editorSpawnIdx = i;
 		_entities.push(ent);
+	}
+
+	// Objective zone markers (reach-zone kind only).
+	const objs = Array.isArray(_activeJson.objectives) ? _activeJson.objectives : [];
+	for (let i = 0; i < objs.length; i++) {
+		const o = objs[i];
+		if (!o || o.kind !== 'reach-zone' || !o.zone) continue;
+		let cLon, cLat;
+		if (o.zone.relTo === 'player') {
+			const base = _scenarioAnchorPoint(_activeJson);
+			const plat = base.lat * Math.PI / 180;
+			cLon = base.lon + (o.zone.lon || 0) / (111320 * Math.cos(plat));
+			cLat = base.lat + (o.zone.lat || 0) / 111320;
+		} else if (typeof o.zone.lon === 'number') {
+			cLon = o.zone.lon; cLat = o.zone.lat;
+		} else continue;
+		const zColor = Cesium.Color.fromCssColorString('#ffaa44');
+		_entities.push(viewer.entities.add({
+			position: Cesium.Cartesian3.fromDegrees(cLon, cLat, 0),
+			point: {
+				pixelSize: 12,
+				color: zColor.withAlpha(0.6),
+				outlineColor: Cesium.Color.BLACK,
+				outlineWidth: 2,
+				disableDepthTestDistance: Number.POSITIVE_INFINITY,
+			},
+			label: {
+				text: `ZONE: ${o.label || o.id || ('obj-' + (i + 1))}`,
+				font: '10px AceCombat, monospace',
+				pixelOffset: new Cesium.Cartesian2(14, 0),
+				fillColor: zColor,
+				outlineColor: Cesium.Color.BLACK,
+				outlineWidth: 2,
+				style: Cesium.LabelStyle.FILL_AND_OUTLINE,
+				disableDepthTestDistance: Number.POSITIVE_INFINITY,
+				horizontalOrigin: Cesium.HorizontalOrigin.LEFT,
+			},
+			ellipse: {
+				semiMajorAxis: o.zone.radiusM || 5000,
+				semiMinorAxis: o.zone.radiusM || 5000,
+				material: zColor.withAlpha(0.18),
+				outline: true,
+				outlineColor: zColor,
+				height: 0,
+			},
+		}));
 	}
 
 	// Waypoint visualisation — only for the currently-selected
@@ -985,6 +1180,7 @@ function _buildPanel() {
 		_close();
 	});
 
+	_wireObjectives(panel);
 	_renderSpawnList();
 }
 
@@ -1064,14 +1260,17 @@ function _panelHtml() {
 		<div id="se-spawn-list" style="max-height:200px;overflow-y:auto;margin-top:4px;"></div>
 	</div>
 
+	${_objectivesSectionHtml()}
+
 	<div style="margin-top:8px;border-top:1px solid rgba(0,220,255,0.2);padding-top:6px;font-size:10px;opacity:0.75;">
 		<div style="opacity:0.7;margin-bottom:4px;">CONTROLS</div>
 		<div>· DRAG marker — move</div>
 		<div>· RIGHT-CLICK marker — delete</div>
 		<div>· CLICK marker — select</div>
-		<div>· CLICK empty terrain — drop unit (or add waypoint when patrol/strike selected)</div>
+		<div>· CLICK empty terrain — drop unit (or add waypoint when patrol/strike selected; or place zone when objective armed)</div>
 		<div>· DRAG empty space — pan / tilt</div>
 		<div>· WHEEL — zoom</div>
+		<div>· ⌘Z / Ctrl-Z — undo last structural change</div>
 	</div>
 
 	<div style="display:flex;gap:8px;margin-top:10px;">
@@ -1096,6 +1295,14 @@ function _wireEditForm(panel) {
 			_buildPanel();
 		});
 	}
+
+	const tagEl = panel.querySelector('#ed-tag');
+	if (tagEl) tagEl.addEventListener('change', (e) => {
+		const v = e.target.value.trim();
+		if (v) s.tag = v;
+		else delete s.tag;
+		_renderSpawnList();
+	});
 
 	const hdg = panel.querySelector('#ed-hdg');
 	const hdgRand = panel.querySelector('#ed-hdg-rand');
@@ -1192,6 +1399,7 @@ function _wireEditForm(panel) {
 	// tag inputs) shows up.
 	for (const btn of panel.querySelectorAll('.ed-pilot-pill')) {
 		btn.addEventListener('click', () => {
+			_pushUndo();
 			const v = btn.getAttribute('data-kind');
 			if (v === 'default') {
 				delete s.pilot;
@@ -1216,11 +1424,66 @@ function _wireEditForm(panel) {
 		});
 	}
 
-	// Strike target tag + weapon pills.
-	const strikeTag = panel.querySelector('#ed-strike-tag');
-	if (strikeTag) strikeTag.addEventListener('change', (e) => {
-		s.pilot.params.target = { tag: e.target.value || undefined };
+	// Slot-based loadout selectors. Each dropdown writes to
+	// `s.loadout.hardpoints[hpId]`. Empty value deletes the key; a
+	// fully-empty hardpoints object deletes the loadout field too.
+	for (const sel of panel.querySelectorAll('.ed-loadout-slot')) {
+		sel.addEventListener('change', (e) => {
+			const hp = sel.getAttribute('data-hp');
+			const v = e.target.value;
+			_pushUndo();
+			s.loadout = s.loadout || {};
+			s.loadout.hardpoints = s.loadout.hardpoints || {};
+			if (v) s.loadout.hardpoints[hp] = v;
+			else delete s.loadout.hardpoints[hp];
+			if (Object.keys(s.loadout.hardpoints).length === 0) delete s.loadout.hardpoints;
+			delete s.loadout.template;
+			delete s.loadout.oneOf;
+			if (Object.keys(s.loadout).length === 0) delete s.loadout;
+		});
+	}
+	const lcBtn = panel.querySelector('#ed-loadout-clear');
+	if (lcBtn) lcBtn.addEventListener('click', () => {
+		_pushUndo();
+		delete s.loadout;
+		_buildPanel();
 	});
+	const ovBtn = panel.querySelector('#ed-loadout-override');
+	if (ovBtn) ovBtn.addEventListener('click', () => {
+		_pushUndo();
+		s.loadout = { hardpoints: {} };
+		_buildPanel();
+	});
+
+	// Tag dropdowns (strike target + escort) — share one class.
+	for (const sel of panel.querySelectorAll('.ed-tag-select')) {
+		sel.addEventListener('change', (e) => {
+			const field = sel.getAttribute('data-field');
+			const v = e.target.value;
+			s.pilot = s.pilot || {};
+			s.pilot.params = s.pilot.params || {};
+			if (field === 'strikeTarget') {
+				s.pilot.params.target = v ? { tag: v } : {};
+			} else if (field === 'escortTag') {
+				if (v) s.pilot.params.escortTag = v;
+				else delete s.pilot.params.escortTag;
+			}
+		});
+	}
+	// PICK buttons — arm click-on-marker mode.
+	for (const btn of panel.querySelectorAll('.ed-tag-pick')) {
+		btn.addEventListener('click', () => {
+			const field = btn.getAttribute('data-field');
+			if (_pendingTagPick && _pendingTagPick.spawnIdx === _selectedIdx
+				&& _pendingTagPick.field === field) {
+				_pendingTagPick = null;
+			} else {
+				_pendingTagPick = { spawnIdx: _selectedIdx, field };
+			}
+			_buildPanel();
+		});
+	}
+	// Strike weapon pills.
 	for (const btn of panel.querySelectorAll('.ed-strike-wpn-pill')) {
 		btn.addEventListener('click', () => {
 			s.pilot.params.weaponType = btn.getAttribute('data-w');
@@ -1240,12 +1503,6 @@ function _wireEditForm(panel) {
 		});
 	}
 
-	// Escort tag.
-	const escortTag = panel.querySelector('#ed-escort-tag');
-	if (escortTag) escortTag.addEventListener('change', (e) => {
-		s.pilot.params.escortTag = e.target.value || undefined;
-	});
-
 	// DEL on individual waypoint rows. Right-click on the map marker
 	// is the primary delete gesture; this stays as a keyboard-
 	// accessible fallback for users without a mouse.
@@ -1254,6 +1511,7 @@ function _wireEditForm(panel) {
 			const route = btn.getAttribute('data-route');
 			const idx = parseInt(btn.getAttribute('data-idx'), 10);
 			if (s.pilot && s.pilot.params && Array.isArray(s.pilot.params[route])) {
+				_pushUndo();
 				s.pilot.params[route].splice(idx, 1);
 				_renderSpawnMarkers();
 				_renderWaypointPanel();
@@ -1306,6 +1564,11 @@ function _editFormHtml(s) {
 		</div>
 
 		<div style="display:flex;gap:4px;align-items:center;font-size:10px;margin-bottom:4px;">
+			<span style="opacity:0.7;flex:0 0 50px;">tag</span>
+			<input id="ed-tag" type="text" value="${escapeAttr(s.tag || '')}" placeholder="e.g. ewr-A (for objectives)" style="${_selectCss()}flex:1;">
+		</div>
+
+		<div style="display:flex;gap:4px;align-items:center;font-size:10px;margin-bottom:4px;">
 			<span style="opacity:0.7;flex:0 0 50px;">heading</span>
 			<input id="ed-hdg" type="number" step="5" value="${headingDeg}" placeholder="deg" style="${_selectCss()}flex:1;" ${headingRandom ? 'disabled' : ''}>
 			<label style="font-size:9px;display:flex;align-items:center;gap:3px;opacity:0.8;">
@@ -1355,6 +1618,7 @@ function _editFormHtml(s) {
 			<input id="ed-mag" type="number" step="1" value="${mag.missile ?? ''}" placeholder="missile count" style="${_selectCss()}flex:1;">
 		</div>` : ''}
 
+		${isFighter ? _loadoutSectionHtml(s) : ''}
 		${isFighter ? _pilotSectionHtml(s) : ''}
 
 		<div style="margin-top:6px;font-size:10px;opacity:0.7;">click another marker / row to switch · click empty terrain to drop a new unit · DESELECT to return to placement mode</div>
@@ -1412,10 +1676,7 @@ function _pilotSectionHtml(s) {
 		const wpnPill = (w) =>
 			`<button type="button" class="ed-strike-wpn-pill" data-w="${w}" style="${_pillCss(w === weapon)}">${w}</button>`;
 		routeUI = `
-		<div style="display:flex;gap:4px;align-items:center;font-size:10px;margin-top:4px;">
-			<span style="opacity:0.7;flex:0 0 60px;">target tag</span>
-			<input id="ed-strike-tag" type="text" value="${escapeAttr(targetTag)}" placeholder="ewr-A" style="${_selectCss()}flex:1;">
-		</div>
+		${_tagPickerRow('target', 'ed-strike-tag', 'strikeTarget', targetTag)}
 		<div style="display:flex;gap:3px;flex-wrap:wrap;margin-top:3px;">
 			${['STORM-SHADOW', 'AGM-86', 'GBU-31', 'GBU-38', 'GBU-39'].map(wpnPill).join('')}
 		</div>
@@ -1423,11 +1684,7 @@ function _pilotSectionHtml(s) {
 		${routeBlock('egressWaypoints',  'EGRESS',  '#aa88ff')}`;
 	} else if (ptype === 'escort') {
 		const tag = params.escortTag || '';
-		routeUI = `
-		<div style="display:flex;gap:4px;align-items:center;font-size:10px;margin-top:4px;">
-			<span style="opacity:0.7;flex:0 0 70px;">escort tag</span>
-			<input id="ed-escort-tag" type="text" value="${escapeAttr(tag)}" placeholder="awacs-1" style="${_selectCss()}flex:1;">
-		</div>`;
+		routeUI = _tagPickerRow('escort', 'ed-escort-tag', 'escortTag', tag);
 	}
 
 	const pilotPill = (kind, label) =>
@@ -1443,6 +1700,290 @@ function _pilotSectionHtml(s) {
 		</div>
 		${routeUI}
 	</div>`;
+}
+
+// Slot-based loadout UI. Each hardpoint on the plane gets a row
+// with its label and a dropdown of munitions that fit. Stored on the
+// spawn as `loadout.hardpoints = { hpId: munitionId }`, which the
+// scenarioRunner already understands (see _resolveLoadout). Falls
+// back to a "switch to slot view" button if the spawn currently
+// holds a non-hardpoints loadout (template / oneOf / legacy
+// simType counts) the user authored by hand.
+function _loadoutSectionHtml(s) {
+	const planeId = s.fighterModel || 'f-15';
+	const plane = PLANES[planeId];
+	if (!plane || !Array.isArray(plane.hardpoints) || plane.hardpoints.length === 0) {
+		return `
+		<div style="margin-top:6px;border-top:1px dotted rgba(0,220,255,0.2);padding-top:4px;">
+			<div style="opacity:0.7;font-size:10px;margin-bottom:3px;">LOADOUT</div>
+			<div style="opacity:0.5;font-size:10px;font-style:italic;">no hardpoints on ${escapeHtml(planeId)}</div>
+		</div>`;
+	}
+
+	const lo = s.loadout || null;
+	const isSlotForm = !!(lo && lo.hardpoints && typeof lo.hardpoints === 'object'
+		&& !lo.template && !lo.oneOf);
+	const isAdvanced = !!(lo && (lo.template || lo.oneOf
+		|| (!lo.hardpoints && Object.keys(lo).length > 0)));
+
+	if (isAdvanced) {
+		const kind = lo.template ? 'template' : (lo.oneOf ? 'oneOf' : 'simType counts');
+		return `
+		<div style="margin-top:6px;border-top:1px dotted rgba(0,220,255,0.2);padding-top:4px;">
+			<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:3px;">
+				<div style="opacity:0.7;font-size:10px;">LOADOUT</div>
+				<button id="ed-loadout-override" type="button" style="${_btnCss()}">OVERRIDE</button>
+			</div>
+			<div style="opacity:0.55;font-size:9px;font-style:italic;">advanced loadout (${kind}) — OVERRIDE to switch to slot view</div>
+		</div>`;
+	}
+
+	const slots = isSlotForm ? lo.hardpoints : {};
+	const rows = plane.hardpoints.map((hp) => {
+		const compatible = munitionsForHardpoint(hp);
+		const current = slots[hp.id] || '';
+		const isInternal = hp.type === 'internal';
+		const opts = ['<option value="">— empty —</option>'].concat(
+			compatible.map(m => {
+				const sel = m.id === current ? ' selected' : '';
+				return `<option value="${m.id}"${sel}>${escapeHtml(m.shortName || m.name)}</option>`;
+			})
+		).join('');
+		const cur = current && MUNITIONS[current];
+		const massNote = cur ? `${cur.massKg} kg` : '—';
+		const stealthBadge = hp.stealthBreak ? ' <span style="color:#fa0;font-size:8px;">⚠</span>' : '';
+		const intBadge     = isInternal ? ' <span style="color:#6ff;font-size:8px;">[INT]</span>' : '';
+		return `
+		<div style="display:flex;gap:4px;align-items:center;font-size:10px;margin-bottom:2px;">
+			<span style="opacity:0.75;flex:0 0 90px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${escapeAttr(hp.label || hp.id)}">${escapeHtml(hp.label || hp.id)}${intBadge}${stealthBadge}</span>
+			<select class="ed-loadout-slot" data-hp="${hp.id}" style="${_selectCss()}flex:1;" ${compatible.length === 0 ? 'disabled' : ''}>${opts}</select>
+			<span style="opacity:0.55;flex:0 0 50px;text-align:right;">${massNote}</span>
+		</div>`;
+	}).join('');
+
+	return `
+	<div style="margin-top:6px;border-top:1px dotted rgba(0,220,255,0.2);padding-top:4px;">
+		<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:3px;">
+			<div style="opacity:0.7;font-size:10px;">LOADOUT — ${escapeHtml(planeId)} (${plane.hardpoints.length} slots)</div>
+			<button id="ed-loadout-clear" type="button" style="${_btnCss()}">CLEAR</button>
+		</div>
+		${rows}
+	</div>`;
+}
+
+// Tag picker row: dropdown of available spawn tags + a PICK pill
+// that arms click-on-map-marker mode. Used for strike target and
+// escort target. The selectId is exposed as a stable id; field is
+// the pilot.params field name to write into.
+function _tagPickerRow(label, selectId, field, current) {
+	const tags = _collectSpawnTags().filter(t => {
+		const sel = _activeJson.spawns && _activeJson.spawns[_selectedIdx];
+		return !sel || sel.tag !== t;
+	});
+	const opts = ['<option value="">— pick —</option>']
+		.concat(tags.map(t => `<option value="${escapeAttr(t)}"${t === current ? ' selected' : ''}>${escapeHtml(t)}</option>`))
+		.join('');
+	const isPicking = !!(_pendingTagPick
+		&& _pendingTagPick.spawnIdx === _selectedIdx
+		&& _pendingTagPick.field === field);
+	return `
+	<div style="display:flex;gap:4px;align-items:center;font-size:10px;margin-top:4px;">
+		<span style="opacity:0.7;flex:0 0 50px;">${label}</span>
+		<select id="${selectId}" data-field="${field}" class="ed-tag-select" style="${_selectCss()}flex:1;">${opts}</select>
+		<button type="button" class="ed-tag-pick" data-field="${field}" style="${_pillCss(isPicking)}flex:0 0 auto;padding:3px 8px;">${isPicking ? 'CLICK MARKER…' : 'PICK'}</button>
+	</div>
+	${tags.length === 0 ? '<div style="opacity:0.55;font-size:9px;margin-top:2px;">no tagged spawns yet — click PICK then click any marker on the map (a tag will be auto-assigned)</div>' : ''}`;
+}
+
+// ----- Objectives authoring -----------------------------------------------
+
+const OBJ_KINDS = ['destroy', 'protect', 'reach-zone'];
+
+function _collectSpawnTags() {
+	const out = [];
+	const spawns = (_activeJson && _activeJson.spawns) || [];
+	for (const s of spawns) {
+		if (s.tag) out.push(s.tag);
+	}
+	return out;
+}
+
+function _objectivesSectionHtml() {
+	const objs = (_activeJson && _activeJson.objectives) || [];
+	const tags = _collectSpawnTags();
+	const otherIds = (idx) => objs.filter((_, i) => i !== idx).map(o => o.id).filter(Boolean);
+
+	const rows = objs.map((o, i) => _objectiveRowHtml(o, i, tags, otherIds(i))).join('');
+	const empty = objs.length === 0
+		? '<div style="opacity:0.5;font-size:10px;font-style:italic;">no objectives — click ADD OBJECTIVE to create one</div>'
+		: '';
+
+	return `
+	<div style="margin-top:8px;border-top:1px solid rgba(0,220,255,0.2);padding-top:6px;">
+		<div style="display:flex;justify-content:space-between;align-items:center;">
+			<div style="opacity:0.7;font-size:10px;">OBJECTIVES</div>
+			<button id="se-obj-add" type="button" style="${_btnCss()}">+ ADD</button>
+		</div>
+		<div id="se-obj-list" style="margin-top:4px;">${rows}${empty}</div>
+	</div>`;
+}
+
+function _objectiveRowHtml(o, idx, tags, otherIds) {
+	const kindPill = (k, label) =>
+		`<button type="button" class="se-obj-kind" data-idx="${idx}" data-kind="${k}" style="${_pillCss(o.kind === k)}">${label}</button>`;
+
+	const tagOpts = ['<option value="">— pick tag —</option>']
+		.concat(tags.map(t => `<option value="${escapeAttr(t)}"${t === o.tag ? ' selected' : ''}>${escapeHtml(t)}</option>`))
+		.join('');
+
+	const afterOpts = ['<option value="">— none —</option>']
+		.concat(otherIds.map(id => `<option value="${escapeAttr(id)}"${id === o.afterObjective ? ' selected' : ''}>${escapeHtml(id)}</option>`))
+		.join('');
+
+	const tagRow = (o.kind === 'destroy' || o.kind === 'protect')
+		? `<div style="display:flex;gap:4px;align-items:center;font-size:10px;margin-bottom:3px;">
+				<span style="opacity:0.7;flex:0 0 50px;">tag</span>
+				<select class="se-obj-tag" data-idx="${idx}" style="${_selectCss()}flex:1;">${tagOpts}</select>
+			</div>`
+		: '';
+
+	const isPending = _pendingZoneObj && _pendingZoneObj.objIdx === idx;
+	const zone = o.zone || {};
+	const hasZone = typeof zone.lon === 'number';
+	const zoneRow = (o.kind === 'reach-zone')
+		? `<div style="display:flex;gap:4px;align-items:center;font-size:10px;margin-bottom:3px;">
+				<span style="opacity:0.7;flex:0 0 50px;">zone</span>
+				<button type="button" class="se-obj-zone-arm" data-idx="${idx}" style="${_pillCss(isPending)}flex:0 0 auto;">${isPending ? 'CLICK MAP…' : (hasZone ? 'MOVE' : 'PLACE')}</button>
+				<span style="opacity:0.7;flex:0 0 auto;">r</span>
+				<input class="se-obj-radius" data-idx="${idx}" type="number" step="500" value="${zone.radiusM ?? 5000}" style="${_selectCss()}flex:1;">
+			</div>`
+		: '';
+
+	return `
+	<div style="border:1px solid rgba(0,220,255,0.2);border-radius:2px;padding:4px 6px;margin-bottom:4px;background:rgba(0,0,0,0.2);">
+		<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:3px;gap:4px;">
+			<input class="se-obj-id" data-idx="${idx}" type="text" value="${escapeAttr(o.id || '')}" placeholder="id" style="${_selectCss()}flex:0 0 80px;">
+			<input class="se-obj-label" data-idx="${idx}" type="text" value="${escapeAttr(o.label || '')}" placeholder="label" style="${_selectCss()}flex:1;">
+			<button type="button" class="se-obj-del" data-idx="${idx}" style="background:transparent;border:1px solid rgba(255,128,128,0.4);color:#f88;font-size:9px;padding:1px 5px;cursor:pointer;letter-spacing:0.5px;">×</button>
+		</div>
+		<div style="display:flex;gap:3px;margin-bottom:3px;">
+			${kindPill('destroy', 'DESTROY')}
+			${kindPill('protect', 'PROTECT')}
+			${kindPill('reach-zone', 'REACH')}
+		</div>
+		${tagRow}
+		${zoneRow}
+		<div style="display:flex;gap:4px;align-items:center;font-size:10px;">
+			<label style="display:flex;align-items:center;gap:3px;opacity:0.85;flex:0 0 auto;">
+				<input class="se-obj-req" data-idx="${idx}" type="checkbox" ${o.required !== false ? 'checked' : ''}> required
+			</label>
+			<span style="opacity:0.7;flex:0 0 auto;">after</span>
+			<select class="se-obj-after" data-idx="${idx}" style="${_selectCss()}flex:1;">${afterOpts}</select>
+		</div>
+	</div>`;
+}
+
+function _wireObjectives(panel) {
+	if (!_activeJson) return;
+	if (!Array.isArray(_activeJson.objectives)) _activeJson.objectives = [];
+	const objs = _activeJson.objectives;
+
+	const addBtn = panel.querySelector('#se-obj-add');
+	if (addBtn) addBtn.addEventListener('click', () => {
+		_pushUndo();
+		const n = objs.length + 1;
+		objs.push({
+			id: `obj-${n}`,
+			kind: 'destroy',
+			label: `Objective ${n}`,
+			required: true,
+		});
+		_buildPanel();
+	});
+
+	const get = (el) => objs[parseInt(el.getAttribute('data-idx'), 10)];
+
+	for (const el of panel.querySelectorAll('.se-obj-id')) {
+		el.addEventListener('change', (e) => {
+			const o = get(el); if (!o) return;
+			o.id = e.target.value.trim() || o.id;
+			_buildPanel();
+		});
+	}
+	for (const el of panel.querySelectorAll('.se-obj-label')) {
+		el.addEventListener('change', (e) => {
+			const o = get(el); if (!o) return;
+			o.label = e.target.value;
+			_renderSpawnMarkers();
+		});
+	}
+	for (const btn of panel.querySelectorAll('.se-obj-kind')) {
+		btn.addEventListener('click', () => {
+			const o = get(btn); if (!o) return;
+			_pushUndo();
+			o.kind = btn.getAttribute('data-kind');
+			if (o.kind === 'reach-zone') {
+				o.zone = o.zone || { radiusM: 5000 };
+				delete o.tag;
+			} else {
+				delete o.zone;
+			}
+			_pendingZoneObj = null;
+			_buildPanel();
+			_renderSpawnMarkers();
+		});
+	}
+	for (const el of panel.querySelectorAll('.se-obj-tag')) {
+		el.addEventListener('change', (e) => {
+			const o = get(el); if (!o) return;
+			const v = e.target.value;
+			if (v) o.tag = v; else delete o.tag;
+		});
+	}
+	for (const btn of panel.querySelectorAll('.se-obj-zone-arm')) {
+		btn.addEventListener('click', () => {
+			const idx = parseInt(btn.getAttribute('data-idx'), 10);
+			if (_pendingZoneObj && _pendingZoneObj.objIdx === idx) {
+				_pendingZoneObj = null;
+			} else {
+				_pendingZoneObj = { objIdx: idx };
+			}
+			_buildPanel();
+		});
+	}
+	for (const el of panel.querySelectorAll('.se-obj-radius')) {
+		el.addEventListener('change', (e) => {
+			const o = get(el); if (!o) return;
+			const v = parseFloat(e.target.value);
+			o.zone = o.zone || {};
+			if (Number.isFinite(v) && v > 0) o.zone.radiusM = v;
+			_renderSpawnMarkers();
+		});
+	}
+	for (const el of panel.querySelectorAll('.se-obj-req')) {
+		el.addEventListener('change', (e) => {
+			const o = get(el); if (!o) return;
+			o.required = !!e.target.checked;
+		});
+	}
+	for (const el of panel.querySelectorAll('.se-obj-after')) {
+		el.addEventListener('change', (e) => {
+			const o = get(el); if (!o) return;
+			const v = e.target.value;
+			if (v) o.afterObjective = v; else delete o.afterObjective;
+		});
+	}
+	for (const btn of panel.querySelectorAll('.se-obj-del')) {
+		btn.addEventListener('click', () => {
+			const idx = parseInt(btn.getAttribute('data-idx'), 10);
+			_pushUndo();
+			objs.splice(idx, 1);
+			if (_pendingZoneObj && _pendingZoneObj.objIdx === idx) _pendingZoneObj = null;
+			else if (_pendingZoneObj && _pendingZoneObj.objIdx > idx) _pendingZoneObj.objIdx--;
+			_buildPanel();
+			_renderSpawnMarkers();
+		});
+	}
 }
 
 function _selectCss() {
@@ -1532,6 +2073,7 @@ function _renderSpawnList() {
 			e.stopPropagation();
 			const idx = parseInt(btn.getAttribute('data-idx'), 10);
 			if (Number.isFinite(idx)) {
+				_pushUndo();
 				_activeJson.spawns.splice(idx, 1);
 				if (_pendingMoveIdx === idx) _pendingMoveIdx = null;
 				else if (_pendingMoveIdx != null && _pendingMoveIdx > idx) _pendingMoveIdx--;
