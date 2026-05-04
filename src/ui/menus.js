@@ -9,7 +9,7 @@
 // surface this module uses.
 // ============================================================================
 
-import { enterSpawnPicking, exitSpawnPicking, quickRespawn, hasScenarioSpawnPoint } from '../systems/spawnFlow';
+import { enterSpawnPicking, exitSpawnPicking, quickRespawn, hasScenarioSpawnPoint, enterRespawnAsNewPlane } from '../systems/spawnFlow';
 import { setRenderOptimization } from '../world/cesiumWorld';
 import { gameSettings, saveSettings, applySettings, updateSettingsUI } from './settings';
 import { soundManager } from '../utils/soundManager';
@@ -223,6 +223,14 @@ export function setupPauseAndRespawnButtons(ctx) {
 		if (ctx.dialogueSystem) ctx.dialogueSystem.stop();
 		enterSpawnPicking(ctx, true);
 	};
+
+	const respawnAsNewBtn = document.getElementById('respawnAsNewBtn');
+	if (respawnAsNewBtn) {
+		respawnAsNewBtn.onclick = () => {
+			closeAllModals();
+			enterRespawnAsNewPlane(ctx);
+		};
+	}
 
 	document.getElementById('quitBtn').onclick = () => {
 		closeAllModals();

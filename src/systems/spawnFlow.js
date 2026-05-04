@@ -41,6 +41,7 @@ import { clearEvents } from './eventLog';
 import { gameSettings, saveSettings } from '../ui/settings';
 import { setFormation, clearFormation } from './formation.js';
 import { createWingmanPilot } from './ai/index.js';
+import { applyNpcLoadout } from './scenarios/scenarioRunner.js';
 
 // Module-private state — only this file reads or writes either.
 // `spawnMarker` is the Cesium point-entity dropped on the map while the
@@ -49,6 +50,11 @@ import { createWingmanPilot } from './ai/index.js';
 // into the fight without tearing the scenario down.
 let spawnMarker = null;
 let _scenarioSpawnPoint = null;
+// True between enterRespawnAsNewPlane → setupConfirmSpawn's CONFIRM
+// click. Tells the confirm path to skip scenario.onStart (the
+// scenario is already running) and skip clearing/re-seeding existing
+// NPCs. The flag clears at the end of the confirm flow.
+let _continuingScenario = false;
 
 // Accessors exposed for modules that also touch the spawn marker
 // (currently the Nominatim location-search dropdown). Keeps ownership
@@ -119,6 +125,123 @@ export function quickRespawn(ctx) {
 		soundManager.stop('ambient-crash', 0.3);
 		soundManager.play('jet-engine', 1.0);
 	} catch (e) {}
+}
+
+// Mid-mission airframe switch. Called from the pause menu's "SWITCH
+// AIRFRAME" button. Snapshots the player's current jet into a friendly
+// NPC (so they keep flying as a wingman to whoever is left), opens the
+// spawn picker just like enterSpawnPicking — but does NOT clear the
+// scenario or its NPCs. The follow-up CONFIRM click rebuilds physics
+// + signature + loadout for the newly-picked plane and snaps the
+// player into the air without re-running scenario.onStart.
+export function enterRespawnAsNewPlane(ctx) {
+	const { state } = ctx;
+	// Snapshot the player → autonomous friendly fighter NPC at the
+	// same pose, plane, and loadout. Best-effort: if the NPC system
+	// can't make a fighter (model not loaded yet, etc.) we still
+	// proceed with the airframe switch.
+	_clonePlayerToNpc(ctx);
+
+	_continuingScenario = true;
+
+	// The pause menu was open before the click. Hide it and the
+	// flight HUD so the spawn picker has the screen to itself.
+	const pauseMenu = document.getElementById('pauseMenu');
+	if (pauseMenu) pauseMenu.classList.add('hidden');
+	const uiContainer = document.getElementById('uiContainer');
+	if (uiContainer) uiContainer.classList.add('hidden');
+	const weaponsHud = document.getElementById('weapons-hud');
+	if (weaponsHud) weaponsHud.classList.add('hidden');
+	const threeContainer = document.getElementById('threeContainer');
+	if (threeContainer) threeContainer.classList.add('hidden');
+
+	if (ctx.dialogueSystem) ctx.dialogueSystem.stop();
+	stopAllFlyingSounds(0.3);
+
+	// Spawn-picker UI setup — mirrors enterSpawnPicking's tail end
+	// but skips npcSystem.clear / clearFormation / scenario.onStop.
+	const spawnInstruction = document.getElementById('spawnInstruction');
+	const confirmSpawnBtn  = document.getElementById('confirmSpawnBtn');
+	if (spawnInstruction) spawnInstruction.classList.remove('hidden');
+	const changeAfBtn = document.getElementById('changeAirframeFromSpawnBtn');
+	if (changeAfBtn) {
+		changeAfBtn.classList.remove('hidden');
+		changeAfBtn.onclick = () => {
+			const trigger = document.getElementById('changeAirframeBtn');
+			if (trigger) trigger.click();
+		};
+	}
+	// Auto-open the airframe modal so the user lands directly on
+	// plane / loadout selection. They can pick their plane, confirm
+	// in the modal, and then click the map for the new spawn.
+	setTimeout(() => {
+		const trigger = document.getElementById('changeAirframeBtn');
+		if (trigger) trigger.click();
+	}, 50);
+	const formationPanel = document.getElementById('formation-config');
+	if (formationPanel) {
+		formationPanel.classList.remove('hidden');
+		_refreshFormationPanel();
+	}
+	ctx.setCurrentState('PICK_SPAWN');
+	if (confirmSpawnBtn) confirmSpawnBtn.classList.add('hidden');
+
+	const searchInput = document.getElementById('locationSearch');
+	const instructionText = document.getElementById('instruction-text');
+	const resultsContainer = document.getElementById('search-results');
+	if (searchInput) {
+		searchInput.value = '';
+		searchInput.style.display = 'none';
+	}
+	if (instructionText) {
+		instructionText.style.display = 'block';
+		instructionText.textContent = 'CLICK ANYWHERE ON THE MAP TO CHOOSE A NEW SPAWN POINT — your old jet keeps flying';
+	}
+	if (resultsContainer) resultsContainer.style.display = 'none';
+	setControlsEnabled(true);
+
+	if (spawnMarker) {
+		const viewer = getViewer();
+		viewer.entities.remove(spawnMarker);
+		spawnMarker = null;
+	}
+	const viewer = getViewer();
+	if (viewer) {
+		viewer.camera.flyTo({
+			destination: Cesium.Cartesian3.fromDegrees(state.lon, state.lat, 15000),
+			duration: 1.5,
+		});
+	}
+}
+
+// Internal: snapshot the player's current pose/plane/loadout into a
+// friendly NPC fighter so the old jet keeps flying after the user
+// switches airframes. The new NPC is on the player's team with a
+// stock fighter pilot (engage-on-sight CAP behaviour).
+function _clonePlayerToNpc(ctx) {
+	const { state, npcSystem } = ctx;
+	if (!npcSystem || typeof npcSystem.createNPCMesh !== 'function') return null;
+	const planeId = getActivePlaneId();
+	const team    = state.team || 'friendly';
+	const npc = npcSystem.createNPCMesh(
+		`EX-PLAYER ${100 + Math.floor(Math.random() * 900)}`,
+		state.lon, state.lat, state.alt,
+		state.heading || 0,
+		Math.max(120, state.speed || 200),
+		team,
+		planeId,
+	);
+	if (!npc) return null;
+	// Carry over the player's current signature (so externals still
+	// count) and apply their hardpoint loadout to the NPC's weapon
+	// subsystem. Best-effort — if anything's missing we leave the
+	// NPC's defaults in place and move on.
+	if (state.signature) npc.signature = { ...state.signature };
+	try {
+		const counts = simTypeCounts(planeId);
+		if (counts) applyNpcLoadout(npc, counts);
+	} catch (e) {}
+	return npc;
 }
 
 // Drop into the map-picker state: tear down the running scenario + NPCs,
@@ -232,6 +355,8 @@ export function exitSpawnPicking(ctx) {
 	stopAllFlyingSounds(0.3);
 	document.getElementById('spawnInstruction').classList.add('hidden');
 	document.getElementById('confirmSpawnBtn').classList.add('hidden');
+	const changeAfBtnExit = document.getElementById('changeAirframeFromSpawnBtn');
+	if (changeAfBtnExit) changeAfBtnExit.classList.add('hidden');
 	document.getElementById('mainMenu').classList.remove('hidden');
 	ctx.setCurrentState('MENU');
 	document.getElementById('loadingIndicator').classList.add('hidden');
@@ -376,7 +501,10 @@ export function setupConfirmSpawn(ctx) {
 			// Override whatever the user picked / inherited from
 			// last-spawn so the editor's PLAYER START marker is
 			// authoritative when flying the scenario.
-			{
+			//
+			// SWITCH-AIRFRAME path skips this — the user just clicked
+			// a fresh point on the map, that's what they want.
+			if (!_continuingScenario) {
 				const raw = getRawScenario(getActiveScenarioId());
 				const ps = raw && raw.anchor && raw.anchor.mode === 'world'
 					? raw.anchor.playerSpawn : null;
@@ -468,7 +596,13 @@ export function setupConfirmSpawn(ctx) {
 			// and flips autoSpawn back on; for lab scenarios like the
 			// notching test the scenario is in charge of placement and
 			// disables auto-spawn.
-			if (ctx.npcSystem) {
+			//
+			// SWITCH-AIRFRAME path: the scenario is already running
+			// (NPCs alive, objectives in progress). Skip onStart so we
+			// don't double-spawn enemies, and skip wingman seeding —
+			// the existing wingmen keep flying behind the cloned
+			// ex-player NPC.
+			if (ctx.npcSystem && !_continuingScenario) {
 				const scn = getActiveScenario();
 				const scnCtx = {
 					npcSystem: ctx.npcSystem, playerState: state,
@@ -487,9 +621,12 @@ export function setupConfirmSpawn(ctx) {
 				// pile up on top of the leader.
 				_spawnPlayerFormation(ctx, state);
 			}
+			_continuingScenario = false;
 
 			document.getElementById('spawnInstruction').classList.add('hidden');
 			document.getElementById('confirmSpawnBtn').classList.add('hidden');
+			const changeAfBtnDone = document.getElementById('changeAirframeFromSpawnBtn');
+			if (changeAfBtnDone) changeAfBtnDone.classList.add('hidden');
 			document.getElementById('loadingIndicator').classList.add('hidden');
 			const formationPanelDone = document.getElementById('formation-config');
 			if (formationPanelDone) formationPanelDone.classList.add('hidden');
