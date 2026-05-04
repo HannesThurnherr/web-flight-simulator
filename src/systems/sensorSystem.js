@@ -121,8 +121,22 @@ export function setSensorScene(scene) { _sensorScene = scene; }
 // is comfortably less work than one pick on slanted geometry, AND
 // produces a more reliable answer.
 
-const TERRAIN_LOS_SAMPLES = 6;
+// Length-adaptive sample count. The right variable for "do we catch a
+// ridge between samples?" is samples-per-kilometre, not samples-per-
+// chord. Aim for ~1.5 km spacing so typical Alpine ridges (1-3 km
+// crests) can't slip between samples on a BVR-length LOS, with floor
+// + ceiling so short chords stay cheap and 100 km+ chords don't
+// explode the per-frame cost.
+const TERRAIN_LOS_TARGET_SPACING_M = 1500;
+const TERRAIN_LOS_MIN_SAMPLES = 8;
+const TERRAIN_LOS_MAX_SAMPLES = 64;
 const TERRAIN_LOS_CLEARANCE_M = 30;
+function _samplesForChord(L) {
+	const n = Math.ceil(L / TERRAIN_LOS_TARGET_SPACING_M);
+	if (n < TERRAIN_LOS_MIN_SAMPLES) return TERRAIN_LOS_MIN_SAMPLES;
+	if (n > TERRAIN_LOS_MAX_SAMPLES) return TERRAIN_LOS_MAX_SAMPLES;
+	return n;
+}
 // 4/3·R_earth — the standard radar-refraction effective earth radius.
 // Atmospheric refraction bends radio waves slightly down so they reach
 // past the geometric horizon; this is the conventional first-order
@@ -146,11 +160,16 @@ const _cartoSamp = new Cesium.Cartographic();
 // Used directly by both the sensor occlusion check (just needs boolean)
 // and by Phase 3a's NPC forward-look terrain avoid (needs distance to
 // scale pull-up urgency).
-export function chordTerrainHit(fromCart, toCart, samples = TERRAIN_LOS_SAMPLES, clearanceM = TERRAIN_LOS_CLEARANCE_M) {
+export function chordTerrainHit(fromCart, toCart, samples = null, clearanceM = TERRAIN_LOS_CLEARANCE_M) {
 	if (!_sensorScene || !_sensorScene.globe) return null;
 
 	const L = Cesium.Cartesian3.distance(fromCart, toCart);
 	if (L < 100) return null;
+	// Default sample count derives from chord length so the spacing
+	// stays roughly constant. Callers that want a fixed budget (e.g.
+	// the NPC forward-look path with a known short range) can still
+	// pin the count explicitly.
+	if (samples == null) samples = _samplesForChord(L);
 
 	const fromC = Cesium.Cartographic.fromCartesian(fromCart, undefined, _cartoEnd0);
 	const toC   = Cesium.Cartographic.fromCartesian(toCart,   undefined, _cartoEnd1);
@@ -648,14 +667,18 @@ function scanVisual(observer, target, now) {
 	// Phase 8 — contrails are by far the most reliable visual ID cue
 	// at altitude. A jet that would otherwise be a 19 m speck against
 	// blue sky becomes a kilometre-long white streak the moment it
-	// crosses the formation ceiling. We model this as a hefty ×6
-	// effective visual-size multiplier when the target is currently
-	// emitting a contrail (Contrail.update sets unit.contrailing).
-	// Translates the 12 km baseline eyeball range into ~70 km against
-	// a contrailing fighter — long but not absurd; a contrail at
-	// 30 000 ft is in fact visible to the naked eye that far away on
-	// a clear day, which is the point of this whole sub-phase.
-	if (target.contrailing) effSize *= 6;
+	// crosses the formation ceiling. We model this as an effective
+	// visual-size multiplier when the target is currently emitting a
+	// contrail (Contrail.update sets unit.contrailing).
+	//
+	// Multiplier originally ×6, giving ~72 km range on a contrailing
+	// fighter — realistic for SPOTTING the contrail itself, but
+	// unrealistic for converting that into a tracked bearing on the
+	// aircraft producing it. Dropped to ×3.5 so a contrailing fighter
+	// is detectable around ~40 km and an AWACS around ~100 km, which
+	// still rewards radar-off NPCs for spotting contrails passively
+	// without giving them an effective passive-radar substitute.
+	if (target.contrailing) effSize *= 3.5;
 
 	// Detection range scales linearly with visual size (apparent angular
 	// size is size / range). referenceVisualSize is the default fighter.
