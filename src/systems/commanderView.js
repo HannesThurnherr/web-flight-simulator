@@ -574,11 +574,17 @@ export class CommanderView {
 
 		window.addEventListener('wheel', (e) => {
 			if (!this.active) return;
-			// Exponential zoom on the orbital distance. Because the camera
-			// orbits the look-at point (rather than sitting directly above
-			// it), this scales the visible ground area equally at any tilt,
-			// not only top-down.
-			const factor = e.deltaY > 0 ? 1.25 : 1 / 1.25;
+			// Exponential zoom on the orbital distance. The factor is
+			// derived from deltaY magnitude so a trackpad's tiny per-
+			// event deltas (~±4 px) zoom gently while a mouse wheel
+			// notch (~±100 px) still gives a snappy step. Coefficient
+			// 0.00223 ≈ ln(1.25) / 100 keeps the notch behaviour at
+			// ~1.25× per click, matching the prior fixed-factor feel.
+			let dy = e.deltaY;
+			if (e.deltaMode === 1)      dy *= 33;   // lines → px
+			else if (e.deltaMode === 2) dy *= 400;  // pages → px
+			const raw = Math.exp(dy * 0.00223);
+			const factor = Math.max(0.5, Math.min(2.0, raw));
 			// Allow zooming out far enough to see the whole planet —
 			// 30 000 km slant distance gets the camera comfortably
 			// outside the globe, useful when authoring a scenario in
