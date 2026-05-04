@@ -867,6 +867,15 @@ export class Missile {
 					if (!npc || npc === this.launcher) continue;
 					if (npc.destroyed) continue;
 					if (npc.team && this.team && npc.team === this.team) continue;
+					// Splash damage doesn't kill other in-flight
+					// munitions. A falling cruise missile's frag
+					// shouldn't take out an interceptor or wingman's
+					// AAM that happened to be nearby — and crediting
+					// the launcher with that "kill" produced the
+					// "PLAYER killed UNKNOWN with STORM-SHADOW" log
+					// noise after every successful intercept.
+					const tClass = npc.signature && npc.signature.unitClass;
+					if (tClass === 'missile' || tClass === 'cruise_missile' || tClass === 'bomb') continue;
 					const dSq = this.calculateDistSqToNPC(npc);
 					if (dSq <= killR2) {
 						if (!anyKill) {

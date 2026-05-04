@@ -69,6 +69,16 @@ export function nameOf(u) {
 	// The player state object doesn't carry a name; identify by the
 	// fact that it has both a weaponSystem and a `team` of 'friendly'.
 	if (u.weaponSystem) return 'PLAYER';
+	// Projectiles / missiles carry their munition data — fall back to
+	// the munition's display name (or simType) so a SAM-vs-cruise
+	// kill reads "NASAMS-1 shot down STORM-SHADOW" instead of
+	// "...UNKNOWN".
+	if (u.data) {
+		const d = u.data;
+		const munLabel = d.shortName || d.name || d.simType;
+		if (munLabel) return munLabel;
+	}
+	if (u.type) return u.type;
 	return 'UNKNOWN';
 }
 
