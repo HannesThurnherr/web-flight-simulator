@@ -426,6 +426,9 @@ export class StrikePlannerView {
 		// pattern manual click-to-add uses (_addAtScreen). Without
 		// this, GBU-/SDB-class bombs aimed at briefed SAMs in
 		// mountainous terrain crash short of the target.
+		// Ammo cap was lifted up at the queueing step; refine every
+		// queued designation against terrain.
+		const take = candidates.length;
 		if (take > 0) {
 			const cartos = candidates.slice(0, take).map(c =>
 				Cesium.Cartographic.fromDegrees(c.lon, c.lat));
