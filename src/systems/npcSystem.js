@@ -4,19 +4,35 @@ import { PlanePhysics } from '../plane/planePhysics.js';
 import { SIGNATURES } from './signatures.js';
 import f15Plane from '../data/planes/f-15.json';
 
-// NPC fighter physics spec. All hostile + friendly fighter NPCs use
-// the same baseline today (we don't yet model per-airframe NPCs);
-// when we do, this will become a per-NPC-type lookup. For now the
-// F-15 spec is the canonical "fighter" baseline and lives in one
-// place — the F-15 JSON. Importing it here keeps the spec in sync
-// with the player's F-15 automatically. realLengthM is hoisted out
-// so the NPC mesh-scaling code can auto-derive scale from the loaded
-// GLB's bbox without depending on the JSON shape.
-const NPC_FIGHTER_SPEC = {
-	...f15Plane.physicsOverrides,
-	__id: 'npc-fighter',
-	realLengthM: f15Plane.realLengthM || 19.43,
-};
+// All plane JSONs, keyed by id. Eagerly-imported (Vite glob), used
+// to look up per-airframe physics + signature + GLB path when a
+// scenario specifies fighterModel: "f-35" etc.
+const _planeModules = import.meta.glob('../data/planes/*.json', { eager: true });
+const RAW_PLANES = (() => {
+	const out = {};
+	for (const [path, mod] of Object.entries(_planeModules)) {
+		const raw = mod.default || mod;
+		const fallbackId = path.match(/\/([^/]+)\.json$/)?.[1];
+		const id = raw.id || fallbackId;
+		if (id) out[id] = raw;
+	}
+	return out;
+})();
+
+// Build an NPC physics spec from a raw plane JSON. Unlike the player
+// path, NPCs only need the physicsOverrides + realLengthM — the rest
+// of the JSON (control mappings, HUD config, etc.) is irrelevant.
+function _npcSpecFor(raw) {
+	return {
+		...(raw.physicsOverrides || {}),
+		__id: 'npc-' + (raw.id || 'fighter'),
+		realLengthM: raw.realLengthM || 19.43,
+	};
+}
+
+// NPC fighter physics spec — default baseline (F-15). createNPCMesh
+// resolves a per-plane spec when the caller passes a planeId.
+const NPC_FIGHTER_SPEC = _npcSpecFor(f15Plane);
 import {
 	FIGHTER_RADAR_DEFAULT,
 	FIGHTER_IRST_DEFAULT,
@@ -169,6 +185,11 @@ export class NPCSystem {
 		this.modelTemplate = null;
 		this.animations = [];
 		this.loaded = false;
+		// Per-fighter-id GLB cache. Populated by loadModel for the
+		// default (F-15) and lazily by _preloadFighterModel for any
+		// other plane id requested via scenario.fighterModel. Each
+		// slot: { template, animations, loaded, failed, raw }.
+		this._fighterTemplates = new Map();
 		// Generic platform-model cache: any GLB path → { template,
 		// animations, loaded, failed }. Populated lazily by spawnPlatform
 		// the first time it sees a new path. Replaces the old hardcoded
@@ -188,13 +209,19 @@ export class NPCSystem {
 	}
 
 	loadModel() {
-		// Player-fighter template — used by createNPCMesh (air-to-air
-		// fighter spawns, no per-spawn model path). Kept as its own slot
-		// because `loaded` gates the whole NPCSystem.
+		// Player-fighter template — used by createNPCMesh as the
+		// default when no fighterModel is specified, AND registered
+		// in the per-fighter-id cache so requests for { fighterModel:
+		// 'f-15' } resolve to the same template.
+		const f15Slot = { template: null, animations: null, loaded: false, failed: false, raw: f15Plane };
+		this._fighterTemplates.set('f-15', f15Slot);
 		this.loader.load('/assets/models/f-15-strike-eagle.glb', (gltf) => {
 			this.modelTemplate = gltf.scene;
 			this.animations = gltf.animations;
 			_simplifyForNpc(this.modelTemplate);
+			f15Slot.template   = gltf.scene;
+			f15Slot.animations = gltf.animations;
+			f15Slot.loaded = true;
 			this.loaded = true;
 		});
 		// Warm-preload the AWACS so a scenario starting with awacs-bvr
@@ -208,6 +235,78 @@ export class NPCSystem {
 	// the first time it encounters a new path. Subsequent spawns of
 	// the same platform reuse the cached `template`, so 5× SA-15 in a
 	// scenario costs one HTTP fetch.
+	// Lazy GLB loader for an alternate fighter airframe (F-22, F-35,
+	// Su-35, ...). Loads the GLB referenced by the plane JSON's
+	// `model` field; createNPCMesh falls back to the default F-15
+	// template if the requested one isn't loaded yet.
+	_preloadFighterModel(planeId) {
+		if (!planeId) return;
+		if (this._fighterTemplates.has(planeId)) return;
+		const raw = RAW_PLANES[planeId];
+		if (!raw || !raw.model) {
+			console.warn('[NPCSystem] no plane JSON / model path for fighterModel:', planeId);
+			return;
+		}
+		const slot = {
+			template: null, animations: null, loaded: false, failed: false, raw,
+			// NPCs that spawned with this slot pending — they were
+			// given the F-15 fallback mesh and want a swap once the
+			// real GLB lands.
+			pendingNpcs: [],
+		};
+		this._fighterTemplates.set(planeId, slot);
+		this.loader.load(raw.model, (gltf) => {
+			slot.template   = gltf.scene;
+			slot.animations = gltf.animations;
+			_simplifyForNpc(slot.template);
+			slot.loaded = true;
+			// Swap the fallback mesh on every pending NPC.
+			for (const npc of slot.pendingNpcs) this._swapNpcMesh(npc, slot);
+			slot.pendingNpcs.length = 0;
+		}, undefined, (err) => {
+			console.warn('[NPCSystem] fighter model failed to load:', raw.model, err);
+			slot.failed = true;
+		});
+	}
+
+	// Replace the cloned fallback model on `npc` with a clone of the
+	// freshly-loaded template. Rebuilds the hide-node visibility +
+	// scale so the swapped-in mesh matches what createNPCMesh would
+	// produce if the slot had been ready at spawn time.
+	_swapNpcMesh(npc, slot) {
+		if (!npc || !npc.mesh || !slot || !slot.template) return;
+		// Remove the existing model child (the fallback F-15 clone).
+		const oldChildren = npc.mesh.children.slice();
+		for (const c of oldChildren) npc.mesh.remove(c);
+		const model = slot.template.clone();
+		model.rotation.x = Math.PI / 2;
+		model.rotation.y = Math.PI / 2;
+		let scaleFactor = 1.0;
+		try {
+			model.updateMatrixWorld(true);
+			const bbox = new THREE.Box3().setFromObject(model);
+			const size = new THREE.Vector3();
+			bbox.getSize(size);
+			const maxDim = Math.max(size.x, size.y, size.z);
+			const realLen = (slot.raw && slot.raw.realLengthM) || 19.43;
+			if (maxDim > 0.01) scaleFactor = realLen / maxDim;
+		} catch (e) {}
+		model.scale.set(scaleFactor, scaleFactor, scaleFactor);
+		_applyHideNodes(model, (slot.raw && slot.raw.hideNodes) || []);
+		npc.mesh.add(model);
+		// Rebuild the animation mixer on the new model so flight_mode
+		// (gear retract, control surfaces) plays for the swapped mesh.
+		const mixer = new THREE.AnimationMixer(model);
+		const clip = THREE.AnimationClip.findByName(slot.animations || [], 'flight_mode');
+		if (clip) {
+			const action = mixer.clipAction(clip);
+			action.setLoop(THREE.LoopOnce);
+			action.clampWhenFinished = true;
+			action.play();
+		}
+		npc.mixer = mixer;
+	}
+
 	_preloadPlatformModel(path) {
 		if (!path) return;
 		if (this._platformTemplates.has(path)) return;
@@ -294,11 +393,40 @@ export class NPCSystem {
 		return (Math.atan2(dE, dN) * 180 / Math.PI + 360) % 360;
 	}
 
-	createNPCMesh(name, lon, lat, alt, heading, speed, team) {
+	createNPCMesh(name, lon, lat, alt, heading, speed, team, planeId = null) {
 		if (!this.modelTemplate) return null;
 
+		// Resolve the per-plane template + raw spec. If the caller
+		// asked for a non-default fighter, kick off a lazy load (no-op
+		// if already loading/loaded) and use the cached template if
+		// it's ready; otherwise fall back to the F-15 visually for
+		// this spawn (a future spawn after the GLB lands gets the
+		// correct mesh). Physics and signature ARE applied per-plane
+		// regardless — those don't depend on the GLB being loaded.
+		let plane = f15Plane;
+		let template = this.modelTemplate;
+		let animations = this.animations;
+		let pendingSlot = null;
+		if (planeId && planeId !== 'f-15') {
+			const raw = RAW_PLANES[planeId];
+			if (raw) plane = raw;
+			this._preloadFighterModel(planeId);
+			const slot = this._fighterTemplates.get(planeId);
+			if (slot && slot.loaded && slot.template) {
+				template = slot.template;
+				animations = slot.animations;
+			} else if (slot && !slot.failed) {
+				// GLB still loading — record this npc for a mesh swap
+				// once the load completes. createNPCMesh below builds
+				// the fallback (F-15) mesh in the meantime so the npc
+				// is renderable + functional immediately.
+				pendingSlot = slot;
+			}
+		}
+		const spec = _npcSpecFor(plane);
+
 		const group = new THREE.Group();
-		const model = this.modelTemplate.clone();
+		const model = template.clone();
 
 		// Model-space → body-frame orientation. The Strike Eagle GLB
 		// exports with +X forward and +Z up, so we yaw 90° (rotation.y)
@@ -319,7 +447,7 @@ export class NPCSystem {
 			const size = new THREE.Vector3();
 			bbox.getSize(size);
 			const maxDim = Math.max(size.x, size.y, size.z);
-			const realLen = (NPC_FIGHTER_SPEC && NPC_FIGHTER_SPEC.realLengthM) || 19.43;
+			const realLen = spec.realLengthM || 19.43;
 			if (maxDim > 0.01) scaleFactor = realLen / maxDim;
 		} catch (e) { /* keep default 1.0 */ }
 		model.scale.set(scaleFactor, scaleFactor, scaleFactor);
@@ -329,14 +457,14 @@ export class NPCSystem {
 		// descriptors (npcSystem imports the raw plane JSON, not the
 		// post-processed form). Matches landing-gear-deployed and
 		// landing-light nodes so NPCs always render in flight config.
-		_applyHideNodes(model, f15Plane.hideNodes);
+		_applyHideNodes(model, plane.hideNodes);
 
 		group.add(model);
 		group.matrixAutoUpdate = false;
 		this.scene.add(group);
 
 		const mixer = new THREE.AnimationMixer(model);
-		const clip = THREE.AnimationClip.findByName(this.animations, 'flight_mode');
+		const clip = THREE.AnimationClip.findByName(animations, 'flight_mode');
 		if (clip) {
 			const action = mixer.clipAction(clip);
 			action.setLoop(THREE.LoopOnce);
@@ -368,10 +496,11 @@ export class NPCSystem {
 			// drag penalty for hard turns) that the player's aircraft
 			// obeys.
 			physics: (() => {
-				const p = new PlanePhysics(NPC_FIGHTER_SPEC);
+				const p = new PlanePhysics(spec);
 				p.reset(lon, lat, alt, heading, 0, 0);
 				return p;
 			})(),
+			planeId: plane.id || 'f-15',
 			behaviorTimer: 5 + Math.random() * 10,
 			terrainCheckTimer: Math.random() * 2,
 			time: Math.random() * 100,
@@ -381,7 +510,7 @@ export class NPCSystem {
 			// any team mismatch as hostile, so NPCs engage each other as
 			// well as the player.
 			team: team || NPC_TEAMS[Math.floor(Math.random() * NPC_TEAMS.length)],
-			signature: { ...SIGNATURES.fighter },
+			signature: { ...(SIGNATURES[plane.signature] || SIGNATURES.fighter) },
 			sensors: {
 				radar:   { ...FIGHTER_RADAR_DEFAULT },
 				ir:      { ...FIGHTER_IRST_DEFAULT },
@@ -390,6 +519,9 @@ export class NPCSystem {
 			contacts: new Map(),
 			rwr: new Map(),
 		};
+
+		// Queue the swap if the requested fighter GLB wasn't ready.
+		if (pendingSlot) pendingSlot.pendingNpcs.push(npc);
 
 		// AI pilot: reads npc.contacts/rwr, writes npc.targetHeading/
 		// targetPitch/throttle and fire* commands. See src/systems/ai/.

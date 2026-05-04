@@ -274,6 +274,22 @@ export function buildScenarioFromJson(data) {
 			const { npcSystem, playerState, weaponSystem } = ctx;
 			npcSystem.autoSpawn    = data.autoSpawn !== false;
 			npcSystem.triangleSide = data.triangleSideM || 70000;
+			// Kick off any non-default fighter GLB loads so spawns
+			// further down this onStart get the right mesh on the
+			// first frame instead of the F-15 fallback. Slots that
+			// don't finish before createNPCMesh runs still register
+			// for a mesh-swap when the GLB finally lands, so the
+			// preload is "best-effort" anyway.
+			if (typeof npcSystem._preloadFighterModel === 'function'
+				&& Array.isArray(data.spawns)) {
+				const seen = new Set();
+				for (const s of data.spawns) {
+					if (s && s.fighterModel && s.fighterModel !== 'f-15' && !seen.has(s.fighterModel)) {
+						seen.add(s.fighterModel);
+						npcSystem._preloadFighterModel(s.fighterModel);
+					}
+				}
+			}
 			// Satellite-ISR state reset.
 			satTimer = 0;
 			satFired = false;
@@ -339,6 +355,7 @@ export function buildScenarioFromJson(data) {
 								_fighterName(s), pos.lon, pos.lat, pos.alt,
 								headingDeg, speedMps,
 								_pickTeam(rng, s.team),
+								s.fighterModel || null,
 							);
 						} else {
 							// Triangle-vertex fallback — unchanged.
@@ -561,21 +578,65 @@ function _normalizeLoadoutKeys(loadout) {
 	return out;
 }
 
+// Per-simType weapon defaults — used when a scenario's loadout asks
+// for a missile type the default WeaponSubsystem doesn't already
+// carry (e.g. METEOR, R-77, R-37M). Each entry mirrors the shape
+// WeaponSubsystem uses for its own AIM-120 / AIM-9X entries.
+const NPC_WEAPON_DEFAULTS = {
+	'AIM-120':  { fireRate: 12.0, maxInFlight: 1, minRange: 3000,  maxRange: 70000  },
+	'METEOR':   { fireRate: 12.0, maxInFlight: 1, minRange: 3000,  maxRange: 100000 },
+	'R-77':     { fireRate: 12.0, maxInFlight: 1, minRange: 3000,  maxRange: 70000  },
+	'R-37M':    { fireRate: 14.0, maxInFlight: 1, minRange: 5000,  maxRange: 150000 },
+	'AIM-9X':   { fireRate: 3.0,  maxInFlight: 2, minRange: 500,   maxRange: 9000   },
+	'AIM-9M':   { fireRate: 3.0,  maxInFlight: 2, minRange: 600,   maxRange: 7000   },
+	'R-73':     { fireRate: 3.0,  maxInFlight: 2, minRange: 500,   maxRange: 8000   },
+};
+
 // Apply a per-NPC loadout after spawn. Loadout is a map of simType →
 // ammo count (e.g. `{ "AIM-9X": 4, "AIM-120": 0 }`). Any simType not
 // listed defaults to 0 — so `{ "AIM-9X": 4 }` produces a WVR-only
 // wingman carrying 4 Sidewinders and no AMRAAMs. Leaves the gun alone
-// (it's always infinite).
-function applyNpcLoadout(npc, loadout) {
+// (it's always infinite). New weapon types not in the default
+// WeaponSubsystem inventory are inserted using NPC_WEAPON_DEFAULTS,
+// so a scenario can put R-77s on an Su-35 NPC without the AI rebuild
+// dance.
+export function applyNpcLoadout(npc, loadout) {
 	if (!npc || !loadout) return;
 	const ws = npc.pilot && npc.pilot.subsystems && npc.pilot.subsystems.weapons;
 	if (!ws || !Array.isArray(ws.weapons)) return;
 	const norm = _normalizeLoadoutKeys(loadout);
+	const present = new Set();
 	for (const w of ws.weapons) {
 		if (!w.type || w.ammo === Infinity) continue;
+		present.add(w.type);
 		const n = norm[w.type] || 0;
 		w.ammo = n;
 		w.maxAmmo = n;
+	}
+	// Insert any requested weapon type the subsystem didn't already
+	// carry. Keep the insertion ordered by descending maxRange so the
+	// pickWeaponFor walk still picks BVR first.
+	const additions = [];
+	for (const [type, count] of Object.entries(norm)) {
+		if (!count || count <= 0) continue;
+		if (present.has(type)) continue;
+		const def = NPC_WEAPON_DEFAULTS[type];
+		if (!def) continue;
+		additions.push({
+			type, ammo: count, maxAmmo: count,
+			fireRate: def.fireRate, maxInFlight: def.maxInFlight,
+			lastFire: -Infinity, minRange: def.minRange, maxRange: def.maxRange,
+		});
+	}
+	if (additions.length > 0) {
+		const gunIdx = ws.weapons.findIndex(w => w.type === 'gun');
+		const insertAt = (gunIdx >= 0) ? gunIdx : ws.weapons.length;
+		ws.weapons.splice(insertAt, 0, ...additions);
+		ws.weapons.sort((a, b) => {
+			if (a.type === 'gun') return 1;
+			if (b.type === 'gun') return -1;
+			return (b.maxRange || 0) - (a.maxRange || 0);
+		});
 	}
 }
 
