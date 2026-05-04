@@ -690,13 +690,26 @@ export class HUD {
 		const label = document.createElement('div');
 		label.style.cssText = `
 			position: absolute;
-			left: 10px; top: -8px;
+			left: 10px; top: -10px;
 			white-space: nowrap;
+		`;
+		// Sub-line beneath the name: smaller + dimmer, holds the
+		// flight-state stuff (phase, speed, distance) that's useful
+		// to glance at but shouldn't compete with the type tag.
+		const subLabel = document.createElement('div');
+		subLabel.style.cssText = `
+			position: absolute;
+			left: 10px; top: 4px;
+			white-space: nowrap;
+			font-size: 9px;
+			letter-spacing: 0.5px;
+			opacity: 0.65;
 		`;
 		el.appendChild(dot);
 		el.appendChild(label);
+		el.appendChild(subLabel);
 		this.missileMarkerLayer.appendChild(el);
-		return { el, dot, label };
+		return { el, dot, label, subLabel };
 	}
 
 	// Designation markers: little green diamonds on the cockpit HUD
@@ -990,6 +1003,7 @@ export class HUD {
 			marker.dot.style.background = color;
 			marker.dot.style.boxShadow  = `0 0 8px ${color}`;
 			marker.label.style.color    = color;
+			if (marker.subLabel) marker.subLabel.style.color = color;
 			marker.el.style.textShadow  = `0 0 6px ${color}`;
 
 			const pos = Cesium.Cartesian3.fromDegrees(m.lon, m.lat, m.alt);
@@ -1014,7 +1028,14 @@ export class HUD {
 			const phase = m.boostRemaining > 0 ? 'BOOST' : 'COAST';
 			const typeTag = m.type || 'MSL';
 			const prefix = isOwnTeam ? '' : 'INBOUND ';
-			marker.label.innerText = `${prefix}${typeTag} ${phase}  ${spd} km/h`;
+			// Distance: missile → player, in km.
+			const playerPos = Cesium.Cartesian3.fromDegrees(state.lon, state.lat, state.alt);
+			const distKm = Cesium.Cartesian3.distance(pos, playerPos) / 1000;
+			const distStr = distKm < 10 ? distKm.toFixed(1) : Math.round(distKm).toString();
+			marker.label.innerText = `${prefix}${typeTag}`;
+			if (marker.subLabel) {
+				marker.subLabel.innerText = `${phase} · ${spd} km/h · ${distStr} km`;
+			}
 		}
 
 		// Prune markers whose missile is gone (destroyed or despawned).
@@ -3057,18 +3078,28 @@ export class HUD {
 		ctx.restore();
 	}
 
-	// Player-visible check: unit appears in the player's own sensor
-	// contacts (radar / IR / visual) OR in the team datalink fused
-	// picture (AWACS, wingmen). Used to gate every HUD / minimap /
-	// marker that shows NPC positions — without this, the player sees
-	// unit positions as god-mode, which makes stealth, radar-off runs,
+	// Player-visible check: unit appears in the player's own RADAR
+	// or IR contacts, OR in the team datalink fused picture (AWACS,
+	// wingmen). Used to gate every HUD / minimap / marker that
+	// shows NPC positions — without this, the player sees unit
+	// positions as god-mode, which makes stealth, radar-off runs,
 	// and notching meaningless.
+	//
+	// Visual contacts deliberately do NOT generate HUD tracks. The
+	// pilot's eyeballs aren't tied into the targeting system — what
+	// they see out the canopy is up to them, not the avionics. The
+	// visual channel still feeds NPC AI decision-making (see
+	// scanVisual + the AI behavior tree); we only suppress it from
+	// the player's HUD.
 	_playerCanSee(playerState, npc) {
 		if (!playerState || !npc) return false;
 		// Friendlies are always visible (wingmen, AWACS, tankers) —
 		// no need to "detect" your own team.
 		if (npc.team && npc.team === playerState.team) return true;
-		if (playerState.contacts && playerState.contacts.has(npc)) return true;
+		if (playerState.contacts && playerState.contacts.has(npc)) {
+			const c = playerState.contacts.get(npc);
+			if (c && (c.radar || c.ir)) return true;
+		}
 		if (playerState.datalinkContacts && playerState.datalinkContacts.has(npc)) return true;
 		return false;
 	}
@@ -3242,10 +3273,11 @@ export class HUD {
 		const contact = state.contacts && state.contacts.get(npc);
 		const ch = (letter, live, color) =>
 			`<span style="color:${live ? color : '#444'}; margin:0 1px;">${letter}</span>`;
+		// Visual channel intentionally omitted — the pilot's eyes
+		// aren't part of the targeting system. See _playerCanSee.
 		const channelHtml =
 			ch('R', !!(contact && contact.radar),  '#40ff40') +
-			ch('I', !!(contact && contact.ir),     '#ff4040') +
-			ch('V', !!(contact && contact.visual), '#80c0ff');
+			ch('I', !!(contact && contact.ir),     '#ff4040');
 		const labelHtml = `${npc.name}<br>${distKm} KM &nbsp; ${channelHtml}`;
 		if (marker.label.dataset.html !== labelHtml) {
 			marker.label.innerHTML = labelHtml;
