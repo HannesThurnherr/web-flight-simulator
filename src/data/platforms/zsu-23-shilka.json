@@ -25,12 +25,13 @@
 			"magazine": 2000,
 			"fireRate": 0.05,
 			"minRangeM": 200,
-			"maxRangeM": 2500,
-			"burstS": 0.8,
-			"burstGapS": 1.2,
+			"maxRangeM": 2200,
+			"burstS": 0.6,
+			"burstGapS": 1.6,
 			"muzzleVelMps": 1500,
-			"dispersionDeg": 1.1,
-			"leadJitterMps": 20
+			"dispersionDeg": 2.2,
+			"leadJitterMps": 45,
+			"acquisitionDelayS": 4.0
 		}
 	},
 	"physicsOverrides": { "mass": 19000, "wingArea": 1 }

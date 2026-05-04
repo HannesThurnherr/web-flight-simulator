@@ -590,6 +590,14 @@ export function makeStaticAaaPilot(params = {}) {
 	//                    aim center is exactly correct.
 	const dispersionDeg = params.dispersionDeg ?? 0.6;
 	const leadJitterMps = params.leadJitterMps ?? 10;
+	// Time between picking a new target and opening fire. Models
+	// fire-control radar slew + track-acquire latency. Without it a
+	// gun emplacement instantly retasks from a downed missile to the
+	// next one in a saturation salvo, which is unrealistic — real
+	// Shilka-class radars need a few seconds to settle on a fresh
+	// track. Each new pick (target identity changes) restarts the
+	// timer; sticking with the same target carries no extra delay.
+	const acquisitionDelayS = params.acquisitionDelayS ?? 0;
 
 	const weapons = new WeaponSubsystem({
 		weapons: [{
@@ -631,6 +639,11 @@ export function makeStaticAaaPilot(params = {}) {
 		leadBiasE: 0,
 		leadBiasN: 0,
 		leadBiasU: 0,
+		// Fire-control acquisition state. `currentTarget` is the
+		// target we're locked on (or warming up to fire on);
+		// `acquireUntil` is the sim-time at which fire is unblocked.
+		currentTarget: null,
+		acquireUntil: -Infinity,
 	};
 
 	// Approximate Gaussian via average of three uniform samples — close
@@ -759,8 +772,33 @@ export function makeStaticAaaPilot(params = {}) {
 
 			const pick = pickTarget(unit);
 			if (!pick) {
-				// No target — break out of any active burst.
+				// No target — break out of any active burst, and
+				// drop the locked target so the next acquisition
+				// pays the full delay again.
 				pilotState.burstActive = false;
+				pilotState.currentTarget = null;
+				return;
+			}
+
+			// Target re-tasking: a NEW target restarts the radar's
+			// acquisition timer. Sticking with the same target (still
+			// in envelope) has no penalty.
+			if (acquisitionDelayS > 0 && pick.target !== pilotState.currentTarget) {
+				pilotState.currentTarget = pick.target;
+				pilotState.acquireUntil = now + acquisitionDelayS;
+				// Drop any active burst — fresh target means stop
+				// firing on the old line of bearing.
+				pilotState.burstActive = false;
+				pilotState.burstStartedAt = -Infinity;
+			}
+			if (now < pilotState.acquireUntil) {
+				// Still slewing the radar / building track. Aim at
+				// the target so the visual gun barrel tracks (handled
+				// downstream by gunHeading/gunPitch), but do not fire.
+				const slewLead = computeLead(unit, pick.target);
+				command.fireWeapon = false;
+				command.gunHeading = slewLead.heading;
+				command.gunPitch   = slewLead.pitch;
 				return;
 			}
 
