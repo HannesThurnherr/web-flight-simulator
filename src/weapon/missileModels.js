@@ -139,6 +139,11 @@ function _normalizeMissileModel(gltfScene, realLengthM) {
 	const longest = Math.max(size2.x, size2.y, size2.z, 0.01);
 	const s = realLengthM / longest;
 	wrapper.scale.setScalar(s);
+	// Diagnostic: log the raw GLB span vs the target real length so
+	// "the missile looks too big" reports can be traced to either a
+	// genuine model issue or a scale mismatch. One line per missile
+	// at load time, no per-frame cost.
+	console.log(`[missileModels] normalized to ${realLengthM} m (raw span ${longest.toFixed(2)}, scale ×${s.toFixed(3)})`);
 
 	// Pass 3: centre using the filtered bbox so the wrapper origin
 	// sits on the BODY's centroid, not on the union of body + phantom

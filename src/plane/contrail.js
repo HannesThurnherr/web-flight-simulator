@@ -38,6 +38,12 @@ const ALT_HYSTERESIS_M = 500;       // dropout uses ALT_FORM - HYST so the
                                     // boundary
 const MIN_SPEED_MPS    = 100;       // below this no condensation persists
 const SPAWN_INTERVAL_M = 35;        // metres of travel per puff per engine
+// How far behind the plane's centre to spawn the puff. Without this
+// the trail appears to start in the cockpit because plane.lon/lat
+// reference the fuselage centre, not the engine nozzles. ~half a
+// fighter's length (≈ 19 m × 0.5 = 9.5 m) puts the spawn point
+// roughly at the tail.
+const TAIL_OFFSET_M    = 10;
 const PUFF_LIFE_S      = 45;        // seconds each puff lives
 const PUFF_BASE_RADIUS = 1.2;       // initial sphere radius (m)
 const PUFF_GROW_FACTOR = 22;        // multiplied by life-fraction to grow
@@ -103,7 +109,7 @@ export class Contrail {
 				// movePosition gives us a stable trail even when the
 				// plane is turning / climbing during the spawn frame.
 				const pos = movePosition(plane.lon, plane.lat, plane.alt,
-					plane.heading, plane.pitch, -back);
+					plane.heading, plane.pitch, -(back + TAIL_OFFSET_M));
 				this._spawnPuff(pos.lon, pos.lat, pos.alt);
 				this.distanceSinceLastSpawn -= SPAWN_INTERVAL_M;
 			}

@@ -200,6 +200,9 @@ export class AIM120 extends Missile {
 			? cloneMissileTemplate(d.modelTemplate)
 			: cloneAim120Template();
 		const bodyLen = templated ? (d.realLengthM ?? 3.66) : 3.65;
+		// Used by the inherited updateTrail so smoke puffs spawn at
+		// the missile's tail rather than its centre.
+		this.bodyLengthM = bodyLen;
 		const radius  = 0.09; // 178 mm diameter → 89 mm radius (for fallback fins/flame scaling)
 		if (templated) {
 			this.mesh.add(templated);

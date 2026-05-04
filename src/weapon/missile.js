@@ -114,6 +114,11 @@ export class Missile {
 		// realLengthM is optional in the JSON — used to scale the GLB
 		// to its true world size. Procedural fallback uses 2.6 m.
 		const bodyLen = templated ? (d.realLengthM || 3.02) : 2.6;
+		// Stash so updateTrail can offset puff spawns to the actual
+		// tail of the missile body — without this the smoke spawns
+		// at the missile's centre and looks like it's coming out of
+		// the nose-to-mid section.
+		this.bodyLengthM = bodyLen;
 		if (templated) {
 			this.mesh.add(templated);
 		} else {
@@ -528,7 +533,8 @@ export class Missile {
 			const spawnInterval = 20.0;
 			while (this.distanceSinceLastTrail >= spawnInterval) {
 				const backDist = this.distanceSinceLastTrail - spawnInterval;
-				const spawnPos = movePosition(this.lon, this.lat, this.alt, this.heading, this.pitch, -backDist);
+				const tailOffset = (this.bodyLengthM || 3.0) * 0.5;
+				const spawnPos = movePosition(this.lon, this.lat, this.alt, this.heading, this.pitch, -(backDist + tailOffset));
 
 				this.distanceSinceLastTrail -= spawnInterval;
 
