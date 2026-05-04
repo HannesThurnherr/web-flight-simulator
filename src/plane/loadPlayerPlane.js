@@ -149,41 +149,38 @@ export function loadPlayerPlane(plane, ctx) {
 		const size  = box2.getSize(new THREE.Vector3());
 		console.log(`[Player ${plane.id} size]`, size, 'tailZ=', box2.max.z);
 
-		// Scale the cockpit visual plane to a consistent apparent
-		// size regardless of which airframe GLB we load. The old
-		// model displayed at 25.6 × 0.2 ≈ 5.1 m; we preserve that so
-		// chase-camera framing doesn't need retuning per model. For
-		// a real-scale plane in the player's camera, the camera
-		// origin would need to move back several metres — deferred
-		// until we have a proper plane-config table.
-		// Per-plane override lets airframes with very different real-
-		// world sizes (B-2 is ~2.7× an F-15 in wingspan) display at
-		// proportionally larger apparent size in the chase view, so
-		// the B-2 doesn't look like a tiny gnat flying along.
-		const COCKPIT_APPARENT_LENGTH_M = (typeof plane.cockpitDisplayMaxM === 'number')
-			? plane.cockpitDisplayMaxM
-			: 5.12;
-		const maxDim = Math.max(size.x, size.y, size.z);
-		const cockpitScale = COCKPIT_APPARENT_LENGTH_M / maxDim;
-
-		// Camera framing auto-derived from the plane's apparent size.
-		// The old hard-coded (0, -0.8, -2.75) was tuned for the
-		// oversized stock F-15; any differently-sized airframe had to
-		// be zoomed manually to look right. Now we place the plane at
-		// a distance proportional to its apparent length so the chase
-		// view frames the airframe consistently regardless of which
-		// GLB is loaded.
+		// Scale the GLB so the rendered plane is at real-world size.
+		// We scale by `realMaxExtentM / maxDim` — the longest real
+		// dimension of the airframe over the longest GLB dimension —
+		// because that preserves the GLB's authored proportions
+		// while pegging the largest axis to its true metre value.
 		//
-		//   z = -1.3 × apparent_max_extent → camera pulls back
+		// For most fighters length > wingspan, so realMaxExtentM ≈
+		// realLengthM and the JSON only needs to publish the latter.
+		// Flying wings (B-2: 21 m long, 52.4 m wingspan) have to
+		// publish realMaxExtentM explicitly, otherwise we'd peg the
+		// wingspan to 21 m and render the bomber at half size.
+		const realLengthM    = (typeof plane.realLengthM    === 'number') ? plane.realLengthM    : 19.0;
+		const realMaxExtentM = (typeof plane.realMaxExtentM === 'number') ? plane.realMaxExtentM : realLengthM;
+		const maxDim   = Math.max(size.x, size.y, size.z);
+		const cockpitScale = realMaxExtentM / Math.max(0.01, maxDim);
+
+		// Camera framing auto-derived from the plane's real-world
+		// size. The old hard-coded (0, -0.8, -2.75) was tuned for the
+		// oversized stock F-15 mesh; we instead place the plane at a
+		// distance proportional to its real max extent so a 19 m F-15
+		// gets a ~25 m chase distance and a 21 m B-2 gets ~27 m.
+		//
+		//   z = -1.3 × real_max_extent → camera pulls back
 		//       proportionally to whichever airframe dimension is
 		//       largest. For fighters that's the length; for flying
 		//       wings (B-2) it's the wingspan. Using just `size.z`
 		//       (length axis) under-frames any plane wider than it is
 		//       long — the wings overflow the FOV and you see a
 		//       full-screen brown smear of underwing surface.
-		//   y = -0.4 × apparent_height → camera sits 40% above the
+		//   y = -0.4 × real_height → camera sits 40% above the
 		//       airframe centerline (slightly-above chase angle).
-		const apparentMaxExtent = COCKPIT_APPARENT_LENGTH_M; // = max(size.*) × cockpitScale
+		const apparentMaxExtent = realMaxExtentM;
 		const apparentHeight    = size.y * cockpitScale;
 		BASE_PLANE_POS.set(
 			0,
@@ -257,14 +254,15 @@ export function loadPlayerPlane(plane, ctx) {
 			}
 		}
 		// Flame-scale compensation. Jet flames are fixed-size Three.js
-		// geometry (2-unit cylinder). When planeModel is scaled by
-		// cockpitScale (0.2 for F-15, 0.17 for F-35, 0.0017 for the
-		// huge-native F-22 mesh), the flame shrinks with it and
-		// effectively disappears on larger-native models. Counter by
-		// scaling the flame group UP by 1/cockpitScale × a calibration
-		// constant chosen so the F-15 stays at its current size (i.e.
-		// matches the pre-rescale flame). Target world-size ≈ 0.4 m.
-		const FLAME_WORLD_TARGET = 0.4;
+		// geometry (2-unit cylinder). The planeModel is scaled by
+		// cockpitScale (~1.0 for an F-15 whose GLB happens to ship
+		// near real size; varies wildly for other airframes); we
+		// counter-scale the flame group so the rendered flame ends up
+		// at FLAME_WORLD_TARGET regardless of which GLB we loaded.
+		// 1.5 m is roughly the visible plume on a real F-15 at MIL
+		// power and reads as a flame at our chase distances; bumped
+		// up from 0.4 m once planes started rendering at real size.
+		const FLAME_WORLD_TARGET = 1.5;
 		const flameGroupScale = FLAME_WORLD_TARGET / (2 * cockpitScale);
 		for (const p of flamePositions) {
 			const f = new JetFlame();

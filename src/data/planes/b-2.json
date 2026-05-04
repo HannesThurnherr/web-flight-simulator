@@ -5,9 +5,9 @@
 	"model": "/assets/models/b-2-spirit.glb",
 	"modelRotation": { "x": 0, "y": 90, "z": 0 },
 	"realLengthM": 21.0,
+	"realMaxExtentM": 52.4,
 	"signature": "stealth_bomber",
 	"engineCount": 4,
-	"cockpitDisplayMaxM": 14.0,
 	"nozzle": { "xRatio": 0.081, "yRatio": 0.151, "zRatio": 0.40 },
 	"nozzlePositions": [
 		{ "xRatio": -0.081, "yRatio": 0.151, "zRatio": 0.40 },

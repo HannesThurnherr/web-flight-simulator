@@ -288,8 +288,15 @@ export class WeaponSystem {
 	calculateWeaponPos(offset) {
 		if (!this.playerModel || !this.viewer) return null;
 
-		const scale = this.playerModel.scale.x;
-		const scaledOffset = offset.clone().multiplyScalar(scale);
+		// `offset` is in real-world metres relative to the plane's
+		// pose. Previously we multiplied by playerModel.scale to
+		// convert from a hybrid "model-units" space; now that planes
+		// render at their true realLengthM, the scale is plane-
+		// dependent and tying offsets to it caused launch points to
+		// fly far off the wing on bigger airframes. World-metres are
+		// scale-invariant — a 3 m wing-pylon offset is 3 m on every
+		// plane.
+		const scaledOffset = offset.clone();
 
 		scaledOffset.applyQuaternion(this.playerModel.quaternion);
 		scaledOffset.add(this.playerModel.position);
@@ -437,7 +444,12 @@ export class WeaponSystem {
 		} else if (weapon.id === 'missile' || weapon.id === 'agm' || weapon.id === 'gbu') {
 			this.lastMissileSide = !this.lastMissileSide;
 			const side = this.lastMissileSide ? 1 : -1;
-			const missileOffset = new THREE.Vector3(15.0 * side, -15.0, 0.0);
+			// Wing-pylon offset in world metres relative to the
+			// plane: ~3 m off centerline (typical fighter inboard
+			// wing station), 1 m below CG. Same numbers across
+			// airframes — wingspan-relative tuning lives in the
+			// plane JSON if/when needed.
+			const missileOffset = new THREE.Vector3(3.0 * side, -1.0, 0.0);
 
 			// Launch position: when the player is firing, use the
 			// cockpit-relative hardpoint offset (calculateWeaponPos
@@ -602,7 +614,10 @@ export class WeaponSystem {
 	}
 
 	_spawnSingleFlare(playerState) {
-		const flareOffset = new THREE.Vector3(0, -10.0, 6.0);
+		// Flare/chaff dispenser eject point in world metres: 2 m below
+	// CG, 1.5 m behind. Real flares come out of belly dispensers a
+	// bit aft of the CG — tuned to land in chase-view frame.
+	const flareOffset = new THREE.Vector3(0, -2.0, 1.5);
 		const startPos = this.calculateWeaponPos(flareOffset) || {
 			lon: playerState.lon,
 			lat: playerState.lat,
