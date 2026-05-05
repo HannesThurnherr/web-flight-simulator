@@ -544,7 +544,16 @@ export class CommanderView {
 				//     east_cursor  =  dx·cos(h) - dy·sin(h)
 				//     north_cursor = -dx·sin(h) - dy·cos(h)
 				// Look-at moves the negation of that.
-				const mpp = this.distance * 0.0015;
+				// Pan sensitivity: metres-per-pixel scales linearly with
+				// camera distance so close-in panning is precise and
+				// zoomed-out panning covers ground fast. 0.00075
+				// halved from a previous 0.0015 — that older value
+				// felt right with mouse-acceleration off but was 2×
+				// too sensitive on a Mac trackpad with the default
+				// system pointer-acceleration curve. Tilt rate (below)
+				// stays where it was; degrees-per-pixel doesn't have
+				// the same trackpad mismatch.
+				const mpp = this.distance * 0.00075;
 				const rotRad = Cesium.Math.toRadians(this.rotation);
 				const cos = Math.cos(rotRad), sin = Math.sin(rotRad);
 				const eastMeters  = (-dx * cos + dy * sin) * mpp;
