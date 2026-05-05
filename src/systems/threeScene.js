@@ -21,6 +21,7 @@ import { initSounds } from '../utils/gameplaySounds';
 import { loadingStatus, updateLoadingUI } from '../ui/loadingUI';
 import { loadPlayerPlane } from '../plane/loadPlayerPlane';
 import { getActivePlane } from '../plane/planes';
+import { setLights as setDynamicLights } from './dynamicLighting.js';
 
 // Build the scene, camera, renderer, and clock. Returns them so main.js
 // can assign to its module-level bindings; everything else (ambient
@@ -49,6 +50,11 @@ export function initThree(ctx) {
 
 	ambientLight.layers.enable(1);
 	directionalLight.layers.enable(1);
+
+	// Hand the light refs to the dynamic-lighting module so it can
+	// drive intensity off the sun's position when `lightingMode` is
+	// 'realistic'. In 'arcade' mode it just keeps both at 1.0.
+	setDynamicLights(ambientLight, directionalLight);
 
 	// Particles system uses the current Cesium viewer if one is up.
 	// Wrapped in try/catch because particles is optional — missing

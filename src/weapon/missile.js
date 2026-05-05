@@ -9,6 +9,7 @@ import { airDensity, GRAVITY } from '../plane/aeroModel.js';
 import { cloneAim9Template, cloneMissileTemplate } from './missileModels.js';
 import { pushKill } from '../systems/eventLog.js';
 import { validateMunitionSpec } from './munitionSpec.js';
+import { getDayFactor } from '../systems/dynamicLighting.js';
 
 // Shared signature reference (not per-missile copy) — all live AIM-9s have
 // the same sensor profile. Subclasses (AIM-120) overwrite this in their ctor.
@@ -546,6 +547,10 @@ export class Missile {
 					opacity: 0.6 + Math.random() * 0.25
 				});
 				const smoke = new THREE.Mesh(smokeGeom, smokeMat);
+				// Stash baseline so per-frame realistic-lighting dimming
+				// can scale color = baseColor × dayFactor without
+				// compounding each frame.
+				smoke._baseColor = smokeMat.color.clone();
 				smoke.lon = spawnPos.lon;
 				smoke.lat = spawnPos.lat;
 				smoke.alt = spawnPos.alt;
@@ -563,6 +568,7 @@ export class Missile {
 		}
 
 		const viewMatrix = this.viewer.camera.viewMatrix;
+		const dayFactor = getDayFactor();
 		for (let i = this.trail.length - 1; i >= 0; i--) {
 			const t = this.trail[i];
 			t.life -= dt;
@@ -579,6 +585,13 @@ export class Missile {
 
 			const opacity = (t.life / t.maxLife) * 0.5;
 			t.material.opacity = opacity;
+			// Smoke is unlit (MeshBasicMaterial) so the scene lights
+			// can't dim it. In realistic mode dayFactor < 1 — scale
+			// the colour off the stashed baseline so old puffs at
+			// noon don't keep shining when the player flies into night.
+			if (t._baseColor) {
+				t.material.color.copy(t._baseColor).multiplyScalar(dayFactor);
+			}
 
 			const pos = Cesium.Cartesian3.fromDegrees(t.lon, t.lat, t.alt, undefined, this._scratchCartesian);
 			const modelMatrix = Cesium.Transforms.eastNorthUpToFixedFrame(pos, undefined, this._scratchMatrix);

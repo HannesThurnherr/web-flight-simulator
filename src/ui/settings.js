@@ -19,6 +19,12 @@ export const gameSettings = {
 	graphicsQuality: 'medium',
 	antialiasing: true,
 	fogEffects: true,
+	// 'arcade' (default): everything is full-bright at all times so
+	// you can see clearly during night flights — primarily a
+	// gameplay-clarity choice. 'realistic': THREE.js scene lights
+	// ramp with sun elevation at the player's lat/lon, so flying
+	// over the dark side of the planet actually goes dark.
+	lightingMode: 'arcade',
 	mouseSensitivity: 0.2,
 	showHud: true,
 	showHorizonLines: true,
@@ -87,6 +93,8 @@ export function updateSettingsUI() {
 	document.getElementById('graphicsQuality').value = gameSettings.graphicsQuality;
 	document.getElementById('antialiasing').checked = gameSettings.antialiasing;
 	document.getElementById('fogEffects').checked = gameSettings.fogEffects;
+	const lightSel = document.getElementById('lightingMode');
+	if (lightSel) lightSel.value = gameSettings.lightingMode || 'arcade';
 	document.getElementById('sensitivitySlider').value = gameSettings.mouseSensitivity;
 	document.getElementById('sensitivityValue').textContent = gameSettings.mouseSensitivity;
 	document.getElementById('showHud').checked = gameSettings.showHud;

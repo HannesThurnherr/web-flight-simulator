@@ -48,6 +48,7 @@ function refreshPauseVolumeWidgets() {
 	if (wrap) wrap.classList.toggle('muted', muted);
 }
 import { getEvents } from '../systems/eventLog';
+import { toggleNvg } from './nvg';
 
 // Render the kill / crash log into the pause-screen panel. Called from
 // the pause-open handler so the snapshot always reflects what just
@@ -160,6 +161,8 @@ export function setupModalListeners(ctx) {
 		gameSettings.graphicsQuality  = document.getElementById('graphicsQuality').value;
 		gameSettings.antialiasing     = document.getElementById('antialiasing').checked;
 		gameSettings.fogEffects       = document.getElementById('fogEffects').checked;
+		const lightSel = document.getElementById('lightingMode');
+		if (lightSel) gameSettings.lightingMode = lightSel.value;
 		gameSettings.mouseSensitivity = parseFloat(document.getElementById('sensitivitySlider').value);
 		gameSettings.showHud          = document.getElementById('showHud').checked;
 		gameSettings.showHorizonLines = document.getElementById('showHorizonLines').checked;
@@ -340,6 +343,17 @@ export function setupGlobalKeybinds(ctx) {
 				e.preventDefault();
 				return;
 			}
+		}
+
+		// Night-vision overlay. White-phosphor monochrome with grain
+		// + vignette; stacks on top of whatever lighting mode is
+		// active (most useful in realistic mode at night).
+		if (key === 'n' && ctx.currentState === 'FLYING' &&
+			!(ctx.commanderView && ctx.commanderView.active) &&
+			!(ctx.strikePlannerView && ctx.strikePlannerView.active)) {
+			toggleNvg();
+			e.preventDefault();
+			return;
 		}
 
 		// Radar emitter toggle (silent-running / emcon). Bound to 'r'

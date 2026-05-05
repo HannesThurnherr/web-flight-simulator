@@ -30,6 +30,7 @@
 import * as THREE from 'three';
 import * as Cesium from 'cesium';
 import { movePosition } from '../utils/math';
+import { getDayFactor } from '../systems/dynamicLighting.js';
 
 // ---- Tuneables -------------------------------------------------------------
 const ALT_FORM_M       = 7000;      // contrail formation altitude (~23 000 ft)
@@ -131,6 +132,9 @@ export class Contrail {
 			depthWrite:  false,           // additive-friendly fade
 		});
 		const puff = new THREE.Mesh(geom, mat);
+		// Stash baseline so realistic-mode dimming scales off it
+		// without compounding each frame.
+		puff._baseColor = mat.color.clone();
 		puff.lon  = lon;
 		puff.lat  = lat;
 		puff.alt  = alt;
@@ -145,6 +149,7 @@ export class Contrail {
 
 	_ageExisting(dt) {
 		const viewMatrix = this.viewer.camera.viewMatrix;
+		const dayFactor = getDayFactor();
 		for (let i = this.puffs.length - 1; i >= 0; i--) {
 			const t = this.puffs[i];
 			t.life -= dt;
@@ -173,6 +178,12 @@ export class Contrail {
 				opacity = PUFF_MAX_OPACITY * (1.0 - (ageFrac - 0.1) / 0.9);
 			}
 			t.material.opacity = opacity;
+			// Contrails are unlit — dim them manually in realistic
+			// mode so a contrail that formed at noon doesn't keep
+			// shining when the player flies into night.
+			if (t._baseColor) {
+				t.material.color.copy(t._baseColor).multiplyScalar(dayFactor);
+			}
 
 			const pos = Cesium.Cartesian3.fromDegrees(t.lon, t.lat, t.alt, undefined, _scratchCart);
 			const enuMatrix = Cesium.Transforms.eastNorthUpToFixedFrame(pos, undefined, _scratchMatrix);

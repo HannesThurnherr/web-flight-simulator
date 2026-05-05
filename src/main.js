@@ -50,6 +50,7 @@ import { setupLocationSearch } from './ui/locationSearch';
 import { setupScenarioPicker } from './ui/scenarioPicker';
 import { setupScenarioEditor } from './ui/scenarioEditor';
 import { setupPlanePicker } from './ui/planePicker';
+import { initNvg } from './ui/nvg';
 import {
 	enterSpawnPicking, exitSpawnPicking, quickRespawn,
 	setupSpawnPicker, setupConfirmSpawn, setupFormationPanel,
@@ -458,6 +459,11 @@ setupLocationSearch({
 	setSpawnMarker,
 });
 loadSettings({ hud, controller });
+
+// Night-vision overlay (toggled with N during FLYING). Builds the
+// noise texture + overlay div + stylesheet once; the toggle just
+// flips a body class afterward.
+initNvg();
 
 uiContainer.classList.add('hidden');
 threeContainer.classList.add('hidden');

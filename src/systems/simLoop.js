@@ -35,6 +35,7 @@ import {
 	setCameraToPlane, setCameraBehindUnit, getViewer,
 } from '../world/cesiumWorld';
 import { updateSensors, setSensorScene } from './sensorSystem';
+import { updateLighting } from './dynamicLighting';
 import { collectJamStrobes } from './ew/jammerSubsystem.js';
 import { Contrail } from '../plane/contrail.js';
 import { getTeamDatalink } from './teamDatalink';
@@ -254,6 +255,11 @@ export function update(dt, ctx) {
 	}
 
 	updateSensors([state, ...npcList, ...allProjectiles], simTime, dt);
+
+	// Drive THREE.js scene-light intensity off the sun's elevation at
+	// the player's lat/lon when the user has picked realistic lighting;
+	// no-op (full bright) under arcade lighting.
+	updateLighting(state);
 
 	// Phase 3c — player RWR audio for being painted. After updateSensors,
 	// state.rwr carries one entry per emitter painting us, each tagged
