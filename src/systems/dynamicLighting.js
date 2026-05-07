@@ -55,19 +55,22 @@ export function setLights(ambient, directional) {
 	_directional = directional;
 }
 
-// Compute sun elevation angle (degrees above horizon) at `lat, lon` for
-// the given Cesium JulianDate. Uses Simon1994 sun-position + ICRF-to-
-// fixed matrix; if the EOP data isn't loaded yet we fall back to the
-// TEME→pseudo-fixed approximation, which is accurate to a few arcmin
-// — well within the ramp band's tolerance.
-function _sunElevationDeg(time, lon, lat, alt) {
+// Compute sun direction in the player's local ENU frame at `lat, lon`
+// for the given Cesium JulianDate. Returns components into `out` plus
+// the elevation angle (degrees above horizon). Uses Simon1994 sun-
+// position + ICRF-to-fixed matrix; if EOP data isn't loaded yet we
+// fall back to the TEME→pseudo-fixed approximation, which is accurate
+// to a few arcmin — well within the ramp band's tolerance.
+function _sunDirectionENU(time, lon, lat, alt, out) {
 	Cesium.Simon1994PlanetaryPositions.computeSunPositionInEarthInertialFrame(time, _scratchSunICRF);
 	const ok = Cesium.Transforms.computeIcrfToFixedMatrix(time, _scratchIcrfFix)
 		|| Cesium.Transforms.computeTemeToPseudoFixedMatrix(time, _scratchIcrfFix);
 	if (!ok) {
-		// No transform available — bail to "noon" so we don't suddenly
-		// black out the world while the EOP data is loading.
-		return 90;
+		// No transform available — bail to "noon overhead" so we
+		// don't suddenly black out the world while the EOP data
+		// is loading.
+		out.e = 0; out.n = 0; out.u = 1; out.elevDeg = 90;
+		return out;
 	}
 	Cesium.Matrix3.multiplyByVector(_scratchIcrfFix, _scratchSunICRF, _scratchSunICRF);
 
@@ -76,16 +79,21 @@ function _sunElevationDeg(time, lon, lat, alt) {
 	Cesium.Cartesian3.normalize(_scratchSunDir, _scratchSunDir);
 
 	Cesium.Transforms.eastNorthUpToFixedFrame(_scratchPlayerECEF, undefined, _scratchEnuMat);
-	// ENU "up" is the third column of the eastNorthUpToFixedFrame matrix.
-	_scratchUpVec.x = _scratchEnuMat[ 8];
-	_scratchUpVec.y = _scratchEnuMat[ 9];
-	_scratchUpVec.z = _scratchEnuMat[10];
-	// (Already unit-length because eastNorthUpToFixedFrame builds an
-	// orthonormal basis.)
-
-	const sinElev = Math.max(-1, Math.min(1, Cesium.Cartesian3.dot(_scratchSunDir, _scratchUpVec)));
-	return Math.asin(sinElev) * 180 / Math.PI;
+	// Columns of the 4×4 ENU→Fixed matrix are the ENU axes in ECEF:
+	//   E = (m[0], m[1], m[2])
+	//   N = (m[4], m[5], m[6])
+	//   U = (m[8], m[9], m[10])
+	// Project the ECEF sun direction onto each axis to get its
+	// components in the local ENU frame.
+	const sd = _scratchSunDir;
+	const m = _scratchEnuMat;
+	out.e = sd.x * m[0] + sd.y * m[1] + sd.z * m[2];
+	out.n = sd.x * m[4] + sd.y * m[5] + sd.z * m[6];
+	out.u = sd.x * m[8] + sd.y * m[9] + sd.z * m[10];
+	out.elevDeg = Math.asin(Math.max(-1, Math.min(1, out.u))) * 180 / Math.PI;
+	return out;
 }
+const _sunOut = { e: 0, n: 0, u: 1, elevDeg: 90 };
 
 // Map sun elevation (degrees) to a 0..1 daylight factor.
 //   ≥ +5°            : 1.0  (full day)
@@ -97,6 +105,77 @@ function _intensityForElevation(elevDeg) {
 	if (elevDeg <= -10) return NIGHT_FLOOR;
 	const t = (elevDeg + 10) / 15;   // -10..+5  ->  0..1
 	return NIGHT_FLOOR + (1.0 - NIGHT_FLOOR) * t;
+}
+
+// ---- Colour-temperature ramps ----------------------------------------------
+//
+// The directional light models the SUN — colour ramps from neutral white
+// at zenith → golden in the afternoon → deep red-orange at the horizon →
+// cool blue moonlight when below. Approximates blackbody radiation:
+//
+//   ~6500 K  high sun        (1.00, 1.00, 1.00)
+//   ~5200 K  late afternoon  (1.00, 0.92, 0.80)
+//   ~3500 K  golden hour     (1.00, 0.78, 0.55)
+//   ~2200 K  sunset peak     (1.00, 0.55, 0.30)
+//   moon     below horizon   (0.55, 0.65, 0.85)
+//
+// The ambient light models the SKY — complementary cool blue while the
+// sun is warm so highlights / shadows on the player plane have proper
+// dual-source colour, then deep blue at night. At noon both sources are
+// near-white because direct sun + diffuse sky are both broadly neutral.
+function _smoothstep(a, b, x) {
+	const t = Math.max(0, Math.min(1, (x - a) / (b - a)));
+	return t * t * (3 - 2 * t);
+}
+function _lerp3(out, a, b, t) {
+	out.r = a[0] + (b[0] - a[0]) * t;
+	out.g = a[1] + (b[1] - a[1]) * t;
+	out.b = a[2] + (b[2] - a[2]) * t;
+	return out;
+}
+
+const _scratchColor = { r: 1, g: 1, b: 1 };
+
+// Directional (sun) colour at a given elevation.
+function _sunColor(elevDeg, out) {
+	const NOON     = [1.00, 1.00, 1.00];
+	const LATE_PM  = [1.00, 0.92, 0.80];
+	const GOLDEN   = [1.00, 0.78, 0.55];
+	const SUNSET   = [1.00, 0.55, 0.30];
+	const MOON     = [0.55, 0.65, 0.85];
+	if (elevDeg >= 30) return _lerp3(out, NOON,   NOON,    0);
+	if (elevDeg >= 15) return _lerp3(out, LATE_PM, NOON,    _smoothstep(15, 30, elevDeg));
+	if (elevDeg >= 5)  return _lerp3(out, GOLDEN,  LATE_PM, _smoothstep(5,  15, elevDeg));
+	if (elevDeg >= -3) return _lerp3(out, SUNSET,  GOLDEN,  _smoothstep(-3, 5,  elevDeg));
+	if (elevDeg >= -8) return _lerp3(out, MOON,    SUNSET,  _smoothstep(-8, -3, elevDeg));
+	return _lerp3(out, MOON, MOON, 0);
+}
+
+// Ambient (sky) colour at a given elevation. Cooler than sun in the
+// afternoon (sky is blue while sun is warm); deep blue at night.
+function _skyColor(elevDeg, out) {
+	const NOON     = [0.95, 0.97, 1.00];   // very faint blue tint at noon
+	const PM       = [0.80, 0.88, 1.00];   // afternoon — visible cool sky
+	const TWILIGHT = [0.55, 0.62, 0.95];   // dusk / civil twilight blue
+	const NIGHT    = [0.45, 0.55, 0.85];   // deep cold-blue moonlight
+	if (elevDeg >= 30)  return _lerp3(out, NOON,     NOON,     0);
+	if (elevDeg >= 10)  return _lerp3(out, PM,       NOON,     _smoothstep(10, 30, elevDeg));
+	if (elevDeg >= 0)   return _lerp3(out, TWILIGHT, PM,       _smoothstep(0,  10, elevDeg));
+	if (elevDeg >= -10) return _lerp3(out, NIGHT,    TWILIGHT, _smoothstep(-10, 0, elevDeg));
+	return _lerp3(out, NIGHT, NIGHT, 0);
+}
+
+// Golden-hour intensity boost on the directional light. Real low-angle
+// sun looks visibly more "punchy" than mid-day because the air column
+// scatters out the cool wavelengths and what remains is a focused
+// warm beam. Smoothly bell around elev=2°, peaking at ~1.4× the
+// base factor.
+function _goldenHourBoost(elevDeg) {
+	if (elevDeg <= -5 || elevDeg >= 15) return 1.0;
+	const center = 2;
+	const span   = 8;
+	const t = 1 - Math.min(1, Math.abs(elevDeg - center) / span);
+	return 1.0 + 0.4 * t * t;
 }
 
 // Apply Cesium-globe lighting properties for the current mode. The
@@ -151,6 +230,54 @@ function _applyImageryBrightness(viewer, dayFactor) {
 	}
 }
 
+// Apply a CSS filter to the Cesium canvas so the GLOBE's terrain
+// tracks the same sunset / cool-twilight palette as the directional
+// light hitting the airplane. Without this the plane goes warm-gold
+// while the satellite imagery underneath stays daytime-neutral and
+// the disconnect breaks the vibe.
+//
+// `warmth` peaks around the horizon (sepia + slight warm hue shift),
+// `coolness` peaks at twilight / night (slight blue cast). Both
+// are layered into a single `filter` string updated once per frame
+// — Cesium's canvas reflows the filter natively, no shader work.
+let _cesiumCanvasEl = null;
+function _findCesiumCanvas(viewer) {
+	if (_cesiumCanvasEl && _cesiumCanvasEl.isConnected) return _cesiumCanvasEl;
+	// scene.canvas is the WebGL canvas Cesium owns.
+	_cesiumCanvasEl = (viewer && viewer.scene && viewer.scene.canvas) || null;
+	return _cesiumCanvasEl;
+}
+function _applyTerrainTint(viewer, elevDeg, mode) {
+	const canvas = _findCesiumCanvas(viewer);
+	if (!canvas) return;
+	// Warmth bell: 0 above +20°, peak around 0°, decays past -5°.
+	let warmth = 0;
+	if (elevDeg < 20 && elevDeg > -5) {
+		const span = 12;
+		warmth = Math.max(0, 1 - Math.abs(elevDeg - 2) / span);
+	}
+	// Coolness bell: 0 above 0°, ramps up through twilight, plateaus
+	// past -10°.
+	let coolness = 0;
+	if (elevDeg < 0) {
+		coolness = Math.min(1, (-elevDeg) / 10);
+	}
+	// Build the filter. sepia → warm wash, hue-rotate(-deg) → push
+	// toward red. Saturation bumped during golden hour to enrich the
+	// terrain palette without going cartoony.
+	const sepia = (0.45 * warmth).toFixed(3);
+	const hueShift = (-8 * warmth).toFixed(2);
+	const sat = (1 + 0.15 * warmth).toFixed(3);
+	// Cool tint at twilight: sepia(small) + hue-rotate(positive deg)
+	// shifts the tone toward blue. Keeps it subtle so we don't out-
+	// blue the sky.
+	const coolSat = (1 - 0.20 * coolness).toFixed(3);
+	const coolHue = (10 * coolness).toFixed(2);
+	canvas.style.filter = (warmth > 0 || coolness > 0)
+		? `sepia(${sepia}) hue-rotate(${hueShift}deg) saturate(${sat}) saturate(${coolSat}) hue-rotate(${coolHue}deg)`
+		: '';
+}
+
 // Current day factor, 0.05 (deep night) .. 1.0 (full day). Read by
 // trail / contrail / particle code that uses unlit materials so they
 // can dim with the environment instead of staying full-bright.
@@ -158,55 +285,118 @@ export function getDayFactor() {
 	return _dayFactor;
 }
 
-// Per-frame entry point. Cheap when the mode is 'arcade' — we still set
-// the intensities to 1.0 so a mid-game toggle off → on takes effect on
-// the very next frame instead of needing a relight.
+// Per-frame entry point. Sun direction tracking, colour-temperature
+// ramps, and the golden-hour directional boost run in BOTH lighting
+// modes — beautiful sunsets are a cinematic feature, not a realism
+// feature, and arcade-mode players should get the warm low-angle
+// wash and dual-source shading just as much as realistic-mode does.
+//
+// What differs between the two modes:
+//
+//                              arcade        realistic
+//   light intensity            1.0 always    ramps with sun elev
+//   golden-hour boost          applied       applied
+//   imagery brightness         1.0 always    ramps with sun elev
+//   Cesium atmosphere fill     default       cranked down at night
+//   sun direction tracking     applied       applied
+//   sun + sky colour ramp      applied       applied
+//
+// I.e. arcade keeps the world fully visible at all times but still
+// gets golden-hour warmth, sunset palettes, and properly-directed
+// shadows on the airframe.
+//
+// NVG override (third state): forces effective mode to 'arcade'
+// regardless of user setting, because we need a bright underlying
+// scene for the green-phosphor filter on top to amplify.
 export function updateLighting(playerState) {
 	if (!_ambient || !_directional) return;
-	// NVG amplifies dim light to readable levels. We model that by
-	// forcing the underlying scene to arcade-bright while NVG is on
-	// — the green-phosphor wash + grain in nvg.js then turns that
-	// bright scene into the stylised tube look. Without this the
-	// realistic-mode terrain is so dark that brightness(4) on top
-	// only barely lifts it.
 	const requestedMode = gameSettings.lightingMode || 'arcade';
 	const mode = isNvgActive() ? 'arcade' : requestedMode;
 	const viewer = getViewer();
 	_applyCesiumLightingMode(viewer, mode);
 
-	if (mode !== 'realistic') {
-		_dayFactor = 1.0;
-		_ambient.intensity = 1.0;
-		_directional.intensity = 1.0;
-		// Reset to the original neutral white in case a previous
-		// realistic-mode frame had tinted them blue.
-		_ambient.color.setRGB(1, 1, 1);
-		return;
-	}
-
 	if (!viewer || !playerState) {
-		// No clock / position yet — fall back to arcade-bright so the
-		// menu screen isn't pitch black.
+		// No clock / position yet — fall back to flat arcade-bright
+		// so the menu screen / bring-up frames aren't pitch black.
 		_dayFactor = 1.0;
 		_ambient.intensity = 1.0;
 		_directional.intensity = 1.0;
+		_ambient.color.setRGB(1, 1, 1);
+		_directional.color.setRGB(1, 1, 1);
 		return;
 	}
 
-	const elev = _sunElevationDeg(viewer.clock.currentTime,
-		playerState.lon || 0, playerState.lat || 0, playerState.alt || 0);
-	_dayFactor = _intensityForElevation(elev);
+	_sunDirectionENU(viewer.clock.currentTime,
+		playerState.lon || 0, playerState.lat || 0, playerState.alt || 0,
+		_sunOut);
+	const elev = _sunOut.elevDeg;
+	const realisticDayFactor = _intensityForElevation(elev);
 
+	// Intensity behaviour is the only mode-dependent piece. Arcade
+	// holds 1.0 so night flights stay readable; realistic ramps down
+	// to the night floor.
+	_dayFactor = (mode === 'realistic') ? realisticDayFactor : 1.0;
+
+	// Rotate the directional light to the actual sun position in the
+	// player's body frame. Camera-space convention used everywhere
+	// else in the THREE rendering: +X = right, +Y = up, -Z = forward.
+	// The plane's body frame is rotated from ENU by the player's
+	// heading (compass deg, +CW from north). Pitch + roll are
+	// ignored — the chase cam pitches with the plane so the sun's
+	// apparent angle from the cockpit POV is dominated by heading,
+	// and including pitch made the sun "swim" during loops.
+	const h = (playerState.heading || 0) * Math.PI / 180;
+	const cosH = Math.cos(h), sinH = Math.sin(h);
+	const sunRight   = _sunOut.e * cosH - _sunOut.n * sinH;
+	const sunForward = _sunOut.e * sinH + _sunOut.n * cosH;
+	const sunUp      = _sunOut.u;
+	// Light position is the direction the light comes FROM relative
+	// to scene origin. In camera-space: right→+X, up→+Y, forward→-Z.
+	// Magnitudes are arbitrary for a directional light; we scale by
+	// 100 so position-to-target lerp math stays well-conditioned.
+	_directional.position.set(sunRight * 100, sunUp * 100, -sunForward * 100);
+	_directional.target.position.set(0, 0, 0);
+	_directional.target.updateMatrixWorld();
+
+	// Golden-hour intensity bump on the directional light only —
+	// the sun visibly punches through at low angles (focused warm
+	// beam) while the diffuse sky ambient does the opposite. Applied
+	// in both modes, because beautiful low-sun light is the whole
+	// point of this code path.
+	const goldenBoost = _goldenHourBoost(elev);
 	_ambient.intensity     = _dayFactor;
-	_directional.intensity = _dayFactor;
-	_applyImageryBrightness(viewer, _dayFactor);
+	_directional.intensity = _dayFactor * goldenBoost;
+	_applyImageryBrightness(viewer, mode === 'realistic'
+		? Math.min(1.0, _dayFactor) : 1.0);
+	// NVG owns the canvas filter while it's active — clear our
+	// inline tint so the stylesheet's phosphor-green NVG rule wins,
+	// and skip recomputing until NVG flips off again.
+	if (isNvgActive()) {
+		const c = _findCesiumCanvas(viewer);
+		if (c && c.style.filter) c.style.filter = '';
+	} else {
+		_applyTerrainTint(viewer, elev, mode);
+	}
 
-	// Cool-blue tint at night, warm at sunrise/sunset, neutral at noon.
-	// Compute on the (1.0 - dayFactor) axis so the colour shift is most
-	// pronounced when intensity is lowest.
-	const nightWeight = 1 - _dayFactor;
-	const r = 1.0 - 0.4 * nightWeight;
-	const g = 1.0 - 0.25 * nightWeight;
-	const b = 1.0;
-	_ambient.color.setRGB(r, g, b);
+	// Colour temperature ramps. Sun goes warm at low angles + cool
+	// blue when below; sky stays cool blue, deepening at night, so
+	// shadowed faces of the airframe pick up complementary colour
+	// instead of a uniform dim white. In arcade mode we'd ideally
+	// apply the colours straight, but that would tint a fully-bright
+	// night scene blue. Lerp the colour ramp toward neutral white
+	// based on (1 - dayFactor) so arcade nights stay cleanly lit
+	// while sunset still gets its warm wash.
+	_sunColor(elev, _scratchColor);
+	const arcadeWeight = (mode === 'realistic') ? 0 :
+		Math.max(0, 1 - realisticDayFactor);
+	const sr = _scratchColor.r + (1.0 - _scratchColor.r) * arcadeWeight;
+	const sg = _scratchColor.g + (1.0 - _scratchColor.g) * arcadeWeight;
+	const sb = _scratchColor.b + (1.0 - _scratchColor.b) * arcadeWeight;
+	_directional.color.setRGB(sr, sg, sb);
+
+	_skyColor(elev, _scratchColor);
+	const ar = _scratchColor.r + (1.0 - _scratchColor.r) * arcadeWeight;
+	const ag = _scratchColor.g + (1.0 - _scratchColor.g) * arcadeWeight;
+	const ab = _scratchColor.b + (1.0 - _scratchColor.b) * arcadeWeight;
+	_ambient.color.setRGB(ar, ag, ab);
 }
