@@ -3013,6 +3013,93 @@ export class HUD {
 			ctx.restore();
 		}
 
+		// 6a — designated-target gimbal indicator. Draws a thin line
+		// from own-ship through the currently-designated track in
+		// screen-axis-aligned coords so the line bends with the
+		// player's heading: as the player cranks off-axis, the line
+		// swings toward the wedge edge, giving a visual "you're about
+		// to gimbal-out" cue. When the designated bearing exceeds
+		// `radar.fovH × GIMBAL_WARN_FRACTION`, a pulsing GIMBAL warning
+		// renders below the wedge.
+		const gimbalRadar = state.sensors && state.sensors.radar;
+		const gimbalDesignated = ws && ws.designatedTarget;
+		if (gimbalRadar && gimbalRadar.fovH != null && gimbalDesignated
+			&& !gimbalDesignated.destroyed) {
+			// Bearing of the designated target, body-relative. Compute
+			// from positions so this works whether or not the contact
+			// has a fresh radar entry on it (datalink-only designations
+			// would otherwise look unmoored).
+			const dxLon = (gimbalDesignated.lon - state.lon) * 111320 *
+				Math.cos(state.lat * Math.PI / 180);
+			const dyLat = (gimbalDesignated.lat - state.lat) * 111320;
+			const groundBearingRad = Math.atan2(dxLon, dyLat); // 0 = north, +CW
+			const playerHeadingRad = (state.heading || 0) * Math.PI / 180;
+			let relBearing = groundBearingRad - playerHeadingRad;
+			while (relBearing >  Math.PI) relBearing -= 2 * Math.PI;
+			while (relBearing < -Math.PI) relBearing += 2 * Math.PI;
+
+			const fovH = gimbalRadar.fovH;
+			const GIMBAL_WARN_FRACTION = 0.85;   // warn at 85% of FOV edge
+			const warning = Math.abs(relBearing) > fovH * GIMBAL_WARN_FRACTION;
+
+			ctx.save();
+			ctx.translate(centerX, centerY);
+			// Solid line from own-ship out to the contact's current
+			// scope position (clipped to scope radius), then a dashed
+			// extension to the rim showing the projected gimbal limit.
+			const dx = (gimbalDesignated.lon - state.lon) * 111320 *
+				Math.cos(state.lat * Math.PI / 180);
+			const dy = (gimbalDesignated.lat - state.lat) * 111320;
+			const ppmLocal = h / verticalMeters;
+			let cx = dx * ppmLocal;
+			let cy = -dy * ppmLocal;
+			// Rotate into heading-up frame.
+			const ch = Math.cos(playerHeadingRad);
+			const sh = Math.sin(playerHeadingRad);
+			const rx =  cx * ch + cy * sh;
+			const ry = -cx * sh + cy * ch;
+			const distScope = Math.hypot(rx, ry);
+			const clipR = Math.min(distScope, radius - 5);
+			const sx = (rx / Math.max(1e-6, distScope)) * clipR;
+			const sy = (ry / Math.max(1e-6, distScope)) * clipR;
+
+			ctx.lineWidth = 1.5;
+			ctx.strokeStyle = warning ? 'rgba(255, 80, 80, 0.95)' : 'rgba(255, 215, 0, 0.85)';
+			ctx.beginPath();
+			ctx.moveTo(0, 0);
+			ctx.lineTo(sx, sy);
+			ctx.stroke();
+			// Dashed extension along the same bearing to the rim.
+			ctx.setLineDash([4, 4]);
+			ctx.lineWidth = 1.0;
+			ctx.strokeStyle = warning ? 'rgba(255, 80, 80, 0.55)' : 'rgba(255, 215, 0, 0.45)';
+			const rimR = radius;
+			const rimX = (rx / Math.max(1e-6, distScope)) * rimR;
+			const rimY = (ry / Math.max(1e-6, distScope)) * rimR;
+			ctx.beginPath();
+			ctx.moveTo(sx, sy);
+			ctx.lineTo(rimX, rimY);
+			ctx.stroke();
+			ctx.setLineDash([]);
+
+			if (warning) {
+				// Pulsing GIMBAL banner near the rim along the
+				// bearing. Phase tied to performance.now so it blinks
+				// at ~3 Hz across all clients consistently.
+				const phase = (performance.now() % 333) / 333;
+				const a = 0.45 + 0.45 * Math.sin(phase * Math.PI * 2);
+				ctx.fillStyle = `rgba(255, 80, 80, ${a})`;
+				ctx.font = 'bold 11px AceCombat, monospace';
+				ctx.textAlign = 'center';
+				ctx.textBaseline = 'middle';
+				const labelR = Math.min(radius - 18, distScope * 0.85);
+				const lx = (rx / Math.max(1e-6, distScope)) * labelR;
+				const ly = (ry / Math.max(1e-6, distScope)) * labelR;
+				ctx.fillText('GIMBAL', lx, ly);
+			}
+			ctx.restore();
+		}
+
 		// 6a — RWR strobes folded into the scope. Each emitter painting
 		// the player draws a bearing-only spike out from own-ship,
 		// length scaled by signal strength so a close / strong painter
