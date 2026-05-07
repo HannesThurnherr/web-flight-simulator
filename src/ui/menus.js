@@ -49,6 +49,16 @@ function refreshPauseVolumeWidgets() {
 }
 import { getEvents } from '../systems/eventLog';
 import { toggleNvg } from './nvg';
+import { isInTestMode, returnToEditor } from './scenarioEditor';
+
+// Toggle the "RETURN TO EDITOR" pause-menu button based on whether
+// the editor pushed the game into test mode. Called every time the
+// pause menu is about to be shown.
+function _refreshPauseTestButton() {
+	const btn = document.getElementById('returnToEditorBtn');
+	if (!btn) return;
+	btn.classList.toggle('hidden', !isInTestMode());
+}
 
 // Render the kill / crash log into the pause-screen panel. Called from
 // the pause-open handler so the snapshot always reflects what just
@@ -232,6 +242,20 @@ export function setupPauseAndRespawnButtons(ctx) {
 		respawnAsNewBtn.onclick = () => {
 			closeAllModals();
 			enterRespawnAsNewPlane(ctx);
+		};
+	}
+
+	// "RETURN TO EDITOR" — only meaningful when the editor pushed
+	// the game into test mode. Tears down the running scenario and
+	// reopens the editor with the same JSON in the same state.
+	const returnToEditorBtn = document.getElementById('returnToEditorBtn');
+	if (returnToEditorBtn) {
+		returnToEditorBtn.onclick = () => {
+			closeAllModals();
+			pauseMenu.classList.add('hidden');
+			if (ctx.dialogueSystem) ctx.dialogueSystem.stop();
+			ctx.pauseGameplaySounds && ctx.pauseGameplaySounds();
+			returnToEditor();
 		};
 	}
 
@@ -512,6 +536,7 @@ export function setupGlobalKeybinds(ctx) {
 				ctx.hud.update(state, []);
 				renderPauseKillLog();
 				refreshPauseVolumeWidgets();
+				_refreshPauseTestButton();
 			} else if (ctx.currentState === 'PAUSED') {
 				ctx.setCurrentState('FLYING');
 				if (ctx.dialogueSystem) ctx.dialogueSystem.resume();
@@ -549,6 +574,7 @@ export function setupWindowLifecycleHandlers(ctx) {
 			ctx.hud.resizeMinimap();
 			ctx.pauseGameplaySounds();
 			ctx.hud.update(state, []);
+			_refreshPauseTestButton();
 		}
 	});
 
@@ -561,6 +587,7 @@ export function setupWindowLifecycleHandlers(ctx) {
 			ctx.hud.resizeMinimap();
 			ctx.pauseGameplaySounds();
 			ctx.hud.update(state, []);
+			_refreshPauseTestButton();
 		}
 	});
 }

@@ -24,7 +24,7 @@
 // ============================================================================
 
 import * as Cesium from 'cesium';
-import { getRawScenario, refreshScenarios } from '../systems/scenarios';
+import { getRawScenario, refreshScenarios, setActiveScenario, getActiveScenario } from '../systems/scenarios';
 import { MUNITIONS, munitionsForHardpoint } from '../weapon/munitions';
 import {
 	loadUserScenarios, saveUserScenario,
@@ -33,10 +33,20 @@ import { getViewer } from '../world/cesiumWorld';
 import { CommanderView } from '../systems/commanderView';
 import { PLATFORMS } from '../systems/platforms';
 import { PLANES } from '../plane/planes';
+import { enterSpawnPicking } from '../systems/spawnFlow';
+import { clearFormation } from '../systems/formation.js';
 
 let _ctx        = null;
 let _activeId   = null;
 let _activeJson = null;
+// Test-mode state: the editor's "TEST" button puts the editor on
+// pause, sets the in-edit scenario active, and runs the normal
+// spawn-pick → fly flow. When the user picks "RETURN TO EDITOR"
+// from the pause menu, we re-open the editor with the same JSON
+// so they're back exactly where they left off — no menu round-trip
+// needed for iterative editing.
+let _testMode = false;
+let _testRestoreState = null;   // { id, json } captured before test start
 let _entities   = [];
 let _panel      = null;
 let _previousState = null;
@@ -1176,6 +1186,8 @@ function _buildPanel() {
 		btn.textContent = 'SAVED ✓';
 		setTimeout(() => { btn.textContent = orig; }, 700);
 	});
+	const testBtn = panel.querySelector('#se-test');
+	if (testBtn) testBtn.addEventListener('click', () => _testCurrentScenario());
 	panel.querySelector('#se-exit').addEventListener('click', () => {
 		_close();
 	});
@@ -1275,6 +1287,7 @@ function _panelHtml() {
 
 	<div style="display:flex;gap:8px;margin-top:10px;">
 		<button id="se-save" type="button" style="flex:1;font-family:inherit;font-size:11px;letter-spacing:1px;background:transparent;border:1px solid #6ff;color:#6ff;padding:5px;cursor:pointer;">SAVE</button>
+		<button id="se-test" type="button" style="flex:1;font-family:inherit;font-size:11px;letter-spacing:1px;background:transparent;border:1px solid #ffd700;color:#ffd700;padding:5px;cursor:pointer;">TEST ▶</button>
 		<button id="se-exit" type="button" style="flex:1;font-family:inherit;font-size:11px;letter-spacing:1px;background:transparent;border:1px solid #ff8080;color:#ff8080;padding:5px;cursor:pointer;">EXIT</button>
 	</div>
 	`;
@@ -2084,6 +2097,101 @@ function _renderSpawnList() {
 			}
 		});
 	}
+}
+
+// ----- 10f: in-place test mode --------------------------------------------
+//
+// "TEST ▶" button on the editor panel. Saves the in-edit JSON to user
+// scenarios (so the scenario runner can load it like any other), stashes
+// the editor's restore state, sets the active scenario to the just-saved
+// id, and routes through the normal spawn-pick → fly flow. The pause
+// menu's "RETURN TO EDITOR" button — visible only while `isInTestMode()`
+// is true — calls `returnToEditor()` to tear the running scenario down
+// and reopen the editor with the same JSON, exactly where the user left
+// off. Lets you iterate on a scenario without round-tripping through
+// the main menu.
+
+function _testCurrentScenario() {
+	if (!_activeId || !_activeJson) return;
+	// Persist the in-memory edits so the runner picks them up. We also
+	// capture the snapshot for `returnToEditor()` so unsaved changes
+	// survive even if the user later opens a different file from the
+	// picker — the editor reopens with what they were testing.
+	saveUserScenario(_activeId, _activeJson);
+	refreshScenarios();
+	_testRestoreState = {
+		id:   _activeId,
+		json: JSON.parse(JSON.stringify(_activeJson)),
+	};
+	_testMode = true;
+
+	setActiveScenario(_activeId);
+
+	// Tear down editor UI + commander view; _close() also flips the
+	// state machine back to MENU. We then immediately enter spawn
+	// picking, which flips state to PICK_SPAWN — the scenario runner
+	// gets called with onStart inside setupConfirmSpawn once the user
+	// commits a spawn point (or the world-anchored playerSpawn
+	// override kicks in for that scenario class).
+	_close();
+	if (_ctx) enterSpawnPicking(_ctx, true);
+}
+
+// Public — returns true if the editor put the game into test mode and
+// is waiting to be reopened. Pause menu reads this to show the
+// "RETURN TO EDITOR" button.
+export function isInTestMode() {
+	return _testMode && _testRestoreState != null;
+}
+
+// Public — stop the running test scenario and reopen the editor with
+// the same JSON the user was iterating on. Mirrors what
+// `enterSpawnPicking` does for cleanup (onStop, npcSystem.clear,
+// clearFormation) so we don't leave stale NPCs / wingmen around.
+export function returnToEditor() {
+	if (!isInTestMode() || !_ctx) return false;
+	const restore = _testRestoreState;
+	_testMode = false;
+	_testRestoreState = null;
+
+	// Clean up the running scenario. The active scenario object is
+	// whatever the runner built from our test JSON; calling its
+	// onStop releases overlays / objective state.
+	try {
+		const scn = getActiveScenario();
+		if (scn && scn.onStop) {
+			scn.onStop({
+				npcSystem: _ctx.npcSystem,
+				playerState: _ctx.state,
+				viewer: getViewer(),
+				scene: _ctx.scene,
+				weaponSystem: _ctx.weaponSystem,
+				hud: _ctx.hud,
+			});
+		}
+	} catch (e) { /* defensive — proceed even if onStop throws */ }
+	if (_ctx.npcSystem) _ctx.npcSystem.clear();
+	clearFormation();
+
+	// Hide the flight UI before the editor takes over.
+	const ui = document.getElementById('uiContainer');
+	if (ui) ui.classList.add('hidden');
+	const weaponsHud = document.getElementById('weapons-hud');
+	if (weaponsHud) weaponsHud.classList.add('hidden');
+	const threeContainer = document.getElementById('threeContainer');
+	if (threeContainer) threeContainer.classList.add('hidden');
+	const pauseMenu = document.getElementById('pauseMenu');
+	if (pauseMenu) pauseMenu.classList.add('hidden');
+	const crashMenu = document.getElementById('crashMenu');
+	if (crashMenu) crashMenu.classList.add('hidden');
+
+	// Mark the player alive again — if they crashed during the test,
+	// the editor doesn't care, but a future TEST run wants a clean
+	// slate. (setupConfirmSpawn will also reset on next test.)
+	if (_ctx.state) _ctx.state.destroyed = false;
+
+	open(restore.id, restore.json);
+	return true;
 }
 
 function escapeHtml(s) {
