@@ -829,7 +829,18 @@ source labeling reflects the same effects (jammed contacts greyed,
 unknown amber). Without that discipline, EW just feels like the
 radar randomly got worse.
 
-### 6a — Radar / SA scope (foundational UX) ⏳
+### 6a — Radar / SA scope (foundational UX)  ✅ implemented
+
+> **Status:** Landed. The minimap is now a full tactical SA scope —
+> heading-up PPI, channel-aware iconography (filled square = own
+> radar, hollow square = datalink, open circle = IR/visual), RWR
+> strobes from own-ship coloured by lockType, designated-target
+> gimbal indicator with pulsing GIMBAL warning when bearing exceeds
+> 85% of azimuth FOV, and a bottom telemetry row showing radar mode
+> (RWS/TWS/STT/OFF), range scale, track count, and jam state. Range
+> arcs + FOV wedge + boresight + Cesium-substrate toggle (`'` key)
+> + expanded popout (`;` key) all present. Subtler bar-pattern (V-FOV)
+> deferred — low value on top of the existing wedge.
 
 A dedicated tactical situation display on the HUD. Builds the
 display surface that 6b–6g need; without it, every later sub-phase
