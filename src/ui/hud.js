@@ -3013,6 +3013,46 @@ export class HUD {
 			ctx.restore();
 		}
 
+		// 6a — RWR strobes folded into the scope. Each emitter painting
+		// the player draws a bearing-only spike out from own-ship,
+		// length scaled by signal strength so a close / strong painter
+		// reaches near the rim. Drawn screen-axis-aligned (after the
+		// rotation restore) so 12 o'clock = "straight in front of the
+		// player," matching the rest of the heading-up scope. Track-
+		// type emitters (STT) render red — they're the ones about to
+		// shoot — search emitters render amber. The standalone RWR
+		// scope still exists; this is the same data with a different
+		// presentation so the scope is a single SA pane.
+		const rwrMap = state && state.rwr;
+		if (rwrMap && rwrMap.size > 0) {
+			ctx.save();
+			ctx.translate(centerX, centerY);
+			ctx.lineWidth = 2.5;
+			ctx.lineCap = 'round';
+			for (const [, c] of rwrMap) {
+				if (!c) continue;
+				const bearing = c.bearing || 0;
+				const strength = Math.max(0.1, Math.min(1, c.strength || 0));
+				const len = radius * (0.45 + 0.55 * strength);
+				const ex =  Math.sin(bearing) * len;
+				const ey = -Math.cos(bearing) * len;
+				ctx.strokeStyle = c.lockType === 'track'
+					? `rgba(255, 64, 64, ${0.55 + 0.45 * strength})`
+					: `rgba(255, 170, 68, ${0.40 + 0.45 * strength})`;
+				ctx.beginPath();
+				ctx.moveTo(0, 0);
+				ctx.lineTo(ex, ey);
+				ctx.stroke();
+				// Tip pip — small triangle at the end so the strobe
+				// reads as a discrete contact, not just a glowing line.
+				ctx.fillStyle = ctx.strokeStyle;
+				ctx.beginPath();
+				ctx.arc(ex, ey, 2.5 + 1.5 * strength, 0, Math.PI * 2);
+				ctx.fill();
+			}
+			ctx.restore();
+		}
+
 		const pad = 12;
 		const edgeX = centerX - pad;
 		const edgeY = centerY - pad;
