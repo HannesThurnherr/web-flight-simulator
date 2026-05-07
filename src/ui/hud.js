@@ -2818,6 +2818,20 @@ export class HUD {
 		// north regardless of player heading. See block below the
 		// rotation restore.)
 
+		// 6a — channel-aware contact iconography. Read which sensor
+		// channel(s) currently hold the npc and pick a glyph
+		// matching real fighter SA-display conventions:
+		//
+		//   filled square          own-radar paint (range + heading known)
+		//   hollow square          datalink-fused (someone else's radar)
+		//   open circle + tail     IR / visual only (bearing well known,
+		//                          range estimated)
+		//
+		// Designated target gets a bright outer ring + corner ticks so
+		// the slot the player has under STT consideration pops at a
+		// glance from a dense contact group.
+		const ws = state && state.weaponSystem;
+		const designated = ws && ws.designatedTarget;
 		npcs.forEach(npc => {
 			// Same visibility gate as the pause-menu minimap — fused
 			// sensor + datalink picture only, no god-mode positions.
@@ -2834,19 +2848,78 @@ export class HUD {
 
 			if (Math.sqrt(px * px + py * py) > radius - 5) return;
 
+			// Channel resolution: prefer the highest-fidelity hit that
+			// covers this contact. If our own radar holds it, that
+			// dominates; otherwise check the datalink fused picture;
+			// fall back to IR/visual.
+			const c = (state.contacts && state.contacts.get(npc)) || null;
+			const hasOwnRadar = !!(c && c.radar);
+			const hasDatalink = !hasOwnRadar
+				&& !!(state.datalinkContacts && state.datalinkContacts.has(npc));
+			const hasIr       = !hasOwnRadar && !hasDatalink && !!(c && c.ir);
+			const hasVisual   = !hasOwnRadar && !hasDatalink && !hasIr && !!(c && c.visual);
+			// Friendlies on the same team always render (own team
+			// contacts have no `c` entry); treat as datalink for icon
+			// purposes since that's where their position comes from.
+			const isFriendly = npc.team && npc.team === state.team;
+			const useFilledBox = hasOwnRadar;
+			const useHollowBox = !hasOwnRadar && (hasDatalink || isFriendly);
+			const useCircle    = !useFilledBox && !useHollowBox; // IR / visual only
+
 			ctx.save();
 			ctx.translate(px, py);
-			ctx.rotate(npc.heading * Math.PI / 180);
-
-			ctx.fillStyle = _hudIffColor(state, npc);
+			const color = _hudIffColor(state, npc);
+			ctx.fillStyle = color;
+			ctx.strokeStyle = color;
 			ctx.shadowBlur = 0;
-			ctx.beginPath();
-			ctx.moveTo(0, -8);
-			ctx.lineTo(6, 6);
-			ctx.lineTo(0, 3);
-			ctx.lineTo(-6, 6);
-			ctx.closePath();
-			ctx.fill();
+			ctx.lineWidth = 1.5;
+
+			if (useFilledBox) {
+				// Filled rotated square + nose pip = own radar track.
+				ctx.save();
+				ctx.rotate(npc.heading * Math.PI / 180);
+				ctx.fillRect(-5, -5, 10, 10);
+				// Heading pip
+				ctx.beginPath();
+				ctx.moveTo(0, -5);
+				ctx.lineTo(0, -10);
+				ctx.stroke();
+				ctx.restore();
+			} else if (useHollowBox) {
+				ctx.save();
+				ctx.rotate(npc.heading * Math.PI / 180);
+				ctx.strokeRect(-5, -5, 10, 10);
+				ctx.beginPath();
+				ctx.moveTo(0, -5);
+				ctx.lineTo(0, -10);
+				ctx.stroke();
+				ctx.restore();
+			} else if (useCircle) {
+				// IR / visual: range is uncertain, so omit the heading
+				// pip (would imply a direction the sensor doesn't
+				// resolve). Just an open circle at the bearing.
+				ctx.beginPath();
+				ctx.arc(0, 0, 5, 0, Math.PI * 2);
+				ctx.stroke();
+			}
+
+			// Designated overlay — drawn last so it sits on top.
+			if (designated && designated === npc) {
+				ctx.lineWidth = 2.0;
+				ctx.strokeStyle = '#ffd700';
+				ctx.beginPath();
+				ctx.arc(0, 0, 10, 0, Math.PI * 2);
+				ctx.stroke();
+				// Corner ticks at the cardinal extents.
+				ctx.beginPath();
+				const t = 13;
+				ctx.moveTo(-t, -10); ctx.lineTo(-10, -10); ctx.moveTo(-10, -10); ctx.lineTo(-10, -t);
+				ctx.moveTo( t, -10); ctx.lineTo( 10, -10); ctx.moveTo( 10, -10); ctx.lineTo( 10, -t);
+				ctx.moveTo(-t,  10); ctx.lineTo(-10,  10); ctx.moveTo(-10,  10); ctx.lineTo(-10,  t);
+				ctx.moveTo( t,  10); ctx.lineTo( 10,  10); ctx.moveTo( 10,  10); ctx.lineTo( 10,  t);
+				ctx.stroke();
+			}
+
 			ctx.restore();
 		});
 
