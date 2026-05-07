@@ -3140,6 +3140,75 @@ export class HUD {
 			ctx.restore();
 		}
 
+		// 6a — bottom mode/state row. Single line of telemetry along
+		// the scope's lower edge: radar mode, range scale, track count,
+		// jam state. Color-coded by aggression: cyan for RWS (passive
+		// scan, no lock progression), amber for TWS (default scan with
+		// locks progressing), red for STT (single-target track, victim
+		// gets a hard RWR spike).
+		{
+			const radar = state.sensors && state.sensors.radar;
+			const playerMode = radar && radar.playerMode;
+			const internalMode = radar && radar.mode;   // 'search'|'track'|'off'
+			let modeLabel = 'OFF';
+			let modeColor = 'rgba(180, 180, 180, 0.85)';
+			if (radar && radar.active && internalMode !== 'off') {
+				if (playerMode === 'rws') {
+					modeLabel = 'RWS'; modeColor = 'rgba(96, 224, 255, 0.95)';
+				} else if (playerMode === 'stt' || internalMode === 'track') {
+					modeLabel = 'STT'; modeColor = 'rgba(255, 80, 80, 0.95)';
+				} else {
+					modeLabel = 'TWS'; modeColor = 'rgba(255, 200, 80, 0.95)';
+				}
+			}
+			// Track count: number of contacts the player's own radar
+			// currently holds (channel.radar present + recent).
+			let trackCount = 0;
+			if (state.contacts) {
+				for (const [, c] of state.contacts) {
+					if (c && c.radar) trackCount++;
+				}
+			}
+			// Jam state: any defensive jammer active OR offensive
+			// target slot in use.
+			let jamLabel = '';
+			const jam = state && state.jammer;
+			if (jam) {
+				const off = jam.offensiveTargets && jam.offensiveTargets.size > 0;
+				if (off && jam.defensiveOn)   jamLabel = 'JAM:DEF+OFF';
+				else if (jam.defensiveOn)     jamLabel = 'JAM:DEF';
+				else if (off)                 jamLabel = 'JAM:OFF';
+			}
+
+			ctx.save();
+			ctx.font = 'bold 10px AceCombat, monospace';
+			ctx.textBaseline = 'bottom';
+			ctx.shadowBlur = 3;
+			ctx.shadowColor = 'rgba(0,0,0,0.85)';
+			const yRow = h - 4;
+			// Mode badge — left.
+			ctx.fillStyle = modeColor;
+			ctx.textAlign = 'left';
+			ctx.fillText(modeLabel, 6, yRow);
+			// Range scale — center-ish (clear of mode + count).
+			ctx.fillStyle = 'rgba(160, 220, 160, 0.95)';
+			ctx.textAlign = 'center';
+			ctx.fillText(`${this.minimapRange * 5} KM`, w / 2, yRow);
+			// Track count — center-right.
+			ctx.fillStyle = trackCount > 0
+				? 'rgba(160, 255, 160, 0.95)' : 'rgba(120, 180, 120, 0.6)';
+			ctx.textAlign = 'right';
+			ctx.fillText(`T:${trackCount}`, w - 6, yRow);
+			// Jam tag — only renders when something's active. Slot it
+			// on the right above the track count so two lines fit.
+			if (jamLabel) {
+				ctx.fillStyle = 'rgba(96, 224, 255, 0.95)';
+				ctx.textAlign = 'right';
+				ctx.fillText(jamLabel, w - 6, yRow - 12);
+			}
+			ctx.restore();
+		}
+
 		const pad = 12;
 		const edgeX = centerX - pad;
 		const edgeY = centerY - pad;
