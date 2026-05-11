@@ -134,6 +134,17 @@ export function isTakramReady() {
 	return ready;
 }
 
+// Status getter for a tiny on-screen indicator so the user can SEE
+// at a glance whether the pipeline is running (vs. having to dig
+// through the console). The HUD reads this and paints an "ATMOS"
+// tag in the top-right corner when active.
+export function getTakramStatus() {
+	if (!_enabled) return 'off';
+	if (!_composer) return 'init-failed';
+	if (!_texturesReady) return 'loading';
+	return 'active';
+}
+
 // Per-frame update: feed the effect the current sun direction (ECEF)
 // and the world→ECEF transform derived from Cesium's camera viewMatrix.
 // Cheap — a handful of vector ops and a matrix invert.

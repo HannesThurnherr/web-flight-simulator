@@ -1,4 +1,5 @@
 import { setMinimapCamera, getMiniViewer, getViewer, setPauseMinimapCamera, getPauseMiniViewer } from '../world/cesiumWorld';
+import { getTakramStatus } from '../systems/takramAtmosphere.js';
 import { calculateDistance } from '../world/regions';
 import * as Cesium from 'cesium';
 import { releaseEnvelope, isStrikeWeapon } from '../systems/strikeEnvelope.js';
@@ -3601,6 +3602,43 @@ export class HUD {
 		if (this.fpsElem) {
 			this.fpsElem.innerText = Math.round(fps).toString();
 		}
+		// Atmospheric-scattering pipeline status indicator. Renders
+		// in the same corner area as FPS so the user can verify at
+		// a glance whether takram is active without digging into
+		// the browser console. Lazy DOM creation on first call.
+		try {
+			const status = getTakramStatus();
+			let el = document.getElementById('atmos-indicator');
+			if (!el) {
+				el = document.createElement('div');
+				el.id = 'atmos-indicator';
+				el.style.cssText = `
+					position: fixed;
+					top: 6px; right: 80px;
+					font: bold 10px AceCombat, monospace;
+					letter-spacing: 1px;
+					padding: 2px 6px;
+					border: 1px solid;
+					pointer-events: none;
+					z-index: 50;
+					opacity: 0.85;
+				`;
+				document.body.appendChild(el);
+			}
+			let color, label;
+			switch (status) {
+				case 'active':      color = '#60ffa0'; label = 'ATMOS·BRUNETON'; break;
+				case 'loading':     color = '#ffd040'; label = 'ATMOS·LOADING'; break;
+				case 'init-failed': color = '#ff6060'; label = 'ATMOS·FAIL';    break;
+				default:            color = '#909090'; label = 'ATMOS·OFF';
+			}
+			if (el.dataset.label !== label) {
+				el.style.color = color;
+				el.style.borderColor = color;
+				el.textContent = label;
+				el.dataset.label = label;
+			}
+		} catch (e) { /* defensive */ }
 	}
 
 	// Build (or fetch from cache) one weapon-list row keyed by weapon
