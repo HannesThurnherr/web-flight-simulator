@@ -55,6 +55,11 @@ let _renderer = null;
 let _scene = null;
 let _camera = null;
 let _viewer = null;
+// One-time diagnostic logs so the user can verify the pipeline is
+// actually active from the browser console without us littering the
+// per-frame path with checks.
+let _loggedFirstRender = false;
+let _loggedReady = false;
 
 // Scratch math objects — reused per-frame.
 const _scratchSunECEF     = new THREE.Vector3();
@@ -121,7 +126,12 @@ export function setTakramEnabled(on) {
 }
 
 export function isTakramReady() {
-	return _enabled && _composer && _texturesReady;
+	const ready = _enabled && _composer && _texturesReady;
+	if (ready && !_loggedReady) {
+		_loggedReady = true;
+		console.log('[takramAtmosphere] pipeline active: composer + aerial-perspective + LUTs ready');
+	}
+	return ready;
 }
 
 // Per-frame update: feed the effect the current sun direction (ECEF)
@@ -162,6 +172,10 @@ export function renderTakramComposer() {
 	if (!isTakramReady()) return false;
 	try {
 		_composer.render();
+		if (!_loggedFirstRender) {
+			_loggedFirstRender = true;
+			console.log('[takramAtmosphere] first composer render OK');
+		}
 		return true;
 	} catch (e) {
 		console.warn('[takramAtmosphere] composer render threw:', e);

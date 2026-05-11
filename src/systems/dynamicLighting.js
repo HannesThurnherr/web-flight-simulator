@@ -25,6 +25,7 @@ import * as Cesium from 'cesium';
 import { gameSettings } from '../ui/settings.js';
 import { getViewer } from '../world/cesiumWorld.js';
 import { isNvgActive } from '../ui/nvg.js';
+import { isTakramReady } from './takramAtmosphere.js';
 
 let _ambient = null;
 let _directional = null;
@@ -484,6 +485,12 @@ export function updateLighting(playerState) {
 	if (_fog) {
 		_fogColor(elev, sunForward, _scratchColor);
 		_fog.color.setRGB(_scratchColor.r, _scratchColor.g, _scratchColor.b);
-		_fog.density = _fogDensity(playerState.alt || 0, mode);
+		// When the takram aerial-perspective pipeline is doing the
+		// heavy lifting on layer-0 fragments, drop the hand-rolled
+		// FogExp2 density to zero so the two atmospheric models
+		// don't compound and wash each other out. The Three FogExp2
+		// path stays the fallback for when takram is off / loading.
+		const baseDensity = _fogDensity(playerState.alt || 0, mode);
+		_fog.density = isTakramReady() ? 0 : baseDensity;
 	}
 }
