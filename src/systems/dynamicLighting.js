@@ -26,6 +26,7 @@ import { gameSettings } from '../ui/settings.js';
 import { getViewer } from '../world/cesiumWorld.js';
 import { isNvgActive } from '../ui/nvg.js';
 import { isTakramReady } from './takramAtmosphere.js';
+import { updateCesiumAtmosphereOverlay } from './cesiumAtmosphereOverlay.js';
 
 let _ambient = null;
 let _directional = null;
@@ -175,6 +176,44 @@ function _skyColor(elevDeg, out) {
 	return _lerp3(out, NIGHT, NIGHT, 0);
 }
 
+// Aerial-perspective fog *palette* — returns the warm-toward and
+// cool-away haze colours appropriate for the current sun elevation.
+// Both the Three-side per-frame fog colour (forward-blended) and the
+// Cesium-side PostProcessStage uniforms (per-pixel blend in shader)
+// read from this so the two atmospheric layers agree.
+function _fogPalette(elevDeg, towardOut, awayOut) {
+	const DAY_TOWARD    = [1.00, 0.95, 0.85];
+	const DAY_AWAY      = [0.65, 0.78, 0.95];
+	const SUNSET_TOWARD = [1.00, 0.55, 0.35];
+	const SUNSET_AWAY   = [0.45, 0.50, 0.75];
+	const NIGHT         = [0.10, 0.13, 0.22];
+	let tr, tg, tb, ar, ag, ab;
+	if (elevDeg >= 15) {
+		tr = DAY_TOWARD[0]; tg = DAY_TOWARD[1]; tb = DAY_TOWARD[2];
+		ar = DAY_AWAY[0];   ag = DAY_AWAY[1];   ab = DAY_AWAY[2];
+	} else if (elevDeg >= -2) {
+		const t = _smoothstep(-2, 15, elevDeg);
+		tr = SUNSET_TOWARD[0] + (DAY_TOWARD[0] - SUNSET_TOWARD[0]) * t;
+		tg = SUNSET_TOWARD[1] + (DAY_TOWARD[1] - SUNSET_TOWARD[1]) * t;
+		tb = SUNSET_TOWARD[2] + (DAY_TOWARD[2] - SUNSET_TOWARD[2]) * t;
+		ar = SUNSET_AWAY[0]   + (DAY_AWAY[0]   - SUNSET_AWAY[0])   * t;
+		ag = SUNSET_AWAY[1]   + (DAY_AWAY[1]   - SUNSET_AWAY[1])   * t;
+		ab = SUNSET_AWAY[2]   + (DAY_AWAY[2]   - SUNSET_AWAY[2])   * t;
+	} else {
+		const t = _smoothstep(-10, -2, elevDeg);
+		tr = NIGHT[0] + (SUNSET_TOWARD[0] - NIGHT[0]) * t;
+		tg = NIGHT[1] + (SUNSET_TOWARD[1] - NIGHT[1]) * t;
+		tb = NIGHT[2] + (SUNSET_TOWARD[2] - NIGHT[2]) * t;
+		ar = NIGHT[0] + (SUNSET_AWAY[0]   - NIGHT[0]) * t;
+		ag = NIGHT[1] + (SUNSET_AWAY[1]   - NIGHT[1]) * t;
+		ab = NIGHT[2] + (SUNSET_AWAY[2]   - NIGHT[2]) * t;
+	}
+	towardOut.r = tr; towardOut.g = tg; towardOut.b = tb;
+	awayOut.r   = ar; awayOut.g   = ag; awayOut.b   = ab;
+}
+const _scratchWarm = { r: 1, g: 1, b: 1 };
+const _scratchCool = { r: 0.5, g: 0.6, b: 0.95 };
+
 // Aerial-perspective fog colour. Two interpolated palettes blended
 // by sun elevation, then a *forward-vs-back* warm/cool blend keyed
 // on whether the player is looking toward or away from the sun.
@@ -187,44 +226,14 @@ function _skyColor(elevDeg, out) {
 // `sunForward` is the body-frame forward component of the sun
 // direction: +1 = sun directly ahead, -1 = directly behind.
 function _fogColor(elevDeg, sunForward, out) {
-	// Day palette
-	const DAY_TOWARD = [1.00, 0.95, 0.85];   // hazy white-warm
-	const DAY_AWAY   = [0.65, 0.78, 0.95];   // pale sky blue
-	// Sunset / golden hour
-	const SUNSET_TOWARD = [1.00, 0.55, 0.35]; // deep orange near horizon
-	const SUNSET_AWAY   = [0.45, 0.50, 0.75]; // purple-blue (anti-sun arch)
-	// Night
-	const NIGHT         = [0.10, 0.13, 0.22];
-
-	// Per-aspect day vs sunset palettes, picked by elevation.
-	let towardR, towardG, towardB, awayR, awayG, awayB;
-	if (elevDeg >= 15) {
-		towardR = DAY_TOWARD[0]; towardG = DAY_TOWARD[1]; towardB = DAY_TOWARD[2];
-		awayR   = DAY_AWAY[0];   awayG   = DAY_AWAY[1];   awayB   = DAY_AWAY[2];
-	} else if (elevDeg >= -2) {
-		const t = _smoothstep(-2, 15, elevDeg);
-		towardR = SUNSET_TOWARD[0] + (DAY_TOWARD[0] - SUNSET_TOWARD[0]) * t;
-		towardG = SUNSET_TOWARD[1] + (DAY_TOWARD[1] - SUNSET_TOWARD[1]) * t;
-		towardB = SUNSET_TOWARD[2] + (DAY_TOWARD[2] - SUNSET_TOWARD[2]) * t;
-		awayR   = SUNSET_AWAY[0]   + (DAY_AWAY[0]   - SUNSET_AWAY[0])   * t;
-		awayG   = SUNSET_AWAY[1]   + (DAY_AWAY[1]   - SUNSET_AWAY[1])   * t;
-		awayB   = SUNSET_AWAY[2]   + (DAY_AWAY[2]   - SUNSET_AWAY[2])   * t;
-	} else {
-		const t = _smoothstep(-10, -2, elevDeg);
-		towardR = NIGHT[0] + (SUNSET_TOWARD[0] - NIGHT[0]) * t;
-		towardG = NIGHT[1] + (SUNSET_TOWARD[1] - NIGHT[1]) * t;
-		towardB = NIGHT[2] + (SUNSET_TOWARD[2] - NIGHT[2]) * t;
-		awayR   = NIGHT[0] + (SUNSET_AWAY[0]   - NIGHT[0]) * t;
-		awayG   = NIGHT[1] + (SUNSET_AWAY[1]   - NIGHT[1]) * t;
-		awayB   = NIGHT[2] + (SUNSET_AWAY[2]   - NIGHT[2]) * t;
-	}
-	// Blend toward / away by sunForward ∈ [-1, +1]. Remap to [0, 1].
+	_fogPalette(elevDeg, _scratchWarm, _scratchCool);
 	const f = Math.max(0, Math.min(1, (sunForward + 1) * 0.5));
-	out.r = awayR + (towardR - awayR) * f;
-	out.g = awayG + (towardG - awayG) * f;
-	out.b = awayB + (towardB - awayB) * f;
+	out.r = _scratchCool.r + (_scratchWarm.r - _scratchCool.r) * f;
+	out.g = _scratchCool.g + (_scratchWarm.g - _scratchCool.g) * f;
+	out.b = _scratchCool.b + (_scratchWarm.b - _scratchCool.b) * f;
 	return out;
 }
+
 
 // Fog density attenuated by altitude — real atmospheric optical
 // depth drops roughly exponentially with altitude (scale height
@@ -482,6 +491,7 @@ export function updateLighting(playerState) {
 	// earlier doubles as the "looking toward sun" factor (camera
 	// looks down body-forward in chase view), so we feed it straight
 	// into the warm/cool fog blend.
+	const fogDensityNow = _fogDensity(playerState.alt || 0, mode);
 	if (_fog) {
 		_fogColor(elev, sunForward, _scratchColor);
 		_fog.color.setRGB(_scratchColor.r, _scratchColor.g, _scratchColor.b);
@@ -490,7 +500,35 @@ export function updateLighting(playerState) {
 		// FogExp2 density to zero so the two atmospheric models
 		// don't compound and wash each other out. The Three FogExp2
 		// path stays the fallback for when takram is off / loading.
-		const baseDensity = _fogDensity(playerState.alt || 0, mode);
-		_fog.density = isTakramReady() ? 0 : baseDensity;
+		_fog.density = isTakramReady() ? 0 : fogDensityNow;
 	}
+
+	// Cesium-side atmospheric haze overlay. Mirrors the Three.js
+	// fog setup so the GLOBE pixels track the same warm/cool palette
+	// + density curve as the haze on NPCs / missiles. Sun direction
+	// is the ECEF unit vector we'd compute for the directional light
+	// — derive it from the player ENU components.
+	//
+	// ECEF sun direction: convert from player ENU using the inverse
+	// of the eastNorthUpToFixedFrame at player position. The matrix
+	// columns are the ENU basis in ECEF, so:
+	//   sunECEF = E_ecef * sun_E + N_ecef * sun_N + U_ecef * sun_U
+	_fogPalette(elev, _scratchWarm, _scratchCool);
+	const m = _scratchEnuMat;
+	const sunEcefX = m[0] * _sunOut.e + m[4] * _sunOut.n + m[8]  * _sunOut.u;
+	const sunEcefY = m[1] * _sunOut.e + m[5] * _sunOut.n + m[9]  * _sunOut.u;
+	const sunEcefZ = m[2] * _sunOut.e + m[6] * _sunOut.n + m[10] * _sunOut.u;
+	// Cesium-side density scaled up so the visible result on a long
+	// terrain horizon (Cesium tiles can render to 200+ km) is
+	// readable. Three's FogExp2 falls off fast at the same density
+	// because object distances are smaller — different effective
+	// range per layer.
+	const cesiumDensity = fogDensityNow * 1.5;
+	updateCesiumAtmosphereOverlay(
+		{ x: sunEcefX, y: sunEcefY, z: sunEcefZ },
+		_scratchWarm, _scratchCool,
+		cesiumDensity,
+		0.85,    // warmth bias — strong directional tint
+		1.0,     // intensity — full
+	);
 }
