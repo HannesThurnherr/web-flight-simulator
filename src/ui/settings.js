@@ -14,6 +14,7 @@
 
 import { getViewer } from '../world/cesiumWorld';
 import { soundManager } from '../utils/soundManager';
+import { setTakramEnabled } from '../systems/takramAtmosphere.js';
 
 export const gameSettings = {
 	graphicsQuality: 'medium',
@@ -25,6 +26,14 @@ export const gameSettings = {
 	// ramp with sun elevation at the player's lat/lon, so flying
 	// over the dark side of the planet actually goes dark.
 	lightingMode: 'arcade',
+	// Opt-in Bruneton-scattering atmospheric pipeline (takram
+	// three-atmosphere). Replaces the THREE FogExp2 distance haze
+	// with a precomputed-LUT aerial-perspective postprocessing pass
+	// for the layer-0 render. Default OFF: requires a ~5 MB
+	// scattering-texture fetch on first enable, and the postprocess
+	// path is a different code path from the vanilla render so the
+	// flag lets users escape if anything breaks.
+	atmosphericScattering: false,
 	mouseSensitivity: 0.2,
 	showHud: true,
 	showHorizonLines: true,
@@ -95,6 +104,8 @@ export function updateSettingsUI() {
 	document.getElementById('fogEffects').checked = gameSettings.fogEffects;
 	const lightSel = document.getElementById('lightingMode');
 	if (lightSel) lightSel.value = gameSettings.lightingMode || 'arcade';
+	const atmoEl = document.getElementById('atmosphericScattering');
+	if (atmoEl) atmoEl.checked = !!gameSettings.atmosphericScattering;
 	document.getElementById('sensitivitySlider').value = gameSettings.mouseSensitivity;
 	document.getElementById('sensitivityValue').textContent = gameSettings.mouseSensitivity;
 	document.getElementById('showHud').checked = gameSettings.showHud;
@@ -150,6 +161,13 @@ export function applySettings(ctx = {}) {
 		viewer.scene.fog.enabled = gameSettings.fogEffects;
 		viewer.scene.atmosphere.show = gameSettings.fogEffects;
 	}
+
+	// Atmospheric-scattering toggle — pushed through to the lazy-
+	// initialised takram pipeline. Safe to call whether or not the
+	// composer has finished setting up; the module gates on its
+	// own readiness flag.
+	try { setTakramEnabled(!!gameSettings.atmosphericScattering); }
+	catch (e) { /* defensive */ }
 
 	const hudElements = [
 		document.getElementById('hud-top-left'),

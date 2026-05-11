@@ -22,6 +22,8 @@ import { loadingStatus, updateLoadingUI } from '../ui/loadingUI';
 import { loadPlayerPlane } from '../plane/loadPlayerPlane';
 import { getActivePlane } from '../plane/planes';
 import { setLights as setDynamicLights, setFog as setDynamicFog } from './dynamicLighting.js';
+import { initTakramAtmosphere, setTakramEnabled, resizeTakramComposer } from './takramAtmosphere.js';
+import { gameSettings } from '../ui/settings.js';
 
 // Build the scene, camera, renderer, and clock. Returns them so main.js
 // can assign to its module-level bindings; everything else (ambient
@@ -68,6 +70,27 @@ export function initThree(ctx) {
 	const fog = new THREE.FogExp2(0xb0c0d0, 0.00002);
 	scene.fog = fog;
 	setDynamicFog(fog);
+
+	// Optional Bruneton-scattering atmospheric pipeline. Initialised
+	// at boot so the precomputed-texture fetch is already in flight
+	// by the time the user toggles the setting on; the composer only
+	// actually renders when both the toggle AND `isTakramReady()`
+	// agree.
+	try {
+		const viewer = getViewer();
+		if (viewer) initTakramAtmosphere(renderer, scene, camera, viewer);
+		setTakramEnabled(!!gameSettings.atmosphericScattering);
+	} catch (e) {
+		console.warn('[threeScene] takram atmosphere init skipped:', e);
+	}
+
+	// Keep the composer's render target sized to the renderer's
+	// drawing buffer. Wired off resize once at bring-up; further
+	// resizes from the existing window-resize handler land via
+	// renderer.setSize → we just hook the same event.
+	window.addEventListener('resize', () => {
+		resizeTakramComposer(window.innerWidth, window.innerHeight);
+	});
 
 	// Particles system uses the current Cesium viewer if one is up.
 	// Wrapped in try/catch because particles is optional — missing

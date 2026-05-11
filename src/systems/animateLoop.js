@@ -16,6 +16,11 @@ import * as Cesium from 'cesium';
 import { getViewer } from '../world/cesiumWorld';
 import { particles } from '../utils/particles';
 import { update } from './simLoop';
+import {
+	isTakramReady,
+	renderTakramComposer,
+	updateTakramPerFrame,
+} from './takramAtmosphere.js';
 
 export function startAnimateLoop(ctx) {
 	let frameCount = 0;
@@ -126,7 +131,19 @@ export function startAnimateLoop(ctx) {
 				}
 			} catch (e) { }
 
-			renderer.render(scene, camera);
+			// Layer 0 (world-space): NPCs, missiles, particles, smoke.
+			// When the optional takram atmospheric scattering pipeline
+			// is enabled AND its precomputed textures have loaded,
+			// route this pass through the EffectComposer so aerial
+			// perspective fog from real Bruneton scattering wraps the
+			// world. Otherwise fall back to the vanilla renderer path.
+			const takramHandled = isTakramReady() && (() => {
+				updateTakramPerFrame(state);
+				return renderTakramComposer();
+			})();
+			if (!takramHandled) {
+				renderer.render(scene, camera);
+			}
 
 			renderer.clearDepth();
 
@@ -135,6 +152,10 @@ export function startAnimateLoop(ctx) {
 
 			camera.layers.set(1);
 
+			// Layer 1 (cockpit-space): the player plane mesh at a
+			// different FOV. We deliberately DON'T atmospheric-process
+			// this pass — the airframe at chase distance shouldn't get
+			// fogged by the air column we're flying through.
 			renderer.render(scene, camera);
 		} else {
 			document.getElementById('threeContainer').classList.add('hidden');
