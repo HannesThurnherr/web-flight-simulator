@@ -111,7 +111,17 @@ export function initCesium() {
 	viewer.scene.skyAtmosphere = new Cesium.SkyAtmosphere();
 
 	viewer.scene.fog.enabled = true;
-	viewer.scene.fog.density = 0.0001;
+	// Bumped from 0.0001 → 0.00025 to give the globe a more
+	// volumetric, atmospheric feel at distance. Combined with the
+	// THREE.FogExp2 on the Three.js scene (driven per-frame by
+	// dynamicLighting), the terrain horizon now reads as "you can
+	// see the air itself" rather than crisp tiles all the way out.
+	// minimumBrightness keeps deep-fog tiles from going fully black
+	// on the night-side viewing angles.
+	viewer.scene.fog.density = 0.00025;
+	if ('minimumBrightness' in viewer.scene.fog) {
+		viewer.scene.fog.minimumBrightness = 0.05;
+	}
 
 	setControlsEnabled(false);
 

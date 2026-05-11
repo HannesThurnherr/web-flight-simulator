@@ -21,7 +21,7 @@ import { initSounds } from '../utils/gameplaySounds';
 import { loadingStatus, updateLoadingUI } from '../ui/loadingUI';
 import { loadPlayerPlane } from '../plane/loadPlayerPlane';
 import { getActivePlane } from '../plane/planes';
-import { setLights as setDynamicLights } from './dynamicLighting.js';
+import { setLights as setDynamicLights, setFog as setDynamicFog } from './dynamicLighting.js';
 
 // Build the scene, camera, renderer, and clock. Returns them so main.js
 // can assign to its module-level bindings; everything else (ambient
@@ -55,6 +55,19 @@ export function initThree(ctx) {
 	// drive intensity off the sun's position when `lightingMode` is
 	// 'realistic'. In 'arcade' mode it just keeps both at 1.0.
 	setDynamicLights(ambientLight, directionalLight);
+
+	// Exponential distance fog approximating aerial perspective:
+	// distant Three.js objects (NPCs, missiles, particles) fade
+	// into the atmosphere just like terrain fades behind Cesium's
+	// own fog. dynamicLighting drives color + density each frame
+	// from sun elevation, player altitude, and the
+	// camera-look-vs-sun-direction dot product so looking toward a
+	// sunset tints the haze warm-orange while looking away tints
+	// it cool blue. Density attenuated by altitude so high-altitude
+	// flying clears up the way real atmospheric thickness does.
+	const fog = new THREE.FogExp2(0xb0c0d0, 0.00002);
+	scene.fog = fog;
+	setDynamicFog(fog);
 
 	// Particles system uses the current Cesium viewer if one is up.
 	// Wrapped in try/catch because particles is optional — missing
