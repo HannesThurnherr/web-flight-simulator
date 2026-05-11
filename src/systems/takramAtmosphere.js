@@ -65,6 +65,8 @@ let _loggedReady = false;
 const _scratchSunECEF     = new THREE.Vector3();
 const _scratchWorldToECEF = new THREE.Matrix4();
 const _scratchInvView     = new THREE.Matrix4();
+const _scratchCameraECEF  = new THREE.Vector3();
+const _scratchCameraECEF3 = new Cesium.Cartesian3();
 
 // One-time init. Builds the EffectComposer with HalfFloatType (required
 // by the atmosphere shader for radiance/luminance) and kicks off the
@@ -145,9 +147,12 @@ export function getTakramStatus() {
 	return 'active';
 }
 
-// Per-frame update: feed the effect the current sun direction (ECEF)
-// and the world→ECEF transform derived from Cesium's camera viewMatrix.
-// Cheap — a handful of vector ops and a matrix invert.
+// Per-frame update: feed the effect the current sun direction (ECEF),
+// the camera's ECEF position, and the world→ECEF transform derived
+// from Cesium's camera viewMatrix. Without the camera position the
+// shader assumes the camera is at the ECEF origin (Earth's centre)
+// and the atmosphere LUT lookups produce no visible inscattering —
+// the effect runs but is silently invisible.
 export function updateTakramPerFrame(playerState) {
 	if (!isTakramReady() || !_viewer || !playerState) return;
 
@@ -158,6 +163,22 @@ export function updateTakramPerFrame(playerState) {
 	const jsDate = Cesium.JulianDate.toDate(jdate);
 	getSunDirectionECEF(jsDate, _scratchSunECEF);
 	_aerialPerspective.sunDirection.copy(_scratchSunECEF);
+
+	// Camera ECEF position. Sourced straight from the player's
+	// lat/lon/alt because Cesium's camera tracks the player anyway,
+	// and Cartesian3.fromDegrees works in Float64 internally so
+	// we preserve precision through the conversion.
+	Cesium.Cartesian3.fromDegrees(
+		playerState.lon || 0, playerState.lat || 0, playerState.alt || 0,
+		undefined, _scratchCameraECEF3);
+	_scratchCameraECEF.set(_scratchCameraECEF3.x, _scratchCameraECEF3.y, _scratchCameraECEF3.z);
+	if (_aerialPerspective.cameraPositionECEF) {
+		_aerialPerspective.cameraPositionECEF.copy(_scratchCameraECEF);
+	}
+	// Some versions expose `cameraPosition` too — set both if present.
+	if (_aerialPerspective.cameraPosition) {
+		_aerialPerspective.cameraPosition.copy(_scratchCameraECEF);
+	}
 
 	// World→ECEF matrix: inverse of Cesium's viewMatrix takes camera-
 	// space (which IS our Three scene's coordinate system, since the
@@ -172,6 +193,13 @@ export function updateTakramPerFrame(playerState) {
 	_scratchWorldToECEF.copy(_scratchInvView).invert();
 	if (_aerialPerspective.worldToECEFMatrix) {
 		_aerialPerspective.worldToECEFMatrix.copy(_scratchWorldToECEF);
+	}
+	// Optional altitude-correction flag — when supported, the effect
+	// snaps the camera onto the WGS84 ellipsoid for LUT lookups so
+	// small float-precision drift on the matrix doesn't push us
+	// kilometres above/below the actual surface.
+	if ('correctAltitude' in _aerialPerspective) {
+		_aerialPerspective.correctAltitude = true;
 	}
 }
 
