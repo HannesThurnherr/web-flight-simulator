@@ -26,14 +26,13 @@ export const gameSettings = {
 	// ramp with sun elevation at the player's lat/lon, so flying
 	// over the dark side of the planet actually goes dark.
 	lightingMode: 'arcade',
-	// Opt-in Bruneton-scattering atmospheric pipeline (takram
+	// Bruneton-scattering atmospheric pipeline (takram
 	// three-atmosphere). Replaces the THREE FogExp2 distance haze
 	// with a precomputed-LUT aerial-perspective postprocessing pass
-	// for the layer-0 render. Default OFF: requires a ~5 MB
-	// scattering-texture fetch on first enable, and the postprocess
-	// path is a different code path from the vanilla render so the
-	// flag lets users escape if anything breaks.
-	atmosphericScattering: false,
+	// for the layer-0 render. On by default; toggle off via System
+	// Config if the postprocess path causes trouble — the FogExp2
+	// fallback continues working with the flag flipped.
+	atmosphericScattering: true,
 	mouseSensitivity: 0.2,
 	showHud: true,
 	showHorizonLines: true,
