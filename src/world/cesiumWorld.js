@@ -110,18 +110,6 @@ export function initCesium() {
 	viewer.scene.postProcessStages.fxaa.enabled = true;
 	viewer.scene.skyAtmosphere = new Cesium.SkyAtmosphere();
 
-	// Custom atmospheric-haze PostProcessStage so the GLOBE picks up
-	// the same sun-direction-aware aerial perspective the takram
-	// EffectComposer paints on Three.js objects. Without this the
-	// terrain stayed crisp while NPCs got hazy — one atmosphere now
-	// covers both renderers. Tuned per-frame from dynamicLighting.
-	try {
-		// Lazy require to avoid a circular import at module-load time.
-		import('../systems/cesiumAtmosphereOverlay.js').then(({ initCesiumAtmosphereOverlay }) => {
-			initCesiumAtmosphereOverlay(viewer);
-		});
-	} catch (e) { console.warn('[cesiumWorld] atmosphere overlay deferred init failed:', e); }
-
 	viewer.scene.fog.enabled = true;
 	// Bumped from 0.0001 → 0.00025 to give the globe a more
 	// volumetric, atmospheric feel at distance. Combined with the
