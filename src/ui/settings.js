@@ -45,6 +45,17 @@ export const gameSettings = {
 	//              actually possible and gives AAMs a chance of
 	//              going maddog before the merge.
 	radarFidelity: 'arcade',
+	// IR / MAWS detection mode. Arcade is the old binary-cutoff,
+	// always-bright-emission model (missiles visible at full IRST
+	// range regardless of motor state). Realistic stacks three
+	// changes for a DCS-like missile-tracking feel:
+	//   (A) probabilistic detection at range-envelope edge
+	//   (B) per-missile post-boost emission decay (burning AAM is
+	//       bright, coasting AAM cools fast → much harder to track)
+	//   (C) tighter IRST nominal range (40 → 25 km baseline) and
+	//       halved missile emission so MAWS detection ranges land
+	//       in the single-digit km territory real systems advertise.
+	irFidelity: 'arcade',
 	mouseSensitivity: 0.2,
 	showHud: true,
 	showHorizonLines: true,
@@ -119,6 +130,8 @@ export function updateSettingsUI() {
 	if (atmoEl) atmoEl.checked = !!gameSettings.atmosphericScattering;
 	const radarFidEl = document.getElementById('radarFidelity');
 	if (radarFidEl) radarFidEl.value = gameSettings.radarFidelity || 'arcade';
+	const irFidEl = document.getElementById('irFidelity');
+	if (irFidEl) irFidEl.value = gameSettings.irFidelity || 'arcade';
 	document.getElementById('sensitivitySlider').value = gameSettings.mouseSensitivity;
 	document.getElementById('sensitivityValue').textContent = gameSettings.mouseSensitivity;
 	document.getElementById('showHud').checked = gameSettings.showHud;

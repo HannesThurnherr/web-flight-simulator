@@ -85,9 +85,21 @@ export class Missile {
 		// the JSON `simType` field so future AIM-9 variants land on the
 		// same weapon slot.
 		this.type = d.simType || 'AIM-9';
-		// Signature for sensor system. Pull from SIGNATURES by name
-		// stored in JSON.
-		this.signature = SIGNATURES[d.signature] || MISSILE_IR_SIGNATURE;
+		// Signature for sensor system. Per-instance clone (not a
+		// shared reference into SIGNATURES) so realistic-IR mode can
+		// decay this missile's irEmission post-boost without mutating
+		// the global signature table that every other missile reads
+		// from.
+		this.signature = { ...(SIGNATURES[d.signature] || MISSILE_IR_SIGNATURE) };
+		// Baseline IR emission captured at construction so the
+		// post-boost decay in scanIR can lerp `signature.irEmission`
+		// down from this value as the motor cools, without
+		// compounding across frames.
+		this._baseIrEmission = this.signature.irEmission;
+		// Seconds since the boost motor cut out. 0 while burning;
+		// counts up monotonically after, used by realistic-IR scanIR
+		// to compute the cooling-exhaust factor.
+		this._postBoostTime = 0;
 
 		this._scratchMatrix = new Cesium.Matrix4();
 		this._scratchHPR = new Cesium.HeadingPitchRoll();
@@ -289,6 +301,9 @@ export class Missile {
 			const v2Ratio = (this.speed * this.speed) / (f.dragRefSpeed * f.dragRefSpeed);
 			const dragAcc = f.dragRef * (rho / Math.max(1e-6, rhoRef)) * v2Ratio;
 			this.speed = Math.max(f.minSpeed, this.speed - dragAcc * dt);
+			// Accumulate post-boost coast time so realistic-IR scanIR
+			// can decay the exhaust signature as the motor cools.
+			this._postBoostTime += dt;
 		}
 
 		// ---- Gravity --------------------------------------------------------

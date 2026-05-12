@@ -653,13 +653,76 @@ function scanIR(observer, target, now) {
 
 	const tgtFwd = unitForwardENU(target);
 	const aspect = aspectAngleFromVectors(los.losHat, tgtFwd);
-	const effIr = sig.irEmission * irAspectFactor(aspect);
+
+	// Realistic-IR mode (gameSettings.irFidelity === 'realistic')
+	// stacks three changes onto the IR scan:
+	//
+	//   (B) Per-missile post-boost decay. A burning motor emits ~5×
+	//       what a cool coasting missile body does. Real-world AAMs
+	//       go from very bright to nearly cold over ~3-8 s after
+	//       motor burnout. We model with an exponential decay from
+	//       full emission down to 0.2× over a 3 s time constant,
+	//       keyed on `target._postBoostTime` set by Missile.update.
+	//   (C) Constant scale on missile irEmission (×0.5) plus the
+	//       fighter IRST `nominalRange` (×0.625 → 25 km baseline
+	//       instead of 40 km), bringing MAWS detection ranges
+	//       closer to real-world AAR-47 / MILDS / DAS figures
+	//       (single-digit km against post-boost AAMs, 10–20 km
+	//       against burning ones).
+	//   (A) Probabilistic detection gate at the range edge with
+	//       the same (1-t)² falloff used in realistic-radar mode,
+	//       so MAWS contacts flicker as they cross the threshold
+	//       instead of binary-snapping.
+	//
+	// Arcade IR is exactly the old behaviour — binary cutoff at the
+	// full IRST range, no decay, full emission for all missiles.
+	const realisticIR = gameSettings.irFidelity === 'realistic';
+
+	let emission = sig.irEmission;
+	let irNominalRange = s.nominalRange;
+	if (realisticIR && isMissileClass) {
+		// B — post-boost decay. _baseIrEmission + _postBoostTime are
+		// stamped on the missile in its constructor / update; fall
+		// back to the static signature value when missing (defensive
+		// — e.g., a non-Missile class with a missile signature, or
+		// older save state).
+		const base = (typeof target._baseIrEmission === 'number')
+			? target._baseIrEmission : sig.irEmission;
+		const postBoost = (typeof target._postBoostTime === 'number')
+			? target._postBoostTime : 0;
+		const burning = (typeof target.boostRemaining === 'number')
+			? target.boostRemaining > 0 : false;
+		const decayFactor = burning
+			? 1.0
+			: 0.2 + 0.8 * Math.exp(-postBoost / 3);
+		// C (part 1) — halve emission for missile-class targets.
+		emission = base * decayFactor * 0.5;
+	}
+	if (realisticIR) {
+		// C (part 2) — tighter baseline IRST envelope.
+		irNominalRange = s.nominalRange * 0.625;
+	}
+
+	const effIr = emission * irAspectFactor(aspect);
 
 	// Square-root law: IR falls with the square of distance (emission on a
 	// sphere), so detection range scales with √emission.
 	const ratio = effIr / s.referenceIr;
-	const rangeLimit = s.nominalRange * Math.sqrt(Math.max(1e-6, ratio));
-	if (los.losLenMeters > rangeLimit) return false;
+	const rangeLimit = irNominalRange * Math.sqrt(Math.max(1e-6, ratio));
+	if (realisticIR) {
+		const denom = Math.max(1e-3, rangeLimit);
+		const distRatio = los.losLenMeters / denom;
+		let pDetect;
+		if (distRatio <= 0.5)      pDetect = 1.0;
+		else if (distRatio >= 1.3) pDetect = 0.0;
+		else {
+			const t = (distRatio - 0.5) / 0.8;
+			pDetect = (1 - t) * (1 - t);
+		}
+		if (pDetect <= 0 || Math.random() > pDetect) return false;
+	} else {
+		if (los.losLenMeters > rangeLimit) return false;
+	}
 
 	if (isTerrainBlockedCachedPair(observer, target, los.obsECEF, los.tgtECEF)) return false;
 
