@@ -33,6 +33,18 @@ export const gameSettings = {
 	// Config if the postprocess path causes trouble — the FogExp2
 	// fallback continues working with the flag flipped.
 	atmosphericScattering: true,
+	// Sensor fidelity:
+	//   'arcade'   (default): radar detection is a hard binary range
+	//              cutoff — inside the envelope you get a continuous
+	//              reliable track, outside you get nothing. Predictable
+	//              gameplay, the model the sim has always shipped with.
+	//   'realistic': probabilistic detection. Strong-signal contacts
+	//              stay solid; marginal-range contacts blip in and
+	//              out frame-to-frame; missile locks can drop and
+	//              reacquire on their own at long range. Makes hiding
+	//              actually possible and gives AAMs a chance of
+	//              going maddog before the merge.
+	radarFidelity: 'arcade',
 	mouseSensitivity: 0.2,
 	showHud: true,
 	showHorizonLines: true,
@@ -105,6 +117,8 @@ export function updateSettingsUI() {
 	if (lightSel) lightSel.value = gameSettings.lightingMode || 'arcade';
 	const atmoEl = document.getElementById('atmosphericScattering');
 	if (atmoEl) atmoEl.checked = !!gameSettings.atmosphericScattering;
+	const radarFidEl = document.getElementById('radarFidelity');
+	if (radarFidEl) radarFidEl.value = gameSettings.radarFidelity || 'arcade';
 	document.getElementById('sensitivitySlider').value = gameSettings.mouseSensitivity;
 	document.getElementById('sensitivityValue').textContent = gameSettings.mouseSensitivity;
 	document.getElementById('showHud').checked = gameSettings.showHud;

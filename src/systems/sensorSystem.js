@@ -5,6 +5,7 @@ import {
 } from './signatures.js';
 import { identifyContact } from './iff.js';
 import { setJammerRegistry, accumulateJamAttenuation } from './ew/jammerSubsystem.js';
+import { gameSettings } from '../ui/settings.js';
 
 // ============================================================================
 // Sensor system — three independent detection channels wired through a shared
@@ -496,7 +497,43 @@ export function detectRadar(observer, target, radar) {
 	//     burnThroughRangeM. See systems/ew/jammerSubsystem.js.
 	const jamAtt = accumulateJamAttenuation(observer, target);
 	const effectiveRange = rangeLimit * jamAtt;
-	if (los.losLenMeters > effectiveRange) return null;
+
+	// Detection gate. Two modes:
+	//
+	//   arcade (default): hard binary cutoff at effectiveRange — at
+	//     0.99× you have a continuous reliable track, at 1.01× you
+	//     have nothing. Predictable for gameplay, infallible inside
+	//     range — the same behaviour the game has always had.
+	//
+	//   realistic: probabilistic gate keyed on distance / effectiveRange.
+	//     Below 0.5× → always detect (firm track).
+	//     0.5× to 1.3× → per-frame probability falling off as (1 - t)²,
+	//       so the marginal zone produces flickering / "blip in and
+	//       out" contacts. Combined with the 2 s channel memory in
+	//       RADAR_CHANNEL_MEMORY this gives the SA picture
+	//       "you have a soft contact about there".
+	//     Above 1.3× → never detect (hard ceiling so we don't keep
+	//       rolling dice on contacts a hundred km past where any
+	//       reasonable signal could exist).
+	//
+	//   The signal strength field on the resulting contact (computed
+	//   below) is already 1/r⁴-shaped so consumers that care about
+	//   strength (RWR spike intensity, AAM lock-integrity hysteresis)
+	//   keep behaving correctly in either mode.
+	if (gameSettings.radarFidelity === 'realistic') {
+		const denom = Math.max(1e-3, effectiveRange);
+		const distRatio = los.losLenMeters / denom;
+		let pDetect;
+		if (distRatio <= 0.5)      pDetect = 1.0;
+		else if (distRatio >= 1.3) pDetect = 0.0;
+		else {
+			const t = (distRatio - 0.5) / 0.8;   // 0..1 across the marginal band
+			pDetect = (1 - t) * (1 - t);          // quadratic falloff
+		}
+		if (pDetect <= 0 || Math.random() > pDetect) return null;
+	} else {
+		if (los.losLenMeters > effectiveRange) return null;
+	}
 
 	// 4) Terrain LOS — a ridge in the way kills the return. Cached
 	//    per (observer, target) pair with a 250 ms TTL so dense

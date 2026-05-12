@@ -175,6 +175,8 @@ export function setupModalListeners(ctx) {
 		if (lightSel) gameSettings.lightingMode = lightSel.value;
 		const atmoEl = document.getElementById('atmosphericScattering');
 		if (atmoEl) gameSettings.atmosphericScattering = atmoEl.checked;
+		const radarFidEl = document.getElementById('radarFidelity');
+		if (radarFidEl) gameSettings.radarFidelity = radarFidEl.value;
 		gameSettings.mouseSensitivity = parseFloat(document.getElementById('sensitivitySlider').value);
 		gameSettings.showHud          = document.getElementById('showHud').checked;
 		gameSettings.showHorizonLines = document.getElementById('showHorizonLines').checked;
