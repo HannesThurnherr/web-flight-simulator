@@ -135,15 +135,17 @@ export function makeStaticSamPilot(params) {
 	// don't strobe the antenna on/off every frame as a target sails
 	// across the cue boundary.
 	const emconHoldS  = params.emconHoldS ?? 3.0;
-	// HARM-evade. When the SAM's own radar sees an inbound missile-
-	// class contact within `harmEvadeDetectM`, it kills the radar for
-	// `harmEvadeDurationS` regardless of cue state. Real anti-HARM
-	// doctrine: the SAM has no way to know which missiles are AR vs
-	// active-radar from passive observation, so the conservative
-	// response is "any missile inbound → go quiet." The HARM seeker's
-	// memory window (typically ~10 s) is shorter than the wait, so a
-	// SAM that shuts down promptly tends to survive while still being
-	// a threat to subsequent passes.
+	// HARM-evade. When the SAM's own radar sees an inbound ANTI-
+	// RADIATION missile within `harmEvadeDetectM`, it kills the radar
+	// for `harmEvadeDurationS` regardless of cue state. Going dark
+	// only defeats a weapon that homes on the emission — a HARM /
+	// ALARM. It does nothing against a GPS JDAM, a laser bomb, a
+	// cruise missile or an AMRAAM, so the SAM keeps radiating (and
+	// keeps engaging) against those rather than blinding itself the
+	// instant the strike package releases. The ARM seeker's memory
+	// window (~10 s) is shorter than the shutdown wait, so a SAM
+	// that drops promptly tends to survive the HARM and still be a
+	// threat to subsequent passes.
 	const harmEvadeDetectM    = params.harmEvadeDetectM    ?? 35000;
 	const harmEvadeDurationS  = params.harmEvadeDurationS  ?? 12;
 
@@ -221,15 +223,24 @@ export function makeStaticSamPilot(params) {
 				if (!target || target.destroyed) continue;
 				if (target.team && unit.team && target.team === unit.team) continue;
 				const sig = target.signature;
-				// Inbound-threat classes that justify popping radar:
-				// AAMs (HARM in flight), cruise missiles, and bombs.
-				// A diving JDAM/SDB targeting the battery itself is
-				// just as much a "I need to engage NOW" stimulus as
-				// a HARM coming in.
 				if (!sig) continue;
-				if (sig.unitClass !== 'missile' &&
-				    sig.unitClass !== 'cruise_missile' &&
-				    sig.unitClass !== 'bomb') continue;
+				// HARM-evade is specifically a response to ANTI-
+				// RADIATION weapons homing on the battery's emissions.
+				// Going dark only helps against something that needs
+				// the radar lit to find you — a HARM / ALARM. Against
+				// a GPS JDAM, a laser bomb, a cruise missile, or an
+				// AMRAAM the SAM gains nothing by shutting down (those
+				// don't track emissions) and would just blind itself
+				// while the strike package walks in. The previous
+				// "any missile/bomb inbound → go quiet" logic made the
+				// whole IADS suicide-silent the moment the player
+				// released ordnance, so they could overfly unengaged.
+				// Identify ARMs by seeker type (covers future ALARM /
+				// Kh-31P), with a simType fallback for safety.
+				const seeker = target.data && target.data.seekerType;
+				const isAntiRad = seeker === 'anti_radiation' ||
+					target.type === 'AGM-88';
+				if (!isAntiRad) continue;
 				if (!c.radar) continue;
 				const dE = (target.lon - unit.lon) * 111320 * cosLat;
 				const dN = (target.lat - unit.lat) * 111320;
