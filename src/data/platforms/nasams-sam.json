@@ -30,7 +30,8 @@
 			"perTargetReengageS": 20,
 			"maxInFlight": 4,
 			"minRangeM": 1500,
-			"maxRangeM": 25000
+			"maxRangeM": 25000,
+			"engagementCeilingM": 14000
 		}
 	},
 	"physicsOverrides": {

@@ -669,6 +669,23 @@ export class NPCSystem {
 		const sensors = {};
 		if (platform.sensors?.radar) {
 			sensors.radar = { ...FIGHTER_RADAR_DEFAULT, ...platform.sensors.radar };
+			// Field-name bridge: platform JSON authors the radar field
+			// of view as `fovHalfHDeg` / `fovHalfVDeg` (degrees,
+			// half-angle), but detectRadar reads `fovH` / `fovV`
+			// (radians). Without this translation a ground SAM/EWR
+			// silently inherited FIGHTER_RADAR_DEFAULT's ±60° forward
+			// cone — so a NASAMS that declared a 360°/±85° search
+			// volume actually only saw targets within ±60° of its
+			// (north-facing) nose. A player ingressing from any other
+			// bearing was physically invisible to the battery; only
+			// the wide-orbit ISR drone wandered through the cone.
+			const r = sensors.radar;
+			if (typeof r.fovHalfHDeg === 'number') {
+				r.fovH = r.fovHalfHDeg * Math.PI / 180;
+			}
+			if (typeof r.fovHalfVDeg === 'number') {
+				r.fovV = r.fovHalfVDeg * Math.PI / 180;
+			}
 		}
 		if (platform.sensors?.ir) {
 			sensors.ir = { ...FIGHTER_IRST_DEFAULT, ...platform.sensors.ir };
