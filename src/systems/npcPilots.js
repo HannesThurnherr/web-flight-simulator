@@ -268,13 +268,24 @@ export function makeStaticSamPilot(params) {
 		return false;
 	}
 
-	function pickTarget(unit, weapon) {
+	// `now` lets the picker skip targets still inside their per-target
+	// re-engage cooldown. Without this the picker would keep returning
+	// the single closest contact (often a loitering recon drone over
+	// the defended point) every frame; the caller saw it was on
+	// cooldown and bailed the whole update — so a SAM that recently
+	// shot at the drone would never fall through to engage the player
+	// even with the player in-envelope and radar-tracked. Skipping
+	// cooled-down targets here makes the picker naturally return the
+	// next-best engageable contact instead.
+	function pickTarget(unit, weapon, now) {
 		if (!unit.contacts) return null;
 		let best = null;
 		let bestScore = Infinity;   // lower wins (range × class-priority)
 		for (const [target, c] of unit.contacts) {
 			if (!target || target.destroyed || target.active === false) continue;
 			if (target.team && unit.team && target.team === unit.team) continue;
+			const lastTime = pilotState.engagementCooldown.get(target);
+			if (lastTime != null && now - lastTime < reengageT) continue;
 			const sig = target.signature;
 			if (!sig) continue;
 			// Air-defence doctrine. SAMs DO engage incoming cruise
@@ -418,14 +429,13 @@ export function makeStaticSamPilot(params) {
 			// ------------------------------------------------------
 			// No active engagement — look for a fresh target.
 			// ------------------------------------------------------
-			const best = pickTarget(unit, weapon);
+			// pickTarget now skips targets still inside their
+			// per-target reengage cooldown, so a recently-shot recon
+			// drone no longer blocks the picker from falling through
+			// to the player. `best` is therefore already cooldown-
+			// clear; no extra cooldown gate needed here.
+			const best = pickTarget(unit, weapon, now);
 			if (!best) return;
-
-			// Per-target reengage cooldown. If we just fired at this
-			// bandit and didn't kill them, give the outcome of the
-			// salvo time to play out before committing more missiles.
-			const lastTime = pilotState.engagementCooldown.get(best.target);
-			if (lastTime != null && now - lastTime < reengageT) return;
 
 			// Magazine-conservation policy. When the launcher is
 			// down to its last N missiles, switch to single-shot so
