@@ -440,6 +440,76 @@ export function isRadiating(unitOrRadar) {
 	return true;
 }
 
+// Diagnostic mirror of detectRadar's gate sequence. Returns a short
+// string naming the first stage that rejects (observer, target), or
+// 'DETECTED' if all gates pass. Pure read-only — no side effects, no
+// random roll (range gate is reported as its deterministic margin so
+// the answer is stable frame-to-frame). Used by the commander
+// radar-debug overlay to answer "why isn't this SAM seeing me?"
+// without threading reason strings through the hot path.
+export function explainRadarRejection(observer, target, radar) {
+	if (!isRadiating(radar)) return 'RADAR-OFF (emcon / destroyed)';
+	const sig = target && target.signature;
+	if (!sig) return 'NO-SIGNATURE';
+	if (radar.targetKinds && radar.targetKinds.length &&
+		!radar.targetKinds.includes(target.kind)) {
+		return `TARGET-KIND (${target.kind} not in [${radar.targetKinds}])`;
+	}
+	const los = losObserverToTarget(observer, target);
+	if (los.losLenMeters < 1) return 'COINCIDENT';
+	const boresightPitch = (radar.boresightPitchDeg != null)
+		? radar.boresightPitchDeg * Math.PI / 180 : 0;
+	const boresightYaw = (radar.boresightYawDeg != null)
+		? radar.boresightYawDeg * Math.PI / 180 : 0;
+	let azRel = los.bearingBody - boresightYaw;
+	while (azRel >  Math.PI) azRel -= 2 * Math.PI;
+	while (azRel < -Math.PI) azRel += 2 * Math.PI;
+	const elRel = los.elevationBody - boresightPitch;
+	const d2 = (v) => (v * 180 / Math.PI).toFixed(0);
+	if (Math.abs(azRel) > radar.fovH) {
+		return `FOV-AZ (az ${d2(azRel)}° > ±${d2(radar.fovH)}°)`;
+	}
+	if (Math.abs(elRel) > radar.fovV) {
+		return `FOV-EL (el ${d2(elRel)}° > ±${d2(radar.fovV)}°)`;
+	}
+	const tgtFwd = unitForwardENU(target);
+	const aspect = aspectAngleFromVectors(los.losHat, tgtFwd);
+	const effRcs = sig.rcs * rcsAspectFactor(aspect);
+	const ratio = effRcs / radar.referenceRcs;
+	const rangeLimit = radar.nominalRange * Math.pow(Math.max(1e-6, ratio), 0.25);
+	const jamAtt = accumulateJamAttenuation(observer, target);
+	const effectiveRange = rangeLimit * jamAtt;
+	const dist = los.losLenMeters;
+	if (gameSettings.radarFidelity === 'realistic') {
+		const distRatio = dist / Math.max(1e-3, effectiveRange);
+		if (distRatio >= 1.3) {
+			return `RANGE (${(dist / 1000).toFixed(1)} km, ratio ${distRatio.toFixed(2)} ≥ 1.3 hard ceiling)`;
+		}
+		if (distRatio > 0.5) {
+			const t = (distRatio - 0.5) / 0.8;
+			const p = ((1 - t) * (1 - t) * 100).toFixed(0);
+			// Not a hard reject, but report the marginal probability
+			// so the user understands the flicker.
+			// (fall through — still report later gates)
+			void p;
+		}
+	} else if (dist > effectiveRange) {
+		return `RANGE (${(dist / 1000).toFixed(1)} km > ${(effectiveRange / 1000).toFixed(1)} km eff)`;
+	}
+	if (isTerrainBlockedCachedPair(observer, target, los.obsECEF, los.tgtECEF)) {
+		return 'TERRAIN-MASKED';
+	}
+	const tgtSpeed = target.speed || 0;
+	const tgtLosCos =
+		tgtFwd.x * los.losHat.x + tgtFwd.y * los.losHat.y + tgtFwd.z * los.losHat.z;
+	const tgtLosSpeed = Math.abs(tgtLosCos) * tgtSpeed;
+	const notchThreshold = (radar.notchThreshold != null) ? radar.notchThreshold : 90;
+	if (NOTCH_ENABLED && tgtLosSpeed < notchThreshold) {
+		return `NOTCH (LOS-vel ${tgtLosSpeed.toFixed(0)} < ${notchThreshold} m/s — beaming)`;
+	}
+	return 'DETECTED';
+}
+
 export function detectRadar(observer, target, radar) {
 	if (!isRadiating(radar)) return null;
 	const sig = target && target.signature;

@@ -112,17 +112,14 @@ export function makeStaticSamPilot(params) {
 	const maxInFlight = params.maxInFlight ?? 4;
 	const minRange    = params.minRangeM ?? 1500;
 	const maxRange    = params.maxRangeM ?? 25000;
-	// Engagement ceiling — max target altitude ABOVE the launcher the
-	// battery will commit a missile to. Surface-launched AAMs bleed a
-	// brutal amount of energy climbing vertically; a NASAMS (AMRAAM-
-	// derived) realistically tops out ~14-16 km. Without this gate the
-	// battery happily salvos a high-altitude ISR drone (RQ-4 @ 18 km)
-	// at the ragged edge of its slant range, re-engaging every
-	// reengageT until the whole magazine is gone — then sits dry when
-	// the actual strike package arrives. Default 16 km is generous
-	// enough for any sane fighter strike profile; per-platform JSON
-	// can raise it (Patriot ~24 km) or lower it (SHORAD).
-	const ceilingAGL  = params.engagementCeilingM ?? 16000;
+	// Optional engagement ceiling — max target altitude ABOVE the
+	// launcher the battery will commit to. Off by default (Infinity):
+	// real ceiling behaviour is better modelled by the missile's own
+	// energy/drag running it out before intercept than by a hard
+	// doctrine cutoff that makes the battery ignore targets the
+	// debug overlay clearly shows it tracking. A scenario / platform
+	// can still opt in via `engagementCeilingM` if desired.
+	const ceilingAGL  = params.engagementCeilingM ?? Infinity;
 
 	// Emissions discipline. When `emcon` is true, the SAM keeps its
 	// own radar OFF until cued by the team datalink (e.g. an EWR has

@@ -1,6 +1,6 @@
 import * as Cesium from 'cesium';
 import { allDatalinks } from './teamDatalink.js';
-import { isRadiating } from './sensorSystem.js';
+import { isRadiating, explainRadarRejection } from './sensorSystem.js';
 
 // ============================================================================
 // Commander ("god's eye") view.
@@ -1645,6 +1645,38 @@ export class CommanderView {
 				'locks=' + diag.locks,
 				'filter=' + (hasFilter ? `${selected.size} selected` : 'all'),
 				'entities=' + this._debugEntities.length);
+		}
+
+		// Live "why isn't this radar seeing the player" readout.
+		// Throttled to ~1.5 s so the console stays readable while
+		// still updating as the player flies through / over a SAM.
+		// Only logs radiating hostile observers that do NOT currently
+		// hold a radar contact on the player — i.e. the ones the
+		// player would expect to be shot at by but isn't.
+		const nowMs = (typeof performance !== 'undefined') ? performance.now() : Date.now();
+		if (playerState && nowMs - (this._radarWhyLogAt || 0) > 1500) {
+			this._radarWhyLogAt = nowMs;
+			const lines = [];
+			for (const obs of observers) {
+				if (!obs || obs === playerState) continue;
+				if (obs.destroyed || obs.active === false) continue;
+				if (obs.team && obs.team === playerState.team) continue;
+				const r = obs.sensors && obs.sensors.radar;
+				if (!r) continue;
+				const held = obs.contacts && obs.contacts.get(playerState);
+				if (held && held.radar) continue;   // already tracking us
+				let why;
+				try { why = explainRadarRejection(obs, playerState, r); }
+				catch (e) { why = 'probe-threw'; }
+				if (why === 'DETECTED') continue;    // would detect; flicker/memory
+				const name = obs.name || obs.platformId || obs.id || 'radar';
+				lines.push(`  ${name}: ${why}`);
+			}
+			if (lines.length > 0) {
+				console.log('[CMDR debug] radars NOT seeing player:\n' + lines.join('\n'));
+			} else {
+				console.log('[CMDR debug] every radiating hostile radar can see the player');
+			}
 		}
 	}
 
