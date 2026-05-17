@@ -112,14 +112,6 @@ export function makeStaticSamPilot(params) {
 	const maxInFlight = params.maxInFlight ?? 4;
 	const minRange    = params.minRangeM ?? 1500;
 	const maxRange    = params.maxRangeM ?? 25000;
-	// Optional engagement ceiling — max target altitude ABOVE the
-	// launcher the battery will commit to. Off by default (Infinity):
-	// real ceiling behaviour is better modelled by the missile's own
-	// energy/drag running it out before intercept than by a hard
-	// doctrine cutoff that makes the battery ignore targets the
-	// debug overlay clearly shows it tracking. A scenario / platform
-	// can still opt in via `engagementCeilingM` if desired.
-	const ceilingAGL  = params.engagementCeilingM ?? Infinity;
 
 	// Emissions discipline. When `emcon` is true, the SAM keeps its
 	// own radar OFF until cued by the team datalink (e.g. an EWR has
@@ -305,11 +297,6 @@ export function makeStaticSamPilot(params) {
 			if (target.team && unit.team && target.team === unit.team) continue;
 			const lastTime = pilotState.engagementCooldown.get(target);
 			if (lastTime != null && now - lastTime < reengageT) continue;
-			// Engagement ceiling — don't waste missiles on targets
-			// above the battery's practical reach. Altitude is AGL
-			// relative to the launcher so a SAM on a 600 m plateau
-			// firing at a 14 km MSL target sees ~13.4 km, not 14.
-			if (((target.alt || 0) - (unit.alt || 0)) > ceilingAGL) continue;
 			const sig = target.signature;
 			if (!sig) continue;
 			// Air-defence doctrine. SAMs DO engage incoming cruise
