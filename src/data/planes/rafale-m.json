@@ -30,7 +30,7 @@
 		"dampingCoef": {
 			"pitch": 2200,
 			"roll": 500,
-			"yaw": 2500
+			"yaw": 7500
 		},
 		"inertia": {
 			"pitch": 130000,
@@ -45,7 +45,7 @@
 		"gSoftLimit": 9.0,
 		"gHardLimit": 11.0,
 		"pitchStabilityCoef": 0.2,
-		"yawStabilityCoef": 0.45,
+		"yawStabilityCoef": 1.35,
 		"alphaStallDeg": 32,
 		"clMaxStall": 1.95,
 		"postStallPlateau": 1.05,

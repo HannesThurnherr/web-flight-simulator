@@ -129,7 +129,13 @@ export function dragCoefficient(CL, alpha, beta, cdZero = CD_ZERO_DEFAULT) {
 // Side force coefficient from sideslip. Negative sign convention: β > 0
 // (wind from the left) pushes the airframe toward body-left, giving a
 // force in the -body_X direction via the body-frame sideforce vector.
-const CY_BETA = -1.0; // per radian
+// Real fighter Cy_β figures sit around −0.6 to −1.5 per rad against
+// the full-span reference; combined with our other lumped factors,
+// the equivalent number for "force = qS·Cy·β" lands around −2.5.
+// Previously this was −1.0, which let β linger ~10 seconds after a
+// hard turn at low post-merge airspeed because the side-force
+// component of velocity-vector alignment was effectively half-strength.
+const CY_BETA = -2.5; // per radian
 export function sideForceCoefficient(beta) {
 	return CY_BETA * beta;
 }
