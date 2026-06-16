@@ -45,6 +45,7 @@ import { StrikePlannerView } from './strikePlanner';
 import { soundManager } from '../utils/soundManager';
 import { checkCrash, checkGPWS } from './crashDetection';
 import { updateTgp } from '../ui/tgp.js';
+import { updateNpcSpectatorHud } from '../ui/npcSpectatorHud.js';
 
 const GEOCODE_INTERVAL = 10000;
 const GEOCODE_MIN_DIST = 1000;
@@ -138,6 +139,9 @@ export function update(dt, ctx) {
 		state.loadFactor = physicsResult.loadFactor || 0;
 		state.gLimiterActive = !!physicsResult.gLimiterActive;
 		state.tvDeflection = physicsResult.tvDeflection || { pitch: 0, yaw: 0 };
+		// Dual-mode propulsion telemetry for the HUD gauge (null on
+		// conventional jets → gauge stays hidden).
+		state.propulsion = physicsResult.propulsion || null;
 
 		state.mouseSteering = !!input.mouseSteering;
 		state.cursorX = input.cursorX;
@@ -461,6 +465,9 @@ export function update(dt, ctx) {
 	// they're chasing once the map closes. Lives outside any other
 	// view container so it stays visible during chase-cam.
 	updateSpectatorInfoPanel(ctx);
+	// Full AI-decision readout (behavior stack, fire control, targets,
+	// weapons) for the spectated NPC — left side of the screen.
+	updateNpcSpectatorHud(ctx);
 
 	if (ctx.spectatorTarget) {
 		const gone = ctx.spectatorTarget.destroyed ||
@@ -553,6 +560,15 @@ export function update(dt, ctx) {
 	// oscillation.
 	if (weaponSystem && weaponSystem.syncMeshMatrices) weaponSystem.syncMeshMatrices();
 	if (npcSystem    && npcSystem.syncMeshMatrices)    npcSystem.syncMeshMatrices();
+
+	// Player directed-energy self-defense (equipped SHiELD laser pod).
+	// Ticked after the camera is placed so the beam bakes against the
+	// frame's view matrix. Scans NPC/SAM-fired projectiles for inbound
+	// threats it can burn down. The player state is the emitter "unit".
+	if (state.equipment && state.equipment.laserPD) {
+		const inbound = npcSystem ? npcSystem.projectiles : [];
+		state.equipment.laserPD.update(state, inbound, dt);
+	}
 
 	// Scenario tick: scripted movement / telemetry readouts. Runs for
 	// both FLYING and CRASHED so lab-style scenarios (e.g. notching

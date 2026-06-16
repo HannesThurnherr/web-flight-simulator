@@ -17,6 +17,7 @@
 import * as THREE from 'three';
 import { getViewer } from '../world/cesiumWorld';
 import { particles } from '../utils/particles';
+import { initLaserPD } from './laserPD.js';
 import { initSounds } from '../utils/gameplaySounds';
 import { loadingStatus, updateLoadingUI } from '../ui/loadingUI';
 import { loadPlayerPlane } from '../plane/loadPlayerPlane';
@@ -42,6 +43,19 @@ export function initThree(ctx) {
 
 	const threeContainer = document.getElementById('threeContainer');
 	threeContainer.appendChild(renderer.domElement);
+
+	// Safety net: if the GPU ever drops the WebGL context (historically from
+	// particle-mesh overload on mass impacts — now capped in particles.js),
+	// preventDefault lets the browser attempt restoration instead of leaving
+	// the canvas permanently blank/grey. On restore, THREE re-uploads its
+	// programs/buffers automatically on the next render.
+	renderer.domElement.addEventListener('webglcontextlost', (e) => {
+		e.preventDefault();
+		console.warn('[threeScene] WebGL context lost — attempting recovery');
+	}, false);
+	renderer.domElement.addEventListener('webglcontextrestored', () => {
+		console.warn('[threeScene] WebGL context restored');
+	}, false);
 	threeContainer.classList.add('hidden');
 
 	const ambientLight = new THREE.AmbientLight(0xffffff, 1.0);
@@ -96,6 +110,9 @@ export function initThree(ctx) {
 	// Wrapped in try/catch because particles is optional — missing
 	// shouldn't block the rest of bring-up.
 	try { particles.init(scene, getViewer()); } catch (e) { }
+	// Directed-energy point defense (NFAC.4) renders its beam in the same
+	// camera-space scene; hand it the same scene + viewer refs.
+	try { initLaserPD(scene, getViewer()); } catch (e) { }
 
 	// Hand the refs back to main.js so it can populate its own module-
 	// scope bindings before we call the sound + plane loaders — those

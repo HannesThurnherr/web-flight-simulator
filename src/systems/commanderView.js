@@ -1,6 +1,10 @@
 import * as Cesium from 'cesium';
 import { allDatalinks } from './teamDatalink.js';
 import { isRadiating, explainRadarRejection } from './sensorSystem.js';
+import {
+	MAP_COLORS, teamColor, categoryForUnit, categoryForMissile,
+	categoryRotates, isGroundUnit, iconUri, iconSvgMarkup,
+} from './mapIcons.js';
 
 // ============================================================================
 // Commander ("god's eye") view.
@@ -43,26 +47,42 @@ const TRAIL_FADE_CHUNKS = 6;
 //   Hostile msl      → magenta               (bright, distinct from both
 //                                              faction colors; draws the eye
 //                                              to an inbound threat)
-const COLOR_PLAYER           = Cesium.Color.fromCssColorString('#00eaff');
+// Cesium.Color objects are derived from the single shared hex palette in
+// mapIcons.js so the billboards, trails, labels and DOM legend can never
+// drift out of sync.
+const COLOR_PLAYER           = Cesium.Color.fromCssColorString(MAP_COLORS.player);
 const COLOR_FACTIONS = {
-	'hostile-red':  Cesium.Color.fromCssColorString('#ff4040'),
-	'hostile-blue': Cesium.Color.fromCssColorString('#ffa040'),
+	'hostile-red':  Cesium.Color.fromCssColorString(MAP_COLORS['hostile-red']),
+	'hostile-blue': Cesium.Color.fromCssColorString(MAP_COLORS['hostile-blue']),
 	// Friendly non-player units (wingman, AWACS, tanker, future
 	// ground forces). Cyan family but distinct from the player's
 	// marker so the eye can still pick the player out at a glance.
-	'friendly':     Cesium.Color.fromCssColorString('#40d8ff'),
+	'friendly':     Cesium.Color.fromCssColorString(MAP_COLORS.friendly),
 };
-const COLOR_NPC_FALLBACK     = Cesium.Color.fromCssColorString('#ff4040');
-const COLOR_MISSILE_FRIENDLY = Cesium.Color.fromCssColorString('#ffc040');
-const COLOR_MISSILE_HOSTILE  = Cesium.Color.fromCssColorString('#ff40e0');
+const COLOR_NPC_FALLBACK     = Cesium.Color.fromCssColorString(MAP_COLORS['hostile-red']);
 const COLOR_TRAIL_PLAYER             = COLOR_PLAYER.withAlpha(0.6);
-const COLOR_TRAIL_MISSILE_FRIENDLY   = COLOR_MISSILE_FRIENDLY.withAlpha(0.75);
-const COLOR_TRAIL_MISSILE_HOSTILE    = COLOR_MISSILE_HOSTILE.withAlpha(0.85);
 
 // Helper: colour + trail colour for an NPC unit, from its team tag.
 function colorsForNpc(unit) {
 	const base = COLOR_FACTIONS[unit.team] || COLOR_NPC_FALLBACK;
 	return { marker: base, trail: base.withAlpha(0.55) };
+}
+
+// Missile trail colour by the LAUNCHING team — not by friend/foe relative to
+// the player. In an NPC-vs-NPC fight that's the difference between two
+// readable sides and an indistinguishable magenta/amber mush. Cached as
+// Cesium.Color objects so the 4 Hz sampler never re-parses a CSS string.
+// Slightly brighter alpha than aircraft trails (0.7 vs 0.55) so live weapons
+// still pop against the airframe tracks that share their colour.
+const _missileTrailCache = new Map();
+function missileTrailColor(team) {
+	const key = team || 'friendly';
+	let c = _missileTrailCache.get(key);
+	if (!c) {
+		c = Cesium.Color.fromCssColorString(teamColor(key)).withAlpha(0.7);
+		_missileTrailCache.set(key, c);
+	}
+	return c;
 }
 
 // Helper: was this pointer event aimed at a DOM overlay that sits on top
@@ -97,6 +117,19 @@ function _isOverlayTarget(target) {
 const COLOR_OCCLUDED_MARKER = Cesium.Color.fromCssColorString('#707070').withAlpha(0.55);
 const COLOR_OCCLUDED_LABEL  = Cesium.Color.fromCssColorString('#a0a0a0');
 const COLOR_TRAIL_OCCLUDED  = Cesium.Color.fromCssColorString('#707070').withAlpha(0.22);
+// Billboard tint applied when an icon is behind terrain — a muted grey
+// multiply that reads as "occluded" without losing the silhouette.
+const TINT_VISIBLE  = Cesium.Color.WHITE;
+const TINT_OCCLUDED = Cesium.Color.fromCssColorString(MAP_COLORS.occluded).withAlpha(0.85);
+// Label chip background (translucent dark glass).
+const LABEL_BG = new Cesium.Color(0.02, 0.05, 0.09, 0.6);
+// On-screen pixel size per glyph category. Big-wing platforms read larger;
+// munitions stay small so a saturated strike doesn't bury the airframes.
+const ICON_SIZE = {
+	player: 34, fighter: 30, stealth: 30, ew_jet: 30, awacs: 36, bomber: 36,
+	drone: 31, sam: 29, aaa: 29, radar: 29, jammer: 29, laser: 29, command: 29,
+	aam: 21, arm: 23, cruise: 25, bomb: 21, sam_msl: 21, dot: 23,
+};
 
 export class CommanderView {
 	constructor(viewer) {
@@ -191,21 +224,25 @@ export class CommanderView {
 		if (document.getElementById('commander-paused-badge')) return;
 		const el = document.createElement('div');
 		el.id = 'commander-paused-badge';
-		el.textContent = 'PAUSED';
 		el.style.cssText = `
 			position: fixed;
 			top: 16px; left: 50%; transform: translateX(-50%);
-			padding: 6px 18px;
-			border: 1px solid rgba(255, 200, 0, 0.75);
-			background: rgba(40, 25, 0, 0.75);
-			color: #ffd040;
+			padding: 7px 20px;
+			border: 1px solid rgba(255, 190, 60, 0.6);
+			border-radius: 7px;
+			background: linear-gradient(180deg, rgba(40,28,4,0.86), rgba(26,18,2,0.84));
+			box-shadow: 0 6px 22px rgba(0,0,0,0.45), 0 0 16px rgba(255,180,40,0.18);
+			backdrop-filter: blur(6px);
+			-webkit-backdrop-filter: blur(6px);
+			color: #ffce5c;
 			font-family: 'AceCombat', monospace;
-			font-size: 14px; letter-spacing: 3px;
-			text-shadow: 0 0 6px rgba(255, 200, 0, 0.8);
+			font-size: 14px; letter-spacing: 4px;
+			text-shadow: 0 0 8px rgba(255, 200, 0, 0.7);
 			z-index: 27;
 			display: none;
 			pointer-events: none;
 		`;
+		el.textContent = '⏸  PAUSED';
 		document.body.appendChild(el);
 		this._pausedBadge = el;
 	}
@@ -223,35 +260,69 @@ export class CommanderView {
 		p.style.cssText = `
 			position: fixed;
 			left: 16px; bottom: 16px;
-			padding: 8px 12px;
-			border: 1px solid rgba(0, 255, 0, 0.4);
-			background: rgba(0, 15, 0, 0.7);
-			color: #0f0;
+			padding: 12px 14px 10px;
+			border: 1px solid rgba(120, 170, 210, 0.22);
+			border-radius: 9px;
+			background: linear-gradient(180deg, rgba(10,18,26,0.9), rgba(6,11,16,0.88));
+			box-shadow: 0 8px 28px rgba(0,0,0,0.5);
+			backdrop-filter: blur(9px);
+			-webkit-backdrop-filter: blur(9px);
+			color: #c8d6e2;
 			font-family: 'AceCombat', monospace;
-			font-size: 11px;
-			line-height: 1.5;
-			letter-spacing: 1px;
-			text-shadow: 0 0 5px rgba(0, 255, 0, 0.6);
+			font-size: 10.5px;
+			line-height: 1.3;
+			letter-spacing: 0.6px;
 			z-index: 25;
 			pointer-events: none;
 			display: none;
+			max-width: 330px;
 		`;
-		const row = (color, label) =>
-			`<div style="display:flex; align-items:center; gap:8px;">
-				<span style="
-					display:inline-block; width:10px; height:10px; border-radius:50%;
-					background:${color}; box-shadow:0 0 6px ${color};
-				"></span>${label}
+		const C = MAP_COLORS;
+		const item = (cat, hex, label) =>
+			`<div style="display:flex; align-items:center; gap:7px; min-width:0;">
+				<span style="display:inline-flex; width:19px; height:19px; flex:0 0 19px; align-items:center; justify-content:center;">${iconSvgMarkup(cat, hex, 17)}</span>
+				<span style="white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${label}</span>
+			</div>`;
+		const section = (title, items) =>
+			`<div style="margin-top:9px;">
+				<div style="font-size:9px; letter-spacing:1.8px; color:#7fa8c4; margin-bottom:5px; border-bottom:1px solid rgba(120,170,210,0.16); padding-bottom:3px;">${title}</div>
+				<div style="display:grid; grid-template-columns:1fr 1fr; gap:4px 14px;">${items.join('')}</div>
 			</div>`;
 		p.innerHTML =
-			`<div style="font-weight:bold; margin-bottom:4px;">MAP LEGEND</div>` +
-			row('#00eaff', 'Player')          +
-			row('#ff4040', 'Hostile — Red')   +
-			row('#ffa040', 'Hostile — Blue')  +
-			row('#ffc040', 'Friendly missile') +
-			row('#ff40e0', 'Hostile missile') +
-			`<div style="margin-top:6px; opacity:0.65; font-size:10px;">
-				drag pan • right-drag tilt • wheel zoom
+			`<div style="display:flex; align-items:center; gap:8px; font-size:11px; letter-spacing:2px; color:#e3edf4;">
+				<span style="width:8px; height:8px; border-radius:50%; background:${C.player}; box-shadow:0 0 9px ${C.player};"></span>TACTICAL DISPLAY
+			</div>` +
+			section('AFFILIATION', [
+				item('fighter', C.player,          'Player / friendly'),
+				item('fighter', C['hostile-red'],  'Hostile · Red'),
+				item('fighter', C['hostile-blue'], 'Hostile · Blue'),
+			]) +
+			section('PLATFORMS', [
+				item('awacs',  C.friendly,        'AEW&amp;C / tanker'),
+				item('bomber', C['hostile-red'],  'Stealth bomber'),
+				item('drone',  C.friendly,        'ISR drone'),
+				item('ew_jet', C['hostile-blue'], 'EW jet'),
+			]) +
+			section('SURFACE', [
+				item('sam',     C['hostile-red'],  'SAM battery'),
+				item('radar',   C['hostile-red'],  'EW radar'),
+				item('aaa',     C['hostile-red'],  'AAA / SHORAD'),
+				item('jammer',  C['hostile-red'],  'Jammer'),
+				item('command', C['hostile-blue'], 'Command post'),
+				item('laser',   C.friendly,        'DEW / laser'),
+			]) +
+			section('WEAPONS', [
+				item('aam',     C.neutral, 'A-A missile'),
+				item('arm',     C.neutral, 'Anti-radiation'),
+				item('cruise',  C.neutral, 'Cruise missile'),
+				item('bomb',    C.neutral, 'Guided bomb'),
+				item('sam_msl', C.neutral, 'SAM interceptor'),
+			]) +
+			`<div style="margin-top:6px; opacity:0.55; font-size:9px; letter-spacing:0.4px; color:#7f97aa;">
+				weapons take the launching team's colour
+			</div>` +
+			`<div style="margin-top:8px; opacity:0.5; font-size:9px; letter-spacing:0.8px;">
+				drag pan · right-drag tilt · wheel zoom
 			</div>`;
 		document.body.appendChild(p);
 		this._legendPanel = p;
@@ -266,31 +337,40 @@ export class CommanderView {
 		p.id = 'commander-controls';
 		p.style.cssText = `
 			position: fixed;
-			left: 16px; top: 16px;
-			padding: 10px 12px;
-			border: 1px solid rgba(0, 255, 0, 0.4);
-			background: rgba(0, 15, 0, 0.75);
-			color: #0f0;
+			right: 16px; top: 38px;
+			padding: 11px 13px;
+			border: 1px solid rgba(120, 170, 210, 0.22);
+			border-radius: 9px;
+			background: linear-gradient(180deg, rgba(10,18,26,0.9), rgba(6,11,16,0.88));
+			box-shadow: 0 8px 28px rgba(0,0,0,0.5);
+			backdrop-filter: blur(9px);
+			-webkit-backdrop-filter: blur(9px);
+			color: #c8d6e2;
 			font-family: 'AceCombat', monospace;
 			font-size: 11px;
 			line-height: 1.4;
-			letter-spacing: 1px;
-			text-shadow: 0 0 5px rgba(0, 255, 0, 0.6);
+			letter-spacing: 0.6px;
 			z-index: 26;
 			display: none;
-			min-width: 180px;
+			min-width: 196px;
 		`;
+		const kbd = (k) =>
+			`<span style="display:inline-block; min-width:14px; text-align:center; padding:0 4px; margin-right:6px; border:1px solid rgba(120,170,210,0.3); border-radius:3px; color:#9fc4dd; font-size:9px; line-height:14px;">${k}</span>`;
 		p.innerHTML = `
-			<div style="font-weight:bold; margin-bottom:6px;">MAP CONTROLS</div>
-			<div id="cmdr-ctrl-toggles" style="display:flex; flex-direction:column; gap:4px;"></div>
-			<div style="margin-top:8px; padding-top:6px; border-top:1px solid rgba(0,255,0,0.2); opacity:0.6; font-size:10px;">
-				HOTKEYS<br>
-				<span style="opacity:0.85">M</span> toggle map<br>
-				<span style="opacity:0.85">SPACE</span> pause / resume<br>
-				<span style="opacity:0.85">T</span> trails<br>
-				<span style="opacity:0.85">R</span> radar debug<br>
-				<span style="opacity:0.85">D</span> datalink debug<br>
-				<span style="opacity:0.85">J</span> jammer debug
+			<div style="display:flex; align-items:center; gap:8px; font-size:11px; letter-spacing:2px; color:#e3edf4; margin-bottom:8px;">
+				<span style="width:8px; height:8px; border-radius:2px; background:${MAP_COLORS.player}; box-shadow:0 0 8px ${MAP_COLORS.player};"></span>MAP CONTROLS
+			</div>
+			<div id="cmdr-ctrl-toggles" style="display:flex; flex-direction:column; gap:5px;"></div>
+			<div style="margin-top:10px; padding-top:7px; border-top:1px solid rgba(120,170,210,0.16); font-size:9.5px; color:#90a8bc;">
+				<div style="letter-spacing:1.6px; color:#7fa8c4; margin-bottom:5px;">HOTKEYS</div>
+				<div style="display:flex; flex-direction:column; gap:3px;">
+					<div>${kbd('M')}toggle map</div>
+					<div>${kbd('␣')}pause / resume</div>
+					<div>${kbd('T')}trails</div>
+					<div>${kbd('R')}radar debug</div>
+					<div>${kbd('D')}datalink debug</div>
+					<div>${kbd('J')}jammer debug</div>
+				</div>
 			</div>
 		`;
 		document.body.appendChild(p);
@@ -347,16 +427,17 @@ export class CommanderView {
 			row.className = 'clickable-ui';
 			row.style.cssText = `
 				display: flex; align-items: center; justify-content: space-between;
-				padding: 4px 8px;
-				background: transparent;
-				border: 1px solid rgba(0, 255, 0, 0.25);
-				color: #0f0;
-				font-family: inherit; font-size: 11px; letter-spacing: 1px;
+				padding: 5px 9px;
+				background: rgba(255,255,255,0.02);
+				border: 1px solid rgba(120, 170, 210, 0.18);
+				border-radius: 5px;
+				color: #c8d6e2;
+				font-family: inherit; font-size: 10.5px; letter-spacing: 0.8px;
 				cursor: pointer;
 				transition: background 0.15s, border-color 0.15s;
 			`;
-			row.onmouseenter = () => { row.style.background = 'rgba(0,255,0,0.08)'; };
-			row.onmouseleave = () => { row.style.background = 'transparent'; };
+			row.onmouseenter = () => { row.style.background = 'rgba(80,150,200,0.12)'; };
+			row.onmouseleave = () => { row.style.background = 'rgba(255,255,255,0.02)'; };
 			row.onclick = () => def.set(!def.get());
 			host.appendChild(row);
 			this._controlRows.set(def.id, row);
@@ -374,16 +455,20 @@ export class CommanderView {
 			const row = this._controlRows.get(def.id);
 			if (!row) continue;
 			const on = !!def.get();
+			const accent = MAP_COLORS.player;
 			row.innerHTML =
 				`<span>${def.label}</span>` +
 				`<span style="
-					padding:1px 6px;
-					border:1px solid ${on ? '#0f0' : 'rgba(0,255,0,0.3)'};
-					color:${on ? '#0f0' : 'rgba(0,255,0,0.5)'};
-					background:${on ? 'rgba(0,255,0,0.15)' : 'transparent'};
-					min-width: 26px; text-align:center;
+					padding:1px 7px;
+					border:1px solid ${on ? accent : 'rgba(120,170,210,0.3)'};
+					border-radius:3px;
+					color:${on ? '#04121a' : '#8aa6ba'};
+					background:${on ? accent : 'transparent'};
+					box-shadow:${on ? `0 0 8px ${accent}66` : 'none'};
+					font-weight:${on ? '700' : '400'};
+					min-width: 28px; text-align:center;
 				">${on ? 'ON' : 'OFF'}</span>`;
-			row.style.borderColor = on ? 'rgba(0,255,0,0.6)' : 'rgba(0,255,0,0.25)';
+			row.style.borderColor = on ? 'rgba(39,227,255,0.45)' : 'rgba(120,170,210,0.18)';
 		}
 	}
 
@@ -659,32 +744,45 @@ export class CommanderView {
 
 	// ---- Marker entities ---------------------------------------------------
 
-	_ensureMarker(id, color, labelText) {
+	// Create a marker entity for `id` if absent. Markers are a type-specific
+	// SVG billboard (silhouette = what, colour = whose, screen rotation =
+	// heading) plus a compact label chip beneath it. `hex` is the team colour;
+	// `category` selects the glyph.
+	_ensureMarker(id, hex, category, labelText) {
 		let e = this._markers.get(id);
 		if (e) return e;
+		const size = ICON_SIZE[category] || 28;
 		e = this.viewer.entities.add({
 			position: Cesium.Cartesian3.fromDegrees(0, 0, 0),
-			point: {
-				pixelSize: 9,
-				color: color,
-				outlineColor: Cesium.Color.WHITE,
-				outlineWidth: 1.2,
+			billboard: {
+				image: iconUri(category, hex),
+				width: size,
+				height: size,
+				color: TINT_VISIBLE,
+				verticalOrigin: Cesium.VerticalOrigin.CENTER,
+				horizontalOrigin: Cesium.HorizontalOrigin.CENTER,
 				disableDepthTestDistance: Number.POSITIVE_INFINITY,
+				// alignedAxis defaults to ZERO → pure screen-space rotation,
+				// exactly right for a top-down symbol pointing down its heading.
 			},
 			label: {
 				text: labelText,
-				font: '12px sans-serif',
-				fillColor: Cesium.Color.WHITE,
-				outlineColor: Cesium.Color.BLACK,
-				outlineWidth: 2,
-				style: Cesium.LabelStyle.FILL_AND_OUTLINE,
-				pixelOffset: new Cesium.Cartesian2(10, 0),
-				verticalOrigin: Cesium.VerticalOrigin.CENTER,
-				horizontalOrigin: Cesium.HorizontalOrigin.LEFT,
+				font: "600 11px ui-monospace, 'SFMono-Regular', Menlo, monospace",
+				fillColor: Cesium.Color.fromCssColorString(hex),
+				style: Cesium.LabelStyle.FILL,
+				showBackground: true,
+				backgroundColor: LABEL_BG,
+				backgroundPadding: new Cesium.Cartesian2(6, 3),
+				pixelOffset: new Cesium.Cartesian2(0, Math.round(size * 0.62) + 4),
+				verticalOrigin: Cesium.VerticalOrigin.TOP,
+				horizontalOrigin: Cesium.HorizontalOrigin.CENTER,
 				disableDepthTestDistance: Number.POSITIVE_INFINITY,
 			},
 			show: this.active,
 		});
+		e.__iconCategory = category;
+		e.__iconHex = hex;
+		e.__iconSize = size;
 		this._markers.set(id, e);
 		return e;
 	}
@@ -692,17 +790,45 @@ export class CommanderView {
 	_syncMarkers(playerState, units, missiles) {
 		const seen = new Set();
 
-		// Update one marker: position it, color based on terrain occlusion,
-		// and tag the entity with a meta pointer so scene.pick can look up
-		// the underlying game unit on click.
-		const updateOne = (id, u, color, meta) => {
+		// Units with an open tooltip get a highlight (scaled-up icon + bright
+		// label) so the inspected track stands out from the herd.
+		const selectedRefs = new Set();
+		for (const [, tt] of this._tooltips) {
+			if (tt.meta && tt.meta.ref) selectedRefs.add(tt.meta.ref);
+		}
+
+		// Screen-space billboard rotation (radians, CCW-positive) that aims an
+		// up-pointing glyph down the unit's heading. Heading is clockwise from
+		// north; the map's "up" is the camera bearing (this.rotation), also
+		// clockwise from north — so the on-screen bearing is (heading −
+		// rotation) clockwise, i.e. (rotation − heading) counter-clockwise.
+		const headingRot = (u) =>
+			Cesium.Math.toRadians(this.rotation - (u.heading || 0));
+
+		// Update one marker: position it, set its glyph/rotation, tint for
+		// terrain occlusion + selection, and tag the entity with a meta
+		// pointer so scene.pick can recover the game unit on click.
+		const updateOne = (id, u, hex, category, rotates, meta) => {
 			const e = this._markers.get(id);
 			if (!e) return;
 			const pos = Cesium.Cartesian3.fromDegrees(u.lon, u.lat, u.alt);
 			e.position = pos;
 			const occluded = this._isPositionOccluded(pos);
-			e.point.color      = occluded ? COLOR_OCCLUDED_MARKER : color;
-			e.label.fillColor  = occluded ? COLOR_OCCLUDED_LABEL  : Cesium.Color.WHITE;
+			const selected = selectedRefs.has(u);
+			if (e.billboard) {
+				e.billboard.image = iconUri(category, hex);
+				e.billboard.rotation = rotates ? headingRot(u) : 0;
+				e.billboard.color = occluded ? TINT_OCCLUDED : TINT_VISIBLE;
+				e.billboard.scale = selected ? 1.32 : 1.0;
+			}
+			if (e.label) {
+				e.label.fillColor = occluded
+					? COLOR_OCCLUDED_LABEL
+					: Cesium.Color.fromCssColorString(hex);
+				e.label.backgroundColor = selected
+					? new Cesium.Color(0.08, 0.12, 0.16, 0.78)
+					: LABEL_BG;
+			}
 			e.show = true;
 			// Include the marker id so the click handler can key tooltips on
 			// it. Without this every tooltip keys on `undefined`, which is
@@ -713,8 +839,9 @@ export class CommanderView {
 		};
 
 		if (playerState && !this.suppressPlayerMarker) {
-			this._ensureMarker('__player', COLOR_PLAYER, 'PLAYER');
-			updateOne('__player', playerState, COLOR_PLAYER,
+			const cat = categoryForUnit(playerState);
+			this._ensureMarker('__player', MAP_COLORS.player, cat, 'PLAYER');
+			updateOne('__player', playerState, MAP_COLORS.player, cat, true,
 				{ kind: 'player', ref: playerState });
 		} else {
 			// Hide an existing __player marker if it was created
@@ -727,33 +854,33 @@ export class CommanderView {
 			for (const u of units) {
 				if (!u || u.destroyed) continue;
 				const id = `npc-${u.id || u.name}`;
-				const { marker: color } = colorsForNpc(u);
-				this._ensureMarker(id, color, u.name || 'BOGEY');
-				updateOne(id, u, color, { kind: 'npc', ref: u });
+				const hex = teamColor(u.team);
+				const cat = categoryForUnit(u);
+				const rotates = categoryRotates(cat) && !isGroundUnit(u);
+				this._ensureMarker(id, hex, cat, u.name || 'BOGEY');
+				updateOne(id, u, hex, cat, rotates, { kind: 'npc', ref: u });
 			}
 		}
 		if (missiles) {
-			// Color-coded by team: the player's own outgoing missiles stay
-			// amber, hostile inbound-threat missiles show in red. Easy to
-			// tell at a glance who fired what when the map has a dozen
-			// tracks on it. Bullets share the projectile pool but
-			// shouldn't clutter the strategic map — a CIWS that drains
-			// an autocannon belt would otherwise paint hundreds of
-			// markers in a few seconds. Skip anything without a `type`
-			// label (Bullet doesn't set one; every real missile does).
-			const playerTeam = (playerState && playerState.team) || 'friendly';
+			// Coloured by the LAUNCHING team (same as airframes + trails), so an
+			// NPC-vs-NPC salvo reads as two sides rather than a friend/foe blur.
+			// Bullets share the projectile pool but shouldn't clutter the
+			// strategic map — a CIWS draining an autocannon belt would paint
+			// hundreds of markers. Skip anything without a `type` label (Bullet
+			// doesn't set one; every real missile does).
 			for (const m of missiles) {
 				if (!m || !m.active) continue;
 				if (!m.type) continue;
 				const id = `m-${m.id || (m.id = `m${seen.size}-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`)}`;
 				const typeTag = m.type || 'MSL';
-				const phaseTag = (typeof m.boostRemaining === 'number' && m.boostRemaining > 0) ? ' BOOST' : '';
-				const isHostile = (m.team || 'friendly') !== playerTeam;
-				const color = isHostile ? COLOR_MISSILE_HOSTILE : COLOR_MISSILE_FRIENDLY;
-				const entity = this._ensureMarker(id, color, typeTag + phaseTag);
+				const phaseTag = (typeof m.boostRemaining === 'number' && m.boostRemaining > 0) ? ' ▲' : '';
+				// Colour by the launching team (matches the trail) so NPC-vs-NPC
+				// salvoes stay readable instead of collapsing to friend/foe.
+				const hex = teamColor(m.team);
+				const cat = categoryForMissile(m);
+				const entity = this._ensureMarker(id, hex, cat, typeTag + phaseTag);
 				if (entity && entity.label) entity.label.text = typeTag + phaseTag;
-				if (entity && entity.point)  entity.point.color = color;
-				updateOne(id, m, color, { kind: 'missile', ref: m });
+				updateOne(id, m, hex, cat, true, { kind: 'missile', ref: m });
 			}
 		}
 
@@ -788,7 +915,8 @@ export class CommanderView {
 				this._tooltips.get(meta.id).element.remove();
 				this._tooltips.delete(meta.id);
 			} else {
-				const el = this._createTooltipElement(meta.kind);
+				const accent = this._accentForMeta(meta);
+				const el = this._createTooltipElement(meta.kind, accent);
 
 				// Structure of a tooltip element:
 				//   root (pointer-events: none)
@@ -810,19 +938,25 @@ export class CommanderView {
 				if (meta.kind !== 'player') {
 					buttonEl = document.createElement('button');
 					buttonEl.setAttribute('data-action', 'spectate');
-					buttonEl.textContent = 'VIEW';
+					buttonEl.textContent = '▶ SPECTATE';
 					buttonEl.style.cssText = `
 						pointer-events: auto;
 						cursor: pointer;
-						margin-top: 4px;
-						background: rgba(0,0,0,0.6);
-						border: 1px solid currentColor;
-						color: inherit;
+						display: block;
+						width: 100%;
+						margin-top: 7px;
+						background: ${accent}1f;
+						border: 1px solid ${accent}99;
+						border-radius: 4px;
+						color: ${accent};
 						font: inherit;
-						padding: 1px 8px;
-						letter-spacing: 1px;
-						text-shadow: inherit;
+						font-size: 10px;
+						padding: 3px 8px;
+						letter-spacing: 1.5px;
+						transition: background 0.15s;
 					`;
+					buttonEl.onmouseenter = () => { buttonEl.style.background = `${accent}38`; };
+					buttonEl.onmouseleave = () => { buttonEl.style.background = `${accent}1f`; };
 					// Per-button click listener — now that the button is
 					// persistent it survives across frames and can own
 					// its own handler instead of needing delegation.
@@ -871,28 +1005,36 @@ export class CommanderView {
 
 	// One small floating panel per pinned unit. Border/text colored by kind
 	// so three open tooltips stay visually distinct at a glance.
-	_createTooltipElement(kind) {
-		let border = 'rgba(0, 255, 0, 0.55)';
-		let color  = '#0f0';
-		if (kind === 'player')  { border = 'rgba(0, 234, 255, 0.65)'; color = '#00eaff'; }
-		else if (kind === 'npc') { border = 'rgba(255, 64, 64, 0.65)'; color = '#ff4040'; }
-		else if (kind === 'missile') { border = 'rgba(255, 192, 64, 0.7)'; color = '#ffc040'; }
+	_createTooltipElement(kind, accentHex) {
+		// Accent comes from the unit's team colour where available so the
+		// pinned card matches its marker; fall back to a per-kind default.
+		let color = accentHex || '#27e3ff';
+		if (!accentHex) {
+			if (kind === 'player')  color = MAP_COLORS.player;
+			else if (kind === 'npc') color = MAP_COLORS['hostile-red'];
+			else if (kind === 'missile') color = MAP_COLORS.missileFriendly;
+		}
 		const el = document.createElement('div');
 		el.className = 'commander-tooltip';
 		el.style.cssText = `
 			position: fixed;
-			padding: 5px 9px;
-			border: 1px solid ${border};
-			background: rgba(0, 12, 0, 0.82);
-			color: ${color};
+			padding: 7px 10px 8px;
+			border: 1px solid ${color}66;
+			border-left: 3px solid ${color};
+			border-radius: 7px;
+			background: linear-gradient(180deg, rgba(10,16,22,0.92), rgba(6,10,14,0.9));
+			box-shadow: 0 8px 26px rgba(0,0,0,0.55), 0 0 14px ${color}22;
+			backdrop-filter: blur(8px);
+			-webkit-backdrop-filter: blur(8px);
+			color: #d7e2ec;
 			font-family: 'AceCombat', monospace;
 			font-size: 11px;
-			line-height: 1.45;
-			letter-spacing: 1px;
-			text-shadow: 0 0 5px ${border};
+			line-height: 1.5;
+			letter-spacing: 0.6px;
 			z-index: 30;
 			pointer-events: none;
 			white-space: nowrap;
+			min-width: 132px;
 		`;
 		document.body.appendChild(el);
 		return el;
@@ -945,12 +1087,39 @@ export class CommanderView {
 		}
 	}
 
+	// Accent (team / threat) colour for a pinned unit — matches its marker so
+	// the card and the symbol read as the same track.
+	_accentForMeta(meta) {
+		const { kind, ref } = meta;
+		if (kind === 'player') return MAP_COLORS.player;
+		// Missiles match their marker/trail: coloured by the launching team.
+		return teamColor(ref.team);
+	}
+
 	_buildTooltipHtml(meta) {
 		const { kind, ref } = meta;
+		const accent = this._accentForMeta(meta);
+		const cat = kind === 'missile' ? categoryForMissile(ref) : categoryForUnit(ref);
+		const headerIcon =
+			`<span style="display:inline-flex; width:19px; height:19px; flex:0 0 19px; align-items:center; justify-content:center;">${iconSvgMarkup(cat, accent, 18)}</span>`;
+		const header = (title, sub) =>
+			`<div style="display:flex; align-items:center; gap:7px; margin-bottom:5px; padding-bottom:5px; border-bottom:1px solid ${accent}33;">
+				${headerIcon}
+				<div style="min-width:0;">
+					<div style="font-weight:bold; color:${accent}; letter-spacing:1px;">${title}</div>
+					${sub ? `<div style="font-size:8.5px; letter-spacing:1.4px; color:#7f97aa;">${sub}</div>` : ''}
+				</div>
+			</div>`;
 		const altM = Math.max(0, Math.round(ref.alt)).toLocaleString();
 		const row = (lbl, val) =>
-			`<div><span style="display:inline-block; width:36px; opacity:0.65">${lbl}</span>${val}</div>`;
+			`<div style="display:flex; gap:8px;"><span style="display:inline-block; width:34px; color:#7f97aa;">${lbl}</span><span style="color:#dbe6ef;">${val}</span></div>`;
 		const dir = (d) => `${Math.round(((d % 360) + 360) % 360).toString().padStart(3, '0')}°`;
+		const classLabel = (c) => ({
+			fighter: 'FIGHTER', stealth: 'STEALTH FIGHTER', bomber: 'STEALTH BOMBER',
+			awacs: 'AEW&C / TANKER', drone: 'ISR DRONE', ew_jet: 'EW AIRCRAFT',
+			sam: 'SAM BATTERY', aaa: 'AAA / SHORAD', radar: 'EW RADAR',
+			jammer: 'JAMMER', laser: 'DEW / LASER', command: 'COMMAND POST',
+		}[c] || '');
 		// NOTE: the "VIEW" spectator button is NOT injected here — it's
 		// a persistent DOM element appended once in _handleClickAt. This
 		// HTML is replaced every frame by _updateTooltips; rebuilding
@@ -985,7 +1154,7 @@ export class CommanderView {
 				? `${(dbg.rangeToTarget / 1000).toFixed(2)} km` : '—';
 			const tgt     = dbg.targetName || (ref.target && ref.target.name) || '—';
 			return (
-				`<div style="font-weight:bold; margin-bottom:3px;">${typeTag} ${phase}</div>` +
+				header(typeTag, phase) +
 				row('TGT',  tgt) + row('RNG', rng) +
 				row('SPD',  `${Math.round(ref.speed * 3.6)} km/h`) +
 				row('ALT',  `${altM} m`) +
@@ -998,7 +1167,7 @@ export class CommanderView {
 		const hdg  = typeof ref.heading === 'number' ? dir(ref.heading) : '—';
 		const pit  = typeof ref.pitch   === 'number' ? `${ref.pitch.toFixed(1)}°` : '—';
 		let html =
-			`<div style="font-weight:bold; margin-bottom:3px;">${name}</div>` +
+			header(name, kind === 'player' ? 'OWNSHIP' : classLabel(cat)) +
 			row('ALT', `${altM} m`) +
 			row('SPD', spd) +
 			row('HDG', hdg) +
@@ -1085,12 +1254,15 @@ export class CommanderView {
 			sample(`npc-${u.id || u.name}`, u, trail);
 		}
 		if (missiles) {
-			const playerTeam = (playerState && playerState.team) || 'friendly';
 			for (const m of missiles) {
 				if (!m || !m.active) continue;
-				const isHostile = (m.team || 'friendly') !== playerTeam;
-				const trailColor = isHostile ? COLOR_TRAIL_MISSILE_HOSTILE : COLOR_TRAIL_MISSILE_FRIENDLY;
-				sample(`m-${m.id}`, m, trailColor);
+				// Skip bullets — same filter the marker loop uses. Bullets
+				// share the projectile pool but carry no `type` (only real
+				// missiles do); without this an AAA/CIWS belt paints hundreds
+				// of trail polylines across the strategic map in seconds.
+				if (!m.type) continue;
+				// Colour by the LAUNCHING team so two NPC sides stay readable.
+				sample(`m-${m.id}`, m, missileTrailColor(m.team));
 			}
 		}
 
@@ -1172,13 +1344,16 @@ export class CommanderView {
 					const chunkIdx = b; // capture for closures
 					const chunkColor = rec.color.withAlpha(baseAlpha * alphaScale);
 					const chunkOccl  = COLOR_TRAIL_OCCLUDED.withAlpha(occAlpha * alphaScale);
+					// Comet-tail taper: freshest segment widest, history thins
+					// to a hairline — the head of each track reads at a glance.
+					const chunkWidth = 1.0 + 2.4 * ageFrac;
 					const ent = this.viewer.entities.add({
 						polyline: {
 							positions: new Cesium.CallbackProperty(
 								() => rec.positionsCache && rec.positionsCache[chunkIdx] || [],
 								false,
 							),
-							width: 1.8,
+							width: chunkWidth,
 							material: chunkColor,
 							depthFailMaterial: new Cesium.ColorMaterialProperty(chunkOccl),
 							arcType: Cesium.ArcType.NONE,

@@ -123,6 +123,74 @@ export class PlaneController {
 		};
 
 		this.sensitivity = 0.2;
+
+		// ---- DJI / HID gamepad ------------------------------------------------
+		// The DJI FPV controller enumerates as a standard HID joystick ("DJI
+		// Virtual Joystick"), so the browser Gamepad API exposes its gimbals
+		// and switches. Mapping was confirmed live against the hardware:
+		//   ax0 = right stick L/R   → roll
+		//   ax1 = right stick U/D   → pitch (inverted on this unit)
+		//   ax2 = left  stick U/D   → throttle (rests at bottom = -1)
+		//   ax3 = left  stick L/R   → yaw
+		//   ax4 = left shoulder wheel → camera tilt (aux)
+		//   button1 = right trigger  → fire
+		//   button2 = left shoulder  → flares
+		//   button3 = right shoulder → boost
+		// All indices + the pitch-invert live here so they're trivial to retune.
+		this.gamepad = {
+			enabled:      true,
+			deadzone:     0.06,   // kills the ±1/660 resting dither
+			invertPitch:  true,
+			axRoll: 0, axPitch: 1, axThrottle: 2, axYaw: 3, axWheel: 4,
+			btnFire: 1, btnFlare: 2, btnBoost: 3,
+		};
+		this._gamepadActive = false;
+	}
+
+	// Pick the live controller: prefer the DJI by name, else the first
+	// connected pad (so any joystick works as a fallback).
+	_pickGamepad() {
+		if (!this.gamepad.enabled || !navigator.getGamepads) return null;
+		const pads = navigator.getGamepads();
+		let best = null;
+		for (const g of pads) {
+			if (!g) continue;
+			if (/dji|virtual/i.test(g.id)) return g;
+			if (!best) best = g;
+		}
+		return best;
+	}
+
+	// Override the flight axes from the gamepad when one is present. Called at
+	// the end of update() so the stick wins over keyboard/mouse for the four
+	// flight axes; buttons OR with the keyboard bindings so both stay live.
+	_applyGamepad() {
+		const gp = this._pickGamepad();
+		this._gamepadActive = !!gp;
+		this.input.gamepadActive = !!gp;
+		if (!gp) return;
+		const a = gp.axes, b = gp.buttons, cfg = this.gamepad;
+		// Deadzone with re-scale so motion starts at 0 just past the deadzone
+		// and reaches full deflection at the stick's edge.
+		const dz = (v) => {
+			const m = Math.abs(v || 0);
+			if (m < cfg.deadzone) return 0;
+			return Math.sign(v) * (m - cfg.deadzone) / (1 - cfg.deadzone);
+		};
+		const get = (i) => (typeof a[i] === 'number' ? a[i] : 0);
+
+		this.input.roll = dz(get(cfg.axRoll));
+		let pitch = dz(get(cfg.axPitch));
+		if (cfg.invertPitch) pitch = -pitch;
+		this.input.pitch = pitch;
+		this.input.yaw = dz(get(cfg.axYaw));
+		// Throttle lever is absolute: −1 (bottom) → 0, +1 (top) → 1.
+		this.input.throttle = Math.max(0, Math.min(1, (get(cfg.axThrottle) + 1) / 2));
+
+		const pressed = (i) => !!(b[i] && b[i].pressed);
+		if (pressed(cfg.btnFire))  this.input.fire = true;
+		if (pressed(cfg.btnFlare)) this.input.fireFlare = true;
+		if (pressed(cfg.btnBoost)) this.input.boost = true;
 	}
 
 	setSensitivity(value) {
@@ -228,6 +296,11 @@ export class PlaneController {
 			this.input.cameraYaw = this.lerp(this.input.cameraYaw, 0, 0.1);
 			this.input.cameraPitch = this.lerp(this.input.cameraPitch, 0, 0.1);
 		}
+
+		// Gamepad override (after keyboard/mouse): when the DJI controller is
+		// connected, its gimbals drive the four flight axes and its
+		// triggers/shoulders OR into fire/flare/boost.
+		this._applyGamepad();
 
 		this.prevKeys = { ...this.keys };
 

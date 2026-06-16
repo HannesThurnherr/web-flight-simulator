@@ -5,6 +5,13 @@ const particles = {
 	scene: null,
 	viewer: null,
 	list: [],
+	// Hard cap on live particle meshes. Each particle is its own THREE.Mesh
+	// (a draw call); without a ceiling, many impacts in quick succession
+	// (a B-2 SDB stick, a SAM-vs-cruise furball) spawn tens of thousands of
+	// meshes in a couple of seconds, exhausting the GPU and dropping the
+	// WebGL context — which is what turned the whole globe grey. Oldest
+	// particles are evicted first.
+	maxParticles: 1400,
 	_scratchMatrix: new Cesium.Matrix4(),
 	_scratchCameraMatrix: new Cesium.Matrix4(),
 	_scratchThreeMatrix: new THREE.Matrix4(),
@@ -12,6 +19,20 @@ const particles = {
 	init(scene, viewer) {
 		this.scene = scene;
 		this.viewer = viewer;
+	},
+
+	// Evict oldest particles down to the cap. Called after the big impact
+	// spawners and once per frame, so a single-frame burst can't blow past
+	// the ceiling.
+	_enforceCap() {
+		const over = this.list.length - this.maxParticles;
+		if (over <= 0) return;
+		const removed = this.list.splice(0, over);
+		for (const m of removed) {
+			if (this.scene) this.scene.remove(m);
+			if (m.geometry && m.geometry.dispose) m.geometry.dispose();
+			if (m.material && m.material.dispose) m.material.dispose();
+		}
 	},
 
 	spawnExplosion(lon, lat, alt, opts = {}) {
@@ -101,6 +122,7 @@ const particles = {
 			this.list.push(m);
 		}
 
+		this._enforceCap();
 		try { if (this.viewer) this.viewer.scene && this.viewer.scene.requestRender(); } catch (e) { }
 	},
 
@@ -162,6 +184,7 @@ const particles = {
 			this.scene.add(m);
 			this.list.push(m);
 		}
+		this._enforceCap();
 	},
 
 	spawnSpark(lon, lat, alt, opts = {}) {
@@ -190,8 +213,71 @@ const particles = {
 		}
 	},
 
+	// Continuous fire — additive orange/yellow flame blobs, short-lived so
+	// they cluster into a burning mass on/behind a stricken aircraft.
+	spawnFire(lon, lat, alt, opts = {}) {
+		const count = opts.count || 3;
+		for (let i = 0; i < count; i++) {
+			const size = (opts.size || 0.7) + Math.random() * 1.3;
+			const geom = new THREE.SphereGeometry(size, 8, 6);
+			// Hue 0.0–0.10 = red→orange→yellow; hot and saturated.
+			const color = new THREE.Color().setHSL(0.02 + Math.random() * 0.08, 1.0, 0.5 + Math.random() * 0.18);
+			const mat = new THREE.MeshBasicMaterial({
+				color, blending: THREE.AdditiveBlending, transparent: true, opacity: 0.95, depthWrite: false,
+			});
+			const m = new THREE.Mesh(geom, mat);
+			m.life = 0.3 + Math.random() * 0.5;
+			m.maxLife = m.life;
+			m.lon = lon + (Math.random() - 0.5) * 0.00010;
+			m.lat = lat + (Math.random() - 0.5) * 0.00010;
+			m.alt = alt + (Math.random() - 0.5) * 1.0;
+			m._localVel = {
+				east: (Math.random() - 0.5) * 2.5,
+				north: (Math.random() - 0.5) * 2.5,
+				up: 0.5 + Math.random() * 1.5,
+			};
+			m.isSmoke = false;
+			m._expand = true; m._expandAmount = 1.4;
+			m.matrixAutoUpdate = false;
+			this.scene.add(m);
+			this.list.push(m);
+		}
+	},
+
+	// Continuous smoke puffs — used by the burning-aircraft death trail.
+	// `dark` makes oily black smoke (shot-down jet); otherwise light gray.
+	spawnSmoke(lon, lat, alt, opts = {}) {
+		const count = opts.count || 2;
+		const dark = opts.dark;
+		for (let i = 0; i < count; i++) {
+			const size = (opts.size || 1.4) + Math.random() * 1.6;
+			const geom = new THREE.SphereGeometry(size, 10, 8);
+			const g = dark ? (0.03 + Math.random() * 0.07) : (0.18 + Math.random() * 0.3);
+			const mat = new THREE.MeshBasicMaterial({
+				color: new THREE.Color(g, g, g), transparent: true, opacity: 0.78,
+			});
+			const m = new THREE.Mesh(geom, mat);
+			m.life = (opts.life || 2.0) + Math.random() * 1.6;
+			m.maxLife = m.life;
+			m.lon = lon + (Math.random() - 0.5) * 0.00012;
+			m.lat = lat + (Math.random() - 0.5) * 0.00012;
+			m.alt = alt + (Math.random() - 0.5) * 1.2;
+			m._localVel = {
+				east: (Math.random() - 0.5) * 2.0,
+				north: (Math.random() - 0.5) * 2.0,
+				up: 0.4 + Math.random() * 1.8,
+			};
+			m.isSmoke = true;
+			m.matrixAutoUpdate = false;
+			this.scene.add(m);
+			this.list.push(m);
+		}
+		try { if (this.viewer) this.viewer.scene && this.viewer.scene.requestRender(); } catch (e) { /* no-op */ }
+	},
+
 	update(dt) {
 		if (!this.viewer) return;
+		this._enforceCap();
 		const viewMatrix = this.viewer.camera.viewMatrix;
 		for (let i = this.list.length - 1; i >= 0; i--) {
 			const p = this.list[i];

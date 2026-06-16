@@ -1,7 +1,7 @@
 {
 	"id": "rafale-m",
 	"name": "DASSAULT RAFALE M",
-	"description": "French naval multirole. Twin M88-2 turbofans, RBE2 AESA, SPECTRA EW suite \u2014 Rafale's defining feature is the integrated EW (jamming + DRFM decoy). Smaller than the Hornet, more agile than the Eagle, and the EW suite alone is closer to a Growler than a fighter.",
+	"description": "French naval multirole. Twin M88-2 turbofans, RBE2 AESA, SPECTRA EW suite — Rafale's defining feature is the integrated EW (jamming + DRFM decoy). Smaller than the Hornet, more agile than the Eagle, and the EW suite alone is closer to a Growler than a fighter.",
 	"model": "/assets/models/rafale-m.glb",
 	"modelRotation": {
 		"x": 0,
@@ -42,8 +42,8 @@
 			"roll": 1200,
 			"yaw": 620
 		},
-		"gSoftLimit": 9.0,
-		"gHardLimit": 11.0,
+		"gSoftLimit": 9,
+		"gHardLimit": 11,
 		"pitchStabilityCoef": 0.2,
 		"yawStabilityCoef": 1.35,
 		"alphaStallDeg": 32,
@@ -185,13 +185,13 @@
 		"burnThroughRangeM": 6000,
 		"attFloor": 0.5,
 		"maxEffectRangeM": 100000,
-		"breakLockBonus": 1.0
+		"breakLockBonus": 1
 	},
 	"specs": {
 		"role": "Multirole + EW",
 		"topSpeed": "Mach 1.8",
 		"combatRadius": "1 850 km",
-		"rcs": "~1 m\u00b2",
+		"rcs": "~1 m²",
 		"irSig": "Medium",
 		"radarRange": "200 km (RBE2 AESA)",
 		"agility": 9,
@@ -202,6 +202,26 @@
 			"type": "regex",
 			"pattern": "landingOn(?:Light)?_",
 			"flags": "i"
+		}
+	],
+	"equipmentSlots": [
+		{
+			"id": "eq-centerline",
+			"label": "Centerline Pod",
+			"location": "centerline",
+			"accepts": [
+				"jammer",
+				"laser_pd"
+			]
+		},
+		{
+			"id": "eq-sensor",
+			"label": "Sensor Pod",
+			"location": "pod",
+			"accepts": [
+				"tgp",
+				"irst"
+			]
 		}
 	]
 }

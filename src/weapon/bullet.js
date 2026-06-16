@@ -4,6 +4,8 @@ import { movePosition } from '../utils/math';
 import { particles } from '../utils/particles';
 import { soundManager } from '../utils/soundManager';
 import { pushKill } from '../systems/eventLog.js';
+import { mortallyWound } from '../systems/deathSequence.js';
+import { recordAdHit } from '../systems/adStats.js';
 
 export class Bullet {
 	// `launcher` (optional) is the unit that fired this round. Used for
@@ -212,6 +214,15 @@ export class Bullet {
 	}
 
 	hitTarget(target) {
+		// AD hit-rate diagnostic (AAA rounds stamped at the muzzle).
+		if (this._adStats) { try { recordAdHit(this._adStats.type, this._adStats.column); } catch (e) {} }
+		// Aircraft → burning-spiral death sequence (logs kill, hit flash,
+		// tumble). The bullet is consumed either way.
+		if (mortallyWound(target, { shooter: this.launcher, weapon: 'GUN', reason: 'kill' })) {
+			if (this.onKill) this.onKill(target);
+			this.destroy();
+			return;
+		}
 		pushKill({
 			shooter: this.launcher,
 			target,

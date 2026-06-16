@@ -44,6 +44,33 @@ export const SIGNATURES = {
 		visualSize: 19,
 		unitClass: 'stealth_fighter',
 	},
+	// 6th-gen / NGAD-class broadband stealth (NFAC.1). RCS pushed another
+	// ~5× below the F-22 bin — all-aspect, broadband (not just X-band)
+	// shaping plus mature RAM make it a radar non-entity at any practical
+	// range. The deliberate NFAC twist: IR is NOT trimmed in proportion.
+	// A supercruising airframe pushes a large mass flow of hot air no
+	// matter how the nozzle is treated, so the plume stays a real signal.
+	// Net effect: radar barely sees it, but a modern IRST still can — which
+	// is exactly why NFAC doctrine makes IRST the primary BVR sensor and
+	// "who spots the plume first" the deciding question.
+	stealth_fighter_ngad: {
+		rcs: 0.0015,
+		irEmission: 95,
+		visualSize: 21,
+		unitClass: 'stealth_fighter',
+	},
+	// Hypersonic strike platform (SR-72 Darkstar class). Faceted/blended
+	// shaping gives a MODERATE radar reduction — far from a fighter's 12 m²,
+	// but nowhere near 5th-gen stealth; it's not built to hide, it's built to
+	// outrun. The dominant signature is heat: dual-mode turbo/scramjet
+	// engines run blast-furnace hot at speed, so IR emission is very high.
+	// Large airframe → big visual size.
+	hypersonic_strike: {
+		rcs: 0.35,
+		irEmission: 420,
+		visualSize: 30,
+		unitClass: 'stealth_fighter',
+	},
 	// Strategic stealth bomber (B-2 Spirit class). RCS ~0.001 from
 	// flying-wing planform + RAM coatings. IR is moderate despite
 	// four engines because the exhausts are deeply embedded in the

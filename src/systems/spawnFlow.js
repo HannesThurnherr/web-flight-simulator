@@ -82,10 +82,10 @@ export function quickRespawn(ctx) {
 	state.speed = 100;
 	state.destroyed = false;
 
-	// Wipe the kill log so each fresh sortie starts with a clean
-	// recap. Carrying it across deaths would be defensible too;
-	// we go with the same fresh-slate semantics the rest of spawn uses.
-	clearEvents();
+	// NOTE: the kill log is intentionally PRESERVED here — a crash-respawn
+	// continues the same scenario (NPCs alive, objectives in progress), so the
+	// running tally of your kills should carry over. It's only wiped when a
+	// fresh mission begins (gated in setupConfirmSpawn).
 
 	// Fresh physics constructed from the active plane's complete spec.
 	const plane = getActivePlane();
@@ -136,6 +136,12 @@ export function quickRespawn(ctx) {
 // player into the air without re-running scenario.onStart.
 export function enterRespawnAsNewPlane(ctx) {
 	const { state } = ctx;
+	// If this was triggered from the commander/map view, that view is still
+	// active — and its pointer handlers stopPropagation() every click, which
+	// swallows the spawn-point clicks. Deactivate it so the PICK_SPAWN globe
+	// listener actually receives them. (setActive(false) doesn't move the
+	// camera; the flyTo below sets the spawn-picker view.)
+	if (ctx.commanderView && ctx.commanderView.active) ctx.commanderView.setActive(false);
 	// Snapshot the player → autonomous friendly fighter NPC at the
 	// same pose, plane, and loadout. Best-effort: if the NPC system
 	// can't make a fighter (model not loaded yet, etc.) we still
@@ -252,6 +258,12 @@ function _clonePlayerToNpc(ctx) {
 export function enterSpawnPicking(ctx, useVignette = true) {
 	const { state } = ctx;
 	state.score = 0;
+	// Deactivate the commander/map view if it's open — its click handlers
+	// stopPropagation() and would otherwise swallow the spawn-point clicks.
+	if (ctx.commanderView && ctx.commanderView.active) ctx.commanderView.setActive(false);
+	// This is a fresh-mission / full-restart entry, not a switch-airframe —
+	// clear the continue flag so the upcoming spawn-confirm wipes the kill log.
+	_continuingScenario = false;
 	// If the user has a persisted spawn from a previous session, seed
 	// the state with it so the Cesium camera flies toward it. The user
 	// can still click somewhere else to pick a new one; we just avoid
@@ -589,7 +601,10 @@ export function setupConfirmSpawn(ctx) {
 			// Respawn clears the dead flag so TargetManager can re-
 			// acquire us.
 			state.destroyed = false;
-			clearEvents();
+			// Wipe the kill log only when starting a FRESH mission. A
+			// switch-airframe (_continuingScenario) keeps the same scenario
+			// running, so the player's kill tally must persist across it.
+			if (!_continuingScenario) clearEvents();
 
 			// Hand off initial world population to the active scenario.
 			// For the default 3-way BVR fight this just seeds one NPC

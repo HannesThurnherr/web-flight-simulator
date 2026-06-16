@@ -102,13 +102,23 @@ export function createJammer(config) {
 function _attFromRange(rangeM, jammer) {
 	const floor = (jammer.attFloor != null) ? jammer.attFloor : 0.4;
 	const burn  = jammer.burnThroughRangeM;
+	const maxR  = jammer.maxEffectRangeM || 150000;
+	// Beyond the jammer's effective range the noise is too weak to matter —
+	// no jamming. (Previously unbounded: a jammer 100 km away jammed as hard
+	// as one at 12 km, which made theatre-wide jamming feel like the enemy
+	// "always knew where you were".)
+	if (rangeM >= maxR) return 1.0;
 	if (rangeM <= burn) {
-		// Inside burn-through radius: jamming breaks down. Linear
-		// roll-off from att = floor @ burn → att = 1.0 @ 0.5×burn.
+		// Inside burn-through radius: the radar's own return overpowers the
+		// jam. Linear roll-off from att = floor @ burn → att = 1.0 @ 0.5×burn.
 		const t = Math.max(0, Math.min(1, (rangeM - 0.5 * burn) / (0.5 * burn)));
 		return 1.0 - (1.0 - floor) * t;
 	}
-	return floor;
+	// Past burn-through the jam is at full strength, then fades back toward
+	// no-effect as range approaches maxEffectRangeM — jammer received power
+	// falls with distance, so a far-off jammer barely degrades your radar.
+	const fade = Math.max(0, Math.min(1, (maxR - rangeM) / Math.max(1, maxR - burn)));
+	return 1.0 - (1.0 - floor) * fade;
 }
 
 // Vector from observer to target, in ECEF metres. Used to test whether

@@ -114,6 +114,12 @@ export class PlanePhysics {
 		// envelope on its own. Only pull-up input is limited.
 		this.gSoftLimit = spec.gSoftLimit;
 		this.gHardLimit = spec.gHardLimit;
+		// Negative-G envelope is far tighter than positive: airframes are
+		// stressed for roughly -3G and pilots red out shortly past that, so
+		// push-over authority fades from -1.5G and is gone by -3G. Per-plane
+		// override via spec.gNegSoftLimit / gNegHardLimit.
+		this.gNegSoftLimit = spec.gNegSoftLimit ?? -1.5;
+		this.gNegHardLimit = spec.gNegHardLimit ?? -3.0;
 		this.gLimiterActive = false;
 
 		// ---- Static stability (Phase 3) --------------------------------------
@@ -155,6 +161,16 @@ export class PlanePhysics {
 		// 232 kN, AB 312 kN. B-2: dry 308 kN, AB 308 kN (no AB).
 		this.thrustDryMax = spec.thrustDryMax;
 		this.thrustABMax  = spec.thrustABMax;
+
+		// Optional dual-mode propulsion (SR-72 class): a turbofan that fades
+		// out around Mach 3 plus a scramjet that spools up past Mach 3 and
+		// pushes to ~Mach 10. Null on conventional jets (they use the simple
+		// dry/AB model below). Mode + Mach are exposed in the update() result
+		// for the cockpit propulsion gauge.
+		this.propulsion = spec.propulsion || null;
+		this.propulsionMode = 'turbofan';   // 'turbofan' | 'transition' | 'scramjet'
+		this.mach = 0;
+		this.scramjetSpool = 0;             // 0..1, drives the scramjet thrust + UI
 
 		// Wing reference area for all aerodynamic force calculations.
 		// Lift, drag, and sideforce scale with q̄ · S_ref · coefficient.
@@ -346,6 +362,15 @@ export class PlanePhysics {
 			loadFactor: this.loadFactor, // G (lift / weight), ≈1 in level flight
 			gLimiterActive: this.gLimiterActive,
 			tvDeflection: this.tvDeflection, // {pitch, yaw} radians, 0 if no TV
+
+			// Dual-mode propulsion telemetry (null on conventional jets).
+			propulsion: this.propulsion ? {
+				mode: this.propulsionMode,        // 'turbofan' | 'transition' | 'scramjet'
+				mach: this.mach,
+				scramjetSpool: this.scramjetSpool, // 0..1
+				scramjetMinMach: this.propulsion.scramjetSpoolStartMach,
+				cutoffEndMach: this.propulsion.scramjetCutoffEndMach,
+			} : null,
 		};
 	}
 
@@ -467,6 +492,14 @@ export class PlanePhysics {
 		this.gLimiterActive = false;
 		if (pitchInput > 0 && this.loadFactor > this.gSoftLimit) {
 			const t = (this.loadFactor - this.gSoftLimit) / (this.gHardLimit - this.gSoftLimit);
+			const attenuation = Math.max(0, 1 - t);
+			pitchInput *= attenuation;
+			this.gLimiterActive = (attenuation < 1);
+		} else if (pitchInput < 0 && this.loadFactor < this.gNegSoftLimit) {
+			// Mirror limiter on the push side, with the much tighter negative
+			// envelope: full forward-stick authority down to gNegSoftLimit,
+			// fading to zero at gNegHardLimit.
+			const t = (this.gNegSoftLimit - this.loadFactor) / (this.gNegSoftLimit - this.gNegHardLimit);
 			const attenuation = Math.max(0, 1 - t);
 			pitchInput *= attenuation;
 			this.gLimiterActive = (attenuation < 1);
@@ -597,7 +630,49 @@ export class PlanePhysics {
 		const milFraction = this.idleThrottle + (1 - this.idleThrottle) * this.throttle;
 		const milThrust = this.thrustDryMax * milFraction;
 		const abBonus = this.isBoosting ? (this.thrustABMax - this.thrustDryMax) : 0;
+		const turbofan = (milThrust + abBonus) * altFactor;
 
-		return (milThrust + abBonus) * altFactor;
+		if (!this.propulsion || this.propulsion.type !== 'dual') {
+			this.mach = (this.velocity ? this.velocity.length() : 0) / 300;
+			return turbofan;
+		}
+		return this._dualModeThrust(turbofan, alt, altFactor);
+	}
+
+	// Dual-mode turbo/scramjet thrust. The turbofan fades out around Mach 3
+	// (inlet can't swallow the airflow); the scramjet is dead below ~Mach 3,
+	// spools up through Mach 4.5, then loses thrust again from Mach 9→11 —
+	// a thermal/inlet limit that gives a soft terminal velocity near Mach 10.
+	// The scramjet takes a much gentler altitude penalty than the turbofan
+	// (it WANTS thin, fast air), so it can keep pushing at cruise altitude.
+	_dualModeThrust(turbofanThrust, alt, altFactor) {
+		const p = this.propulsion;
+		const a = p.soundSpeedMps || 300;
+		const V = this.velocity ? this.velocity.length() : 0;
+		const mach = V / a;
+		this.mach = mach;
+
+		const clamp01 = (x) => Math.max(0, Math.min(1, x));
+		// Turbofan fade: 1 below fadeStart, → 0 by fadeEnd.
+		const tfFade = 1 - clamp01((mach - p.turbofanFadeStartMach) / Math.max(0.01, p.turbofanFadeEndMach - p.turbofanFadeStartMach));
+		// Scramjet spool: 0 below spoolStart, → 1 by spoolFull.
+		const spool = clamp01((mach - p.scramjetSpoolStartMach) / Math.max(0.01, p.scramjetSpoolFullMach - p.scramjetSpoolStartMach));
+		// Scramjet high-Mach cutoff: 1 below cutoffStart, → 0 by cutoffEnd.
+		const cutoff = 1 - clamp01((mach - p.scramjetCutoffStartMach) / Math.max(0.01, p.scramjetCutoffEndMach - p.scramjetCutoffStartMach));
+		this.scramjetSpool = spool * cutoff;
+
+		// Throttle gates both engines.
+		const throttleFrac = this.idleThrottle + (1 - this.idleThrottle) * this.throttle;
+		// Scramjet takes a gentle altitude penalty (altFactor^exp ≈ closer to
+		// 1) so it still produces big thrust up high where it operates.
+		const sjAlt = Math.pow(Math.max(1e-3, altFactor), p.scramjetAltPenaltyExp ?? 0.25);
+		const scramjet = p.scramjetThrustMax * this.scramjetSpool * throttleFrac * sjAlt;
+
+		// Mode label for the UI.
+		if (this.scramjetSpool > 0.05 && tfFade < 0.5) this.propulsionMode = 'scramjet';
+		else if (this.scramjetSpool > 0.05) this.propulsionMode = 'transition';
+		else this.propulsionMode = 'turbofan';
+
+		return turbofanThrust * tfFade + scramjet;
 	}
 }

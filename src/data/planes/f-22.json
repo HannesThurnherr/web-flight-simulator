@@ -13,13 +13,13 @@
 	"engineCount": 2,
 	"physicsOverrides": {
 		"mass": 24000,
-		"wingArea": 78.0,
+		"wingArea": 78,
 		"cdZero": 0.014,
 		"thrustDryMax": 232000,
 		"thrustABMax": 312000,
 		"controlCoef": {
 			"pitch": 8.5,
-			"roll": 10.0,
+			"roll": 10,
 			"yaw": 3.2
 		},
 		"dampingCoef": {
@@ -37,7 +37,7 @@
 			"roll": 1500,
 			"yaw": 1000
 		},
-		"gSoftLimit": 9.0,
+		"gSoftLimit": 9,
 		"gHardLimit": 10.5,
 		"pitchStabilityCoef": 0.25,
 		"yawStabilityCoef": 1.35,
@@ -175,10 +175,30 @@
 		"role": "Stealth Air Dominance",
 		"topSpeed": "Mach 2.25",
 		"combatRadius": "850 km",
-		"rcs": "~0.008 m\u00b2",
+		"rcs": "~0.008 m²",
 		"irSig": "Very Low",
 		"radarRange": "200 km (APG-77)",
 		"agility": 9,
 		"supercruise": true
-	}
+	},
+	"equipmentSlots": [
+		{
+			"id": "eq-centerline",
+			"label": "Centerline Pod",
+			"location": "centerline",
+			"accepts": [
+				"jammer",
+				"laser_pd"
+			]
+		},
+		{
+			"id": "eq-sensor",
+			"label": "Sensor Pod",
+			"location": "pod",
+			"accepts": [
+				"tgp",
+				"irst"
+			]
+		}
+	]
 }

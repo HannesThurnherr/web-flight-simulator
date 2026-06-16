@@ -42,6 +42,7 @@ import { makeRng, sample, sampleDiscENU, sampleOnRoute } from './scenarioRandom.
 import { MUNITIONS } from '../../weapon/munitions.js';
 import { PLANES } from '../../plane/planes.js';
 import { createPatrolPilot, createStrikePilot, createEscortPilot } from '../ai/index.js';
+import { applyMission } from '../ai/missions.js';
 
 // Resolve scenario.anchor → an absolute reference point used by
 // `origin.relTo: "anchor"`. Two modes:
@@ -361,9 +362,14 @@ export function buildScenarioFromJson(data) {
 							// Triangle-vertex fallback — unchanged.
 							npc = npcSystem.spawnNPC(playerState.lon, playerState.lat, playerState.alt);
 						}
-						if (npc && s.loadout) {
-							applyNpcLoadout(npc, _resolveLoadout(rng, s.loadout, npc));
-						}
+						// Resolve the loadout now (so the rng draw order is
+						// stable) but APPLY it AFTER the pilot is finalized
+						// below — a pilot-type override replaces npc.pilot with
+						// a fresh pilot whose weapon subsystem would otherwise
+						// reset to the default AIM-120/AIM-9X loadout, throwing
+						// away the scenario's R-77/R-37M/METEOR choice.
+						const resolvedLoadout = (npc && s.loadout)
+							? _resolveLoadout(rng, s.loadout, npc) : null;
 						// 10d — pilot type override. The default
 						// createFighterPilot is engage-on-sight + Cruise
 						// fallback, which produces the "fighters spawn
@@ -382,20 +388,39 @@ export function buildScenarioFromJson(data) {
 							});
 						} else if (npc && s.pilot && s.pilot.type === 'strike') {
 							const params = s.pilot.params || {};
-							// Resolve the strike target. JSON can supply
-							// either a literal { lon, lat, alt } or a
-							// { tag } reference. The getTarget closure
-							// re-resolves each frame so a moving target
-							// (rare for strike, but legal) tracks live.
-							const tgt = params.target || {};
-							const getTarget = () => {
-								if (typeof tgt.lon === 'number') return tgt;
-								if (tgt.tag) {
-									const u = _taggedUnits.get(tgt.tag);
-									if (u) return { lon: u.lon, lat: u.lat, alt: u.alt };
+							// Resolve the strike target list. JSON supplies an
+							// ordered `targets` array (each entry a literal
+							// { lon, lat, alt } or a { tag } reference); a legacy
+							// single `target` is accepted and wrapped. Each entry
+							// re-resolves every frame so moving / dying targets
+							// track live — a destroyed target resolves to null so
+							// the striker skips it and moves to the next.
+							const targetDefs = Array.isArray(params.targets)
+								? params.targets
+								: (params.target ? [params.target] : []);
+							const resolveOne = (t) => {
+								if (!t) return null;
+								// `key` is a STABLE identity for cross-striker
+								// target deconfliction (the coord objects are
+								// rebuilt every frame); `cls` lets the strike
+								// pilot mass more jets on a SAM than a soft target.
+								if (typeof t.lon === 'number') {
+									return { lon: t.lon, lat: t.lat, alt: t.alt ?? 0,
+										key: `c:${t.lon.toFixed(4)},${t.lat.toFixed(4)}` };
+								}
+								if (t.tag) {
+									const u = _taggedUnits.get(t.tag);
+									if (u && !u.destroyed && u.active !== false) {
+										return { lon: u.lon, lat: u.lat, alt: u.alt,
+											key: `t:${t.tag}`,
+											cls: u.signature && u.signature.unitClass };
+									}
 								}
 								return null;
 							};
+							// Stable-length list (null entries kept) so the
+							// behavior's target index stays aligned as targets die.
+							const getTargets = () => targetDefs.map(resolveOne);
 							npc.pilot = createStrikePilot(npc, {
 								ingressWaypoints: params.ingressWaypoints,
 								egressWaypoints:  params.egressWaypoints,
@@ -403,7 +428,7 @@ export function buildScenarioFromJson(data) {
 								terminalRangeM:   params.terminalRangeM,
 								captureRadiusM:   params.captureRadiusM,
 								weaponCount:      params.weaponCount,
-								getTarget,
+								getTargets,
 							});
 						} else if (npc && s.pilot && s.pilot.type === 'escort') {
 							const params = s.pilot.params || {};
@@ -416,6 +441,39 @@ export function buildScenarioFromJson(data) {
 								standoffAltOffset: params.standoffAltOffset,
 								maxEngagementRange: params.engageRangeM,
 							});
+						} else if (npc && s.pilot && s.pilot.type === 'air-superiority') {
+							// CAP a fixed AREA and clear hostiles inside it. The
+							// zone center is resolved ONCE from an origin-like
+							// spec (relTo player / bearing / range), then frozen.
+							const params = s.pilot.params || {};
+							const zSpec = params.zone || {};
+							const zPos = resolveOrigin(zSpec, playerState, anchor, rng)
+								|| { lon: pos.lon, lat: pos.lat };
+							const zone = {
+								lon: zPos.lon, lat: zPos.lat,
+								altM:    zSpec.altM    ?? params.altM    ?? pos.alt,
+								radiusM: zSpec.radiusM ?? params.radiusM ?? 25000,
+							};
+							applyMission(npc, { type: 'air-superiority', zone, opts: {
+								cruiseAlt:          zSpec.altM ?? params.altM,
+								cruiseSpeed:        params.speedMps,
+								engageBufferM:      params.engageBufferM,
+								maxEngagementRange: params.engageRangeM,
+							} });
+						} else if (npc && s.pilot && s.pilot.type === 'protect') {
+							// Escort/CAP a tagged asset (airborne → escort slot,
+							// ground → CAP orbit). Tag resolves at runtime so the
+							// protected unit need not be spawned yet.
+							const params = s.pilot.params || {};
+							const tag = params.protectTag;
+							const getProtected = () => tag ? (_taggedUnits.get(tag) || null) : null;
+							applyMission(npc, { type: 'protect', getProtected, opts: {
+								standoffM:          params.standoffM,
+								standoffAltOffset:  params.standoffAltOffset,
+								capAltM:            params.capAltM,
+								capRadiusM:         params.capRadiusM,
+								maxEngagementRange: params.engageRangeM,
+							} });
 						}
 						// 10d — tag registration. Single-tag spawns put
 						// the first npc on the tag. Multi-count spawns
@@ -424,6 +482,18 @@ export function buildScenarioFromJson(data) {
 						// like "destroy ewr-1" stays unambiguous in the
 						// 1-count default while still allowing the
 						// player to author "destroy any of three".
+						// Apply the loadout to the FINAL pilot (after any
+						// pilot-type override), so air-superiority / protect /
+						// patrol / strike / escort fighters keep their R-77 /
+						// R-37M / METEOR weapons. Mission pilots that set a
+						// deliberate engagement leash (air-superiority CAP holds
+						// its area; protect stays near its asset) keep it rather
+						// than letting a long missile widen their reach.
+						if (npc && resolvedLoadout) {
+							const keepLeash = !!(s.pilot &&
+								(s.pilot.type === 'air-superiority' || s.pilot.type === 'protect'));
+							applyNpcLoadout(npc, resolvedLoadout, { setEngageRange: !keepLeash });
+						}
 						if (npc && s.tag) _registerTag(s.tag, npc, count, i);
 					}
 
@@ -590,6 +660,24 @@ const NPC_WEAPON_DEFAULTS = {
 	'AIM-9X':   { fireRate: 3.0,  maxInFlight: 2, minRange: 500,   maxRange: 9000   },
 	'AIM-9M':   { fireRate: 3.0,  maxInFlight: 2, minRange: 600,   maxRange: 7000   },
 	'R-73':     { fireRate: 3.0,  maxInFlight: 2, minRange: 500,   maxRange: 8000   },
+	// Air-to-ground. Needed so a cloned ex-player (or a scenario strike NPC)
+	// keeps the GBUs/cruise/HARM it was carrying — without an entry here,
+	// applyNpcLoadout silently drops the type. Envelopes are the AI's release
+	// reach (not the munition's true Rmax); GroundAttackBehavior employs them.
+	// NOTE: these are deliberately SHORTER than each weapon's kinematic max.
+	// A glide bomb released at its paper Rmax flies a long, flat glide that
+	// (a) clips terrain short of the target and (b) keeps the striker outside
+	// every air-defence weapon envelope, so the IADS never gets to engage it.
+	// Pulling the release reach in to a sane stand-off means the striker
+	// actually penetrates the SAM/AAA WEZ (so it gets shot at) and the bomb
+	// arrives with a steep enough terminal dive to clear the hills.
+	'GBU-39':       { fireRate: 3.0, maxInFlight: 4, minRange: 4000, maxRange: 22000  }, // SDB glide
+	'GBU-38':       { fireRate: 4.0, maxInFlight: 2, minRange: 3000, maxRange: 15000  }, // JDAM 500lb
+	'GBU-31':       { fireRate: 5.0, maxInFlight: 2, minRange: 3000, maxRange: 15000  }, // JDAM 2000lb
+	'GBU-12':       { fireRate: 4.0, maxInFlight: 2, minRange: 2000, maxRange: 18000  }, // laser (carried, not auto-employed)
+	'STORM-SHADOW': { fireRate: 8.0, maxInFlight: 1, minRange: 8000, maxRange: 250000 }, // cruise standoff
+	'AGM-86':       { fireRate: 8.0, maxInFlight: 1, minRange: 8000, maxRange: 250000 }, // ALCM
+	'AGM-88':       { fireRate: 6.0, maxInFlight: 2, minRange: 5000, maxRange: 100000 }, // HARM (home-on-jam)
 };
 
 // Apply a per-NPC loadout after spawn. Loadout is a map of simType →
@@ -600,7 +688,12 @@ const NPC_WEAPON_DEFAULTS = {
 // WeaponSubsystem inventory are inserted using NPC_WEAPON_DEFAULTS,
 // so a scenario can put R-77s on an Su-35 NPC without the AI rebuild
 // dance.
-export function applyNpcLoadout(npc, loadout) {
+export function applyNpcLoadout(npc, loadout, opts = {}) {
+	// `setEngageRange` (default true) widens the target picker to the longest
+	// missile carried. Mission pilots (air-superiority CAP, protect) set a
+	// DELIBERATE engagement leash to hold their area/asset, so they pass false
+	// to keep that leash instead of letting a long missile un-leash them.
+	const setEngageRange = opts.setEngageRange !== false;
 	if (!npc || !loadout) return;
 	const ws = npc.pilot && npc.pilot.subsystems && npc.pilot.subsystems.weapons;
 	if (!ws || !Array.isArray(ws.weapons)) return;
@@ -637,6 +730,28 @@ export function applyNpcLoadout(npc, loadout) {
 			if (b.type === 'gun') return -1;
 			return (b.maxRange || 0) - (a.maxRange || 0);
 		});
+	}
+
+	// Match the target picker's reach to the longest missile we now carry.
+	// Without this the TargetManager keeps its 70 km default and DISCARDS
+	// any datalink cue past 70 km — so an R-37M shooter (150 km missile)
+	// could never employ it and would ignore a long-range EWR/AWACS cue
+	// entirely. We only widen what the picker is ALLOWED to consider; the
+	// WEZ aspect gate + shoot-look-shoot cadence in EngageBehavior still
+	// govern WHEN it actually fires, so this keeps the realistic tactical
+	// discipline while letting cued long-range shooters reach out. The 1.1×
+	// margin lets the fighter turn nose-hot just before Rmax rather than
+	// starting its turn at the edge of the envelope.
+	const tm = setEngageRange ? npc.pilot.subsystems.targetManager : null;
+	if (tm) {
+		let longest = 0;
+		for (const w of ws.weapons) {
+			if (!w || w.type === 'gun' || w.ammo <= 0) continue;
+			if (typeof w.maxRange === 'number' && w.maxRange > longest) longest = w.maxRange;
+		}
+		if (longest > 0) {
+			tm.maxEngagementRange = Math.max(tm.maxEngagementRange, longest * 1.1);
+		}
 	}
 }
 

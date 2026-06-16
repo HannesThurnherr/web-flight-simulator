@@ -38,6 +38,21 @@ import * as Cesium from 'cesium';
 import { Missile } from '../missile.js';
 import { isRadiating } from '../../systems/sensorSystem.js';
 
+// ----------------------------------------------------------------------------
+// Salvo deconfliction registry. Every live, auto-targeting HARM registers
+// here so siblings can see which emitters are already claimed and spread the
+// shots across the threat ring instead of dog-piling the single loudest SAM.
+// Player-designated shots register too (so an auto shot won't pile onto a
+// hand-picked emitter) but never re-pick a target themselves.
+// ----------------------------------------------------------------------------
+const _activeHarms = new Set();
+
+// Home-on-jam: scale a jammer's raw power into the same "transmit strength"
+// units as a radar's nominalRange so the two are rankable. ~2× makes a
+// broadcasting Krasukha (80 kW → 160k) a high-priority target — above a SAM
+// battery's fire-control radar, below a long-range EWR — matching doctrine.
+const JAM_TX_FACTOR = 2;
+
 export class AntiRadiationSeeker extends Missile {
 	constructor(scene, viewer, startPos, heading, pitch, speed,
 		target = null, onKill = null, launcher = null, data = null) {
@@ -100,18 +115,74 @@ export class AntiRadiationSeeker extends Missile {
 		// uses `lostLock` to skip _guide). We'll set lostLock=true ourselves
 		// only after the memory window expires with no re-acquire.
 		this.lostLock = false;
+
+		// Join the deconfliction registry now that our target is set, so the
+		// next HARM constructed in this salvo already sees our claim.
+		_activeHarms.add(this);
 	}
 
-	// Score a radiating unit. Higher = better target.
-	// Cheap inverse-square emission proxy: `radar.nominalRange / dist²`.
-	// Stronger emitters and closer ones win. Doesn't do RX-power-budget
-	// math because the actual physics is already implicit in nominalRange.
+	// How many OTHER live, still-guiding HARMs are homing on `emitter`.
+	_claimCount(emitter) {
+		if (!emitter) return 0;
+		let n = 0;
+		for (const h of _activeHarms) {
+			if (h === this || h.lostLock || h.destroyed || h.active === false) continue;
+			if (h.target === emitter) n++;
+		}
+		return n;
+	}
+
+	_rangeTo(u) {
+		const cosLat = Math.cos((this.lat || 0) * Math.PI / 180);
+		const dE = (u.lon - this.lon) * 111320 * cosLat;
+		const dN = (u.lat - this.lat) * 111320;
+		const dU = (u.alt - this.alt);
+		return Math.sqrt(dE * dE + dN * dN + dU * dU);
+	}
+
+	// Among all live HARMs sharing `emitter`, am I the farthest? Only the
+	// farthest claimer is allowed to peel off to a free emitter — deterministic
+	// so the redistribution converges instead of two missiles swapping forever.
+	_amFarthestClaimerOf(emitter) {
+		const myRange = this._rangeTo(emitter);
+		for (const h of _activeHarms) {
+			if (h === this || h.lostLock || h.destroyed || h.active === false) continue;
+			if (h.target !== emitter) continue;
+			if (h._rangeTo(emitter) > myRange) return false;
+		}
+		return true;
+	}
+
+	// Effective transmit strength of a unit as seen by a passive RF seeker:
+	// the louder of its search-radar emission and any active jammer (home-on-
+	// jam — a broadcasting jammer is the loudest source on the battlefield and
+	// a prime ARM target). 0 if it's emitting nothing trackable right now.
+	_txStrength(u) {
+		let tx = 0;
+		if (isRadiating(u) && u.sensors && u.sensors.radar) {
+			tx = u.sensors.radar.nominalRange || 50000;
+		}
+		const j = u.jammer;
+		if (j && (j.defensiveOn || (j.offensiveTargets && j.offensiveTargets.size > 0))) {
+			const jamTx = (j.power || 40000) * JAM_TX_FACTOR;
+			if (jamTx > tx) tx = jamTx;
+		}
+		return tx;
+	}
+
+	// Is this unit currently a trackable emitter (radar OR jammer)?
+	_isEmitterLive(u) {
+		return !!u && !u.destroyed && u.active !== false && this._txStrength(u) > 0;
+	}
+
+	// Score a radiating/jamming unit. Higher = better target.
+	// Cheap inverse-square emission proxy: `txStrength / dist²`.
 	_emitterScore(u) {
 		if (!u || u.destroyed || u.active === false) return 0;
 		if (u === this.launcher) return 0;
 		if (u.team && this.team && u.team === this.team) return 0;
-		if (!isRadiating(u)) return 0;
-		const r = u.sensors.radar;
+		const tx = this._txStrength(u);
+		if (tx <= 0) return 0;
 		// FOV check (simple cosine — narrower than the wide ±90° an
 		// active-radar AAM uses).
 		const cosLat = Math.cos((this.lat || 0) * Math.PI / 180);
@@ -130,18 +201,42 @@ export class AntiRadiationSeeker extends Missile {
 		const losU = dU / range;
 		const cosA = fwdE * losE + fwdN * losN + fwdU * losU;
 		if (cosA < Math.cos(this._fovHalfRad)) return 0;
-		const txStrength = r.nominalRange || 50000;
-		return txStrength / Math.max(1, range * range);
+		return tx / Math.max(1, range * range);
 	}
 
+	// Pick the best emitter, deconflicted across the salvo: prefer emitters
+	// the FEWEST sibling HARMs are already homing on, and among the
+	// least-claimed take the strongest (loudest/closest). So the first shot
+	// takes the top SAM, the second sees it's claimed and takes the next, and
+	// only once every emitter has one inbound do they start doubling up.
 	_scanForEmitter(units) {
 		let best = null;
+		let bestClaims = Infinity;
 		let bestScore = 0;
 		for (const u of units) {
+			// Auto-acquire ignores fast airborne emitters (enemy fighters
+			// painting with their own radar). A classic HARM is a SEAD weapon
+			// tuned for ground emitters and large slow airborne ones (AWACS);
+			// a maneuvering fighter is an AMRAAM problem, not a HARM one, and
+			// the seeker/flight profile can't realistically run one down. We
+			// still allow ground SAM/EWR/jammers and AWACS-class radars. A
+			// player can override by manually designating a target (that path
+			// bypasses this scan entirely).
+			const cls = u && u.signature && u.signature.unitClass;
+			if (cls === 'fighter' || cls === 'stealth_fighter') continue;
 			const s = this._emitterScore(u);
-			if (s > bestScore) { bestScore = s; best = u; }
+			if (s <= 0) continue;
+			const claims = this._claimCount(u);
+			if (claims < bestClaims || (claims === bestClaims && s > bestScore)) {
+				best = u; bestClaims = claims; bestScore = s;
+			}
 		}
 		return best;
+	}
+
+	destroy() {
+		_activeHarms.delete(this);
+		super.destroy();
 	}
 
 	_refreshLkp(target) {
@@ -160,10 +255,30 @@ export class AntiRadiationSeeker extends Missile {
 	_guide(dt) {
 		if (this.lostLock) return;
 
-		const radarLive = isRadiating(this.target);
+		const radarLive = this._isEmitterLive(this.target);
 
 		if (radarLive) {
 			this._refreshLkp(this.target);
+			// Live redistribution (auto shots only): if my SAM already has
+			// another HARM inbound AND a different emitter is currently
+			// un-engaged, the FARTHEST of the doubled-up shots peels off to
+			// cover the free target. Only the farthest moves, and only onto a
+			// 0-claim emitter, so it converges without target thrashing —
+			// handles "a SAM that was in emcon comes back on, spread out".
+			if (!this._playerDesignated) {
+				this._redistTimer = (this._redistTimer || 0) + dt;
+				if (this._redistTimer >= 1.0) {
+					this._redistTimer = 0;
+					if (this._claimCount(this.target) >= 1 && this._amFarthestClaimerOf(this.target)) {
+						const npcs = (this.launcher && this.launcher.npcs) ? this.launcher.npcs : [];
+						const alt = this._scanForEmitter(npcs);
+						if (alt && alt !== this.target && this._claimCount(alt) === 0) {
+							this.target = alt;
+							this._refreshLkp(alt);
+						}
+					}
+				}
+			}
 		} else {
 			// Emission gone. Mark first-loss instant. Re-scan
 			// occasionally for a replacement emitter (handles the
@@ -248,7 +363,18 @@ export class AntiRadiationSeeker extends Missile {
 		const TERMINAL_RANGE_FLOOR = 700;
 		const TERMINAL_RANGE_M = Math.max(TERMINAL_RANGE_FLOOR, TERMINAL_DIVE_LEAD_S * this.speed);
 		const BLEND_RANGE_M    = TERMINAL_RANGE_M;        // dive ramps in over [TERMINAL, 2*TERMINAL]
-		const CRUISE_AGL_M     = 1500; // sit ~1.5 km above target's alt while transiting
+		// Loft. A real HARM fired at a distant emitter climbs into thin air
+		// (less drag → more range AND a faster terminal dive) instead of
+		// dragging along flat just above the target. Cruise altitude scales
+		// with horizontal range to the target — far shots arc high, close
+		// shots stay low — clamped to [min,max] from the munition data. The
+		// missile holds (target.alt + thisAGL) until terminal range, then
+		// bunts over into the steep geometric dive below.
+		const f0 = this.data.flight;
+		const loftPerM = (typeof f0.loftAglPerM === 'number') ? f0.loftAglPerM : 0.18;
+		const loftMax  = (typeof f0.loftAglMaxM === 'number') ? f0.loftAglMaxM : 14000;
+		const loftMin  = (typeof f0.loftAglMinM === 'number') ? f0.loftAglMinM : 1500;
+		const CRUISE_AGL_M = Math.max(loftMin, Math.min(loftMax, horizRange * loftPerM));
 
 		// Target pitch in cruise mode: aim at (target.alt + cruiseAGL).
 		// Target pitch in terminal mode: aim straight at target alt —
@@ -259,16 +385,18 @@ export class AntiRadiationSeeker extends Missile {
 		// the target for a steep direct line). This produces a brief
 		// over-the-top arc — apex past the LKP, then steep dive —
 		// which is also how real HARM terminal trajectories look.
-		const MIN_DIVE_DEG = 45;
 		const cruiseAimAlt = lkp.alt + CRUISE_AGL_M;
 		const cruiseDU = cruiseAimAlt - this.alt;
 		const cruisePitch = Math.atan2(cruiseDU, Math.max(1, horizRange)) * 180 / Math.PI;
 		const geomTerminalPitch = Math.atan2(dU, Math.max(1, horizRange)) * 180 / Math.PI;
-		// dU is target_alt - own_alt; for a target below us it's negative.
-		// "Steeper" dive = more negative pitch. Take the more negative of
-		// the geometric line and -MIN_DIVE_DEG so the missile pitches over
-		// hard whenever it's not already on a steep line.
-		const terminalPitch = Math.min(geomTerminalPitch, -MIN_DIVE_DEG);
+		// Aim at the GEOMETRIC line to the target — the same direct-to-coord
+		// terminal aim the working CruiseSeeker uses — with only a gentle -10°
+		// floor to guarantee descent. The old code forced a 45° minimum dive
+		// here, which when cruising ~1.5 km above the SAM and diving from
+		// ~2.5 km out is STEEPER than the line to the target: the missile
+		// descended faster than it closed and augered in ~1 km short. The -10°
+		// floor never binds at real terminal geometry (target is well below).
+		const terminalPitch = Math.min(geomTerminalPitch, -10);
 		// Blend factor: 0 at >TERMINAL+BLEND (full cruise), 1 at <TERMINAL (full dive).
 		let blend = 1;
 		if (horizRange > TERMINAL_RANGE_M + BLEND_RANGE_M) blend = 0;

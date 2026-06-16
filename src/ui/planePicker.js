@@ -27,8 +27,12 @@ import { MUNITIONS, munitionsForHardpoint } from '../weapon/munitions';
 import {
 	getLoadout, setLoadoutSlot, fillAllCompatible, clearAll,
 	totalWeightKg, isStealthBroken,
-	effectiveRcsM2, externalRcsM2,
+	effectiveRcsM2, externalRcsM2, countForHardpoint,
 } from '../plane/loadout';
+import { EQUIPMENT, equipmentForSlot } from '../systems/equipment';
+import {
+	getEquipmentLoadout, setEquipmentSlot, equipmentMassKg,
+} from '../plane/equipmentLoadout';
 import { PlanePreview } from './planePreview';
 import { MunitionPreview } from './munitionPreview';
 import { gameSettings, saveSettings } from './settings';
@@ -228,6 +232,7 @@ export function setupPlanePicker(ctx) {
 		detailLoadout.innerHTML = `
 			<div class="loadout-summary-area"></div>
 			<div class="loadout-tally-area"></div>
+			<div class="loadout-equipment-area"></div>
 			<div class="loadout-bulk-area"></div>
 			<div class="loadout-body">
 				<div class="loadout-list-area"></div>
@@ -264,7 +269,7 @@ export function setupPlanePicker(ctx) {
 		ensureLoadoutSkeleton();
 		_lastSkeletonPlaneId = planeId;
 		const lo = getLoadout(planeId);
-		const weight = totalWeightKg(planeId);
+		const weight = totalWeightKg(planeId) + equipmentMassKg(planeId);
 		const maxWeight = plane.maxLoadoutKg || 0;
 		const over = maxWeight > 0 && weight > maxWeight;
 
@@ -293,9 +298,10 @@ export function setupPlanePicker(ctx) {
 		// below the summary. Gives an at-a-glance roster of what's on
 		// the jet without scrolling the hardpoint list.
 		const tally = new Map();
-		for (const munId of Object.values(lo)) {
+		for (const hp of plane.hardpoints) {
+			const munId = lo[hp.id];
 			if (!munId) continue;
-			tally.set(munId, (tally.get(munId) || 0) + 1);
+			tally.set(munId, (tally.get(munId) || 0) + countForHardpoint(hp, munId));
 		}
 		const tallyHtml = tally.size === 0
 			? '<span style="color:rgba(0,255,0,0.4);">— nothing loaded —</span>'
@@ -367,7 +373,12 @@ export function setupPlanePicker(ctx) {
 				}),
 			);
 			const cur = current && MUNITIONS[current];
-			const mass = cur ? `${cur.massKg} kg` : '—';
+			// Rounds carried on this station (capacity / munition bay-units).
+			// A capacity-1 pylon shows nothing; a quad-packed / bomber bay
+			// shows e.g. "×16".
+			const cnt = cur ? countForHardpoint(hp, current) : 0;
+			const cntTag = cnt > 1 ? `<span class="hp-count" style="color:#0f8;font-weight:bold;">×${cnt}</span> ` : '';
+			const mass = cur ? `${cntTag}${(cur.massKg * Math.max(1, cnt)).toLocaleString()} kg` : '—';
 			const rcsNote = cur
 				? (isInternal
 					? '<span class="hp-rcs internal">0 m² (internal)</span>'
@@ -476,9 +487,51 @@ export function setupPlanePicker(ctx) {
 			`;
 		}
 
+		// Equipment section — non-weapon systems (jammers, targeting pods,
+		// defensive lasers, IRST) in their own slots. Only shown for
+		// airframes that declare equipmentSlots.
+		let equipmentHtml = '';
+		if (Array.isArray(plane.equipmentSlots) && plane.equipmentSlots.length > 0) {
+			const eqLo = getEquipmentLoadout(planeId);
+			const eqRows = plane.equipmentSlots.map((slot) => {
+				const current = eqLo[slot.id] || '';
+				const compatible = equipmentForSlot(slot);
+				const opts = ['<option value="">— empty —</option>'].concat(
+					compatible.map((e) => {
+						const sel = e.id === current ? ' selected' : '';
+						return `<option value="${e.id}"${sel}>${e.shortName || e.name} · ${e.massKg} kg</option>`;
+					}),
+				);
+				const cur = current && EQUIPMENT[current];
+				const desc = cur ? `<div class="eq-desc">${cur.description || ''}</div>` : '';
+				return `
+					<div class="equipment-row" data-eqrow="${slot.id}">
+						<div class="hp-label">
+							<span class="hp-name">${slot.label || slot.id}</span>
+							<span class="hp-type">${(slot.location || '').toUpperCase()} · ${(slot.accepts || []).join('/')}</span>
+						</div>
+						<select data-eq="${slot.id}">${opts.join('')}</select>
+						<span class="hp-mass">${cur ? cur.massKg + ' kg' : '—'}</span>
+						${desc}
+					</div>
+				`;
+			}).join('');
+			const eqMass = equipmentMassKg(planeId);
+			equipmentHtml = `
+				<div class="equipment-section">
+					<div class="equipment-header">
+						<span class="equipment-title">SYSTEMS / EQUIPMENT</span>
+						<span class="equipment-mass">${eqMass.toLocaleString()} kg</span>
+					</div>
+					<div class="equipment-list">${eqRows}</div>
+				</div>
+			`;
+		}
+
 		// Push HTML into each sub-area; the canvas-bearing skeleton stays.
 		detailLoadout.querySelector('.loadout-summary-area').innerHTML = summaryHtml;
 		detailLoadout.querySelector('.loadout-tally-area').innerHTML = tallyOnlyHtml;
+		detailLoadout.querySelector('.loadout-equipment-area').innerHTML = equipmentHtml;
 		detailLoadout.querySelector('.loadout-bulk-area').innerHTML = bulkHtml;
 		detailLoadout.querySelector('.loadout-list-area').innerHTML =
 			`<div class="hardpoint-list">${rowsHtml}</div>`;
@@ -491,6 +544,15 @@ export function setupPlanePicker(ctx) {
 
 		// Per-row dropdown — single-slot edit path. Also bumps the
 		// preview to the just-picked munition.
+		// Equipment slot dropdowns — write the chosen item back and repaint
+		// (mass/RCS totals shift with equipment too).
+		for (const sel of detailLoadout.querySelectorAll('select[data-eq]')) {
+			sel.addEventListener('change', (ev) => {
+				setEquipmentSlot(planeId, sel.dataset.eq, ev.target.value);
+				paintLoadout(planeId);
+			});
+		}
+
 		for (const sel of detailLoadout.querySelectorAll('select[data-hp]')) {
 			sel.addEventListener('change', (ev) => {
 				const munId = ev.target.value;

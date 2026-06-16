@@ -1,0 +1,13 @@
+{
+	"id": "litening-tgp",
+	"name": "LITENING Targeting Pod",
+	"shortName": "TGP",
+	"kind": "tgp",
+	"category": "EO",
+	"massKg": 200,
+	"rcsContributionM2": 0.01,
+	"description": "Electro-optical / IR targeting pod with laser designator. Required to slew, track, and lase ground targets for laser-guided weapons (GBU-12).",
+	"config": {
+		"tgp": { "enabled": true }
+	}
+}

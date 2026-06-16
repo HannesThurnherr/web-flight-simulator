@@ -71,7 +71,6 @@ export class GPSSeeker extends Missile {
 		let dH = desiredHeading - this.heading;
 		while (dH < -180) dH += 360;
 		while (dH >  180) dH -= 360;
-		const dP = desiredPitch - this.pitch;
 
 		// All required fields validated at ctor.
 		const f = this.data.flight;
@@ -80,17 +79,59 @@ export class GPSSeeker extends Missile {
 		const gAvail = maxG * qFactor;
 		const maxTurnRad = (gAvail * 9.81) / Math.max(50, this.speed);
 		const capDeg = (maxTurnRad * 180 / Math.PI) * dt;
-
 		const pn = f.pnGain;
+
+		// Lateral guidance is ALWAYS active — line the bomb up with the
+		// target's bearing from the moment of release.
 		this.heading += Math.max(-capDeg, Math.min(capDeg, dH * pn * dt));
-		this.pitch   += Math.max(-capDeg, Math.min(capDeg, dP * pn * dt));
-		this.pitch   = Math.max(-89, Math.min(89, this.pitch));
+
+		// ---- Vertical profile -------------------------------------------
+		// Loft-glide weapons (GBU-39 SDB) fly a BALLISTIC arc until apogee,
+		// then deploy wings and glide onto the target. A climbing/toss
+		// release therefore arcs up and over for huge stand-off range,
+		// rather than nosing straight down off the rail. Non-loft bombs
+		// (vanilla JDAM) keep immediate point-at-target guidance.
+		const vVert = this.speed * Math.sin(this.pitch * Math.PI / 180);
+		const stillClimbing = f.loftGlide && vVert > 3;   // 3 m/s ≈ "top of arc"
+		let mode = 'GPS';
+
+		if (stillClimbing) {
+			// Ballistic ascent: hands off the pitch — gravity (applied in
+			// the base Missile update) arcs it over. Only steer azimuth.
+			mode = 'BALLISTIC';
+		} else {
+			// Past apogee (or never lofted): home the pitch onto the target
+			// point. Loft-glide weapons fly a GLIDE-HIGH profile: hold a
+			// shallow descent — preserving altitude and terrain clearance —
+			// until the straight dive line to the target steepens to the
+			// terminal dive angle, THEN commit to the dive. Following the
+			// direct depression line from apogee (the old behaviour) flew a
+			// flat 10-15° slope for tens of km and clipped ridgelines short
+			// of the target. Non-loft bombs (vanilla JDAM) keep immediate
+			// point-at-target guidance.
+			let cmdPitch = desiredPitch;
+			if (f.loftGlide) {
+				const diveDeg = f.terminalDiveDeg ?? 35;
+				const termR   = f.terminalRangeM || 4000;
+				if (desiredPitch > -diveDeg && range > termR) {
+					// Dive line still shallow → stay high. -3° keeps a
+					// little downhill energy; an uphill target is tracked
+					// gently (unpowered, so the climb self-limits).
+					cmdPitch = Math.max(-3, Math.min(desiredPitch, 5));
+					mode = 'GLIDE-HI';
+				} else {
+					mode = range < termR ? 'GLIDE-TERM' : 'GLIDE-DIVE';
+				}
+			}
+			const dP = cmdPitch - this.pitch;
+			this.pitch += Math.max(-capDeg, Math.min(capDeg, dP * pn * dt));
+			this.pitch  = Math.max(-89, Math.min(89, this.pitch));
+		}
 
 		this.debug = {
 			rangeToTarget: range,
 			headingError: dH,
-			pitchError:   dP,
-			mode: 'GPS',
+			mode,
 			targetName: 'COORD',
 		};
 	}

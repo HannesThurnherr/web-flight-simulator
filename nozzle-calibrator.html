@@ -60,9 +60,9 @@
 
     <div id="picker">
       <h2 style="color:#ffb84a;margin:0">Nozzle Calibrator</h2>
-      <p>Select all 8 GLBs from <code>public/assets/models/</code> in one shot
-         (open the dialog, navigate to that folder, ⌘A, Open). The page matches files
-         by name to the inlined plane configs.</p>
+      <p>Select one or more plane GLBs from <code>public/assets/models/</code>
+         — e.g. just <code>sr-72-darkstar.glb</code>, or ⌘A to do all of them. The page
+         calibrates whichever known files you pick.</p>
       <input type="file" id="filein" accept=".glb,model/gltf-binary" multiple>
       <p class="hint">After loading: click the center of one engine. The other side mirrors
          automatically. Use <b>Flip View</b> if you're seeing the front by mistake.
@@ -110,9 +110,13 @@ const PLANES = [
   { id:'ea-18g-growler', file:'ea-18g-growler.glb',       name:'EA-18G Growler',       rotY:90, prev:null },
   // B-2: 4 engines. Click inner pair first, then outer pair. Both auto-mirror.
   { id:'b-2',            file:'b-2-spirit.glb',           name:'B-2A Spirit (inner pair, then outer pair)', rotY:90, prev:{xRatio:0.055,yRatio:0.10,zRatio:0.40}, clicks:2 },
+  // New-rotation airframes (modelRotation y:180, not y:90).
+  { id:'sr-72-darkstar', file:'sr-72-darkstar.glb',       name:'SR-72 Darkstar',       rotY:180, prev:{xRatio:0.06, yRatio:-0.04,zRatio:0.86} },
+  { id:'f-47-ngad',      file:'f-47-ngad.glb',            name:'F-47 NGAD',            rotY:180, prev:{xRatio:0.05, yRatio:-0.05,zRatio:0.80} },
 ];
 
 const files = new Map();
+let queue = PLANES;   // the planes actually being calibrated this run (subset whose GLBs were selected)
 let idx = 0;
 let cameraSide = 1;          // +1: camera at +Z (post-rotation rear); -1: flipped
 const results = {};          // id -> {xRatio, yRatio, zRatio}
@@ -183,9 +187,11 @@ function frameModel() {
 // --- file loading ------------------------------------------------------------
 fileInput.addEventListener('change', async (e) => {
   for (const f of e.target.files) files.set(f.name, f);
-  const missing = PLANES.filter(p => !files.has(p.file)).map(p => p.file);
-  if (missing.length) {
-    alert('Missing GLBs (selected ' + e.target.files.length + ' files):\n\n' + missing.join('\n'));
+  // Calibrate only the planes whose GLBs were actually selected — so you can
+  // pick just one (e.g. the Darkstar) and recalibrate that alone.
+  queue = PLANES.filter(p => files.has(p.file));
+  if (queue.length === 0) {
+    alert('None of the known plane GLBs were in your selection (' + e.target.files.length + ' files).\n\nKnown files:\n' + PLANES.map(p => p.file).join('\n'));
     return;
   }
   picker.style.display = 'none';
@@ -196,10 +202,10 @@ const loader = new GLTFLoader();
 
 async function loadPlane(i) {
   idx = i;
-  if (i >= PLANES.length) return showOutput();
-  const cfg = PLANES[i];
+  if (i >= queue.length) return showOutput();
+  const cfg = queue[i];
   titleEl.textContent = cfg.name;
-  progressEl.textContent = `(${i+1}/${PLANES.length})  id=${cfg.id}`;
+  progressEl.textContent = `(${i+1}/${queue.length})  id=${cfg.id}`;
   valuesEl.textContent = cfg.prev
     ? `prev: x=${cfg.prev.xRatio} y=${cfg.prev.yRatio} z=${cfg.prev.zRatio}`
     : '(no prior nozzle)';
@@ -311,7 +317,7 @@ resetBtn.addEventListener('click', () => {
 skipBtn.addEventListener('click', () => loadPlane(idx + 1));
 
 nextBtn.addEventListener('click', () => {
-  const cfg = PLANES[idx];
+  const cfg = queue[idx];
   const zRatio = (cfg.prev && cfg.prev.zRatio) || 0.85;
   if (currentClicks.length === 1) {
     results[cfg.id] = {

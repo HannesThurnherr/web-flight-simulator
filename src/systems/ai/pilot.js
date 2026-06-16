@@ -44,6 +44,7 @@ export class PilotCommand {
 		this.weaponTarget  = null;    // ref to target unit
 		this.fireFlare     = false;
 		this.fireChaff     = false;
+		this.strikeClaim   = null;    // { target, etaS } — set with an A/G release
 		this.activeBehaviorName = null;
 	}
 }
@@ -75,6 +76,7 @@ export class Pilot {
 	//   Pilot state keeps the pilot side-effect-free w.r.t. the world.
 	update(ctx, dt) {
 		this.command.reset(this.unit);
+		this.lastNow = ctx.now; // sim-clock stamp for the spectator HUD
 
 		// Subsystems tick first — they read context, update their internal
 		// state (cooldowns, inventory, cached "best target"), and are then
@@ -87,12 +89,32 @@ export class Pilot {
 		// First behavior whose isActive returns true gets to write the
 		// command. No two behaviors run in the same frame — this is the
 		// subsumption-architecture guarantee: one clear owner of control.
+		//
+		// `debugTrace` records this frame's arbitration for the spectator
+		// HUD: every behavior evaluated (with its verdict) plus the ones the
+		// winner shadowed ('skipped'). Reusing one array + per-slot objects
+		// keeps the hot loop allocation-free.
+		const trace = this.debugTrace || (this.debugTrace = []);
+		let traceN = 0;
+		const tracePush = (name, state) => {
+			const slot = trace[traceN] || (trace[traceN] = { name: '', state: '' });
+			slot.name = name; slot.state = state;
+			traceN++;
+		};
+		let winner = null;
 		for (const b of this.behaviors) {
+			if (winner) { tracePush(b.name, 'skipped'); continue; }
 			if (b.isActive(ctx)) {
-				b.apply(ctx, this.command, dt);
-				this.command.activeBehaviorName = b.name;
-				return;
+				winner = b;
+				tracePush(b.name, 'ACTIVE');
+			} else {
+				tracePush(b.name, 'idle');
 			}
+		}
+		trace.length = traceN;
+		if (winner) {
+			winner.apply(ctx, this.command, dt);
+			this.command.activeBehaviorName = winner.name;
 		}
 	}
 }

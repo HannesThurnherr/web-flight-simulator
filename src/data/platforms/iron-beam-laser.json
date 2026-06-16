@@ -1,0 +1,40 @@
+{
+	"id": "iron-beam-laser",
+	"name": "Iron Beam HELWS",
+	"kind": "ground",
+	"model": "/assets/models/phalanx-ciws.glb",
+	"modelRotation": { "x": 0, "y": 0, "z": 0 },
+	"modelScale": 1.0,
+	"signature": "sam_site",
+	"groundOffsetM": 0,
+	"sensors": {
+		"radar": {
+			"enabled": true,
+			"active": true,
+			"mode": "search",
+			"nominalRange": 30000,
+			"referenceRcs": 5,
+			"fovHalfHDeg": 180,
+			"fovHalfVDeg": 85,
+			"notchThreshold": 60
+		}
+	},
+	"pilot": {
+		"type": "static-laser",
+		"defaultParams": {
+			"maxRangeM": 8000,
+			"minRangeM": 150,
+			"dwellSecToKill": 2.5,
+			"capDrainS": 6.0,
+			"capRechargeS": 9.0,
+			"brownout": 0.7,
+			"coolPerSec": 0.35,
+			"emitterHeightM": 3.0,
+			"radarRechargeTax": 0.5
+		}
+	},
+	"physicsOverrides": {
+		"mass": 20000,
+		"wingArea": 1
+	}
+}

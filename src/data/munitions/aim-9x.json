@@ -3,8 +3,16 @@
 	"name": "AIM-9X SIDEWINDER",
 	"shortName": "AIM-9X",
 	"category": "AAM",
-	"tags": ["aam", "wvr", "iir", "fox-2", "hobs", "tv"],
+	"tags": [
+		"aam",
+		"wvr",
+		"iir",
+		"fox-2",
+		"hobs",
+		"tv"
+	],
 	"massKg": 85,
+	"bayUnits": 0.5,
 	"rcsContributionM2": 0.01,
 	"description": "Block II/III imaging IR Sidewinder. Thrust-vectoring tail control gives ~50 G turns post-launch and high-off-boresight (±90°) lockup. Focal-plane-array seeker discriminates aircraft silhouette from flare bloom — almost immune to traditional IR countermeasures.",
 	"simType": "AIM-9X",
@@ -12,18 +20,18 @@
 	"seekerType": "iir",
 	"flight": {
 		"launchSpeedOffset": 50,
-		"boostDurationS": 5.0,
+		"boostDurationS": 5,
 		"boostAccel": 290,
 		"peakSpeed": 1000,
 		"minSpeed": 80,
 		"maxLifeS": 60,
 		"maxTurnDegPerSec": 100,
-		"pnGain": 4.0,
+		"pnGain": 4,
 		"dragRef": 16,
 		"dragRefSpeed": 800,
 		"dragRefAltitude": 6000,
 		"vManeuverRef": 600,
-		"gAvailFloor": 0.20
+		"gAvailFloor": 0.2
 	},
 	"warhead": {
 		"killRadiusM": 11,

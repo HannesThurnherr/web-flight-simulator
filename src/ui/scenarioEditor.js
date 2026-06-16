@@ -28,6 +28,7 @@ import { getRawScenario, refreshScenarios, setActiveScenario, getActiveScenario 
 import { MUNITIONS, munitionsForHardpoint } from '../weapon/munitions';
 import {
 	loadUserScenarios, saveUserScenario,
+	exportAsJsonText, importFromJsonText,
 } from '../systems/scenarios/userScenarios.js';
 import { getViewer } from '../world/cesiumWorld';
 import { CommanderView } from '../systems/commanderView';
@@ -73,7 +74,7 @@ let _editorKeydown = null;
 
 // When non-null, the next click on a spawn marker writes its tag
 // into the selected spawn's pilot params (escort.tag or strike target).
-// Format: { spawnIdx, field: 'escortTag' | 'strikeTarget' }.
+// Format: { spawnIdx, field: 'escortTag' | 'strikeTargetAdd' }.
 let _pendingTagPick = null;
 // Active drag state. While set, pointermove updates the dragged
 // thing's coords. Cleared on pointerup.
@@ -111,7 +112,10 @@ function _platformIsGround(platformId) {
 const TEAM_COLORS = {
 	'friendly':     Cesium.Color.fromCssColorString('#40d0ff'),
 	'hostile-red':  Cesium.Color.fromCssColorString('#ff4040'),
-	'hostile-blue': Cesium.Color.fromCssColorString('#ff8080'),
+	// Was '#ff8080' (salmon) — nearly identical to hostile-red, so the two
+	// opposing hostile teams looked the same on the map and were trivial to
+	// mix up. Now a clear blue so a red-vs-blue battle reads at a glance.
+	'hostile-blue': Cesium.Color.fromCssColorString('#4a8cff'),
 	'neutral':      Cesium.Color.fromCssColorString('#ffd040'),
 };
 const COLOR_FALLBACK = Cesium.Color.fromCssColorString('#cccccc');
@@ -554,8 +558,14 @@ function _consumeTagPick(targetIdx) {
 	source.pilot.params = source.pilot.params || {};
 	if (field === 'escortTag') {
 		source.pilot.params.escortTag = target.tag;
-	} else if (field === 'strikeTarget') {
-		source.pilot.params.target = { tag: target.tag };
+	} else if (field === 'strikeTargetAdd') {
+		// Append to the ordered strike-target list (keep PICK armed so the
+		// user can click several markers in a row).
+		const targets = _ensureStrikeTargets(source.pilot.params);
+		if (!targets.some(t => t && t.tag === target.tag)) targets.push({ tag: target.tag });
+		_renderSpawnMarkers();
+		_buildPanel();
+		return; // leave _pendingTagPick set for rapid multi-pick
 	}
 	_pendingTagPick = null;
 	_renderSpawnMarkers();
@@ -839,6 +849,7 @@ function _renderSpawnMarkers() {
 			} else if (ptype === 'strike') {
 				_drawRoute(viewer, params.ingressWaypoints, '#ffaa44', 'IN', false, 'ingressWaypoints');
 				_drawRoute(viewer, params.egressWaypoints,  '#aa88ff', 'EG', false, 'egressWaypoints');
+				_drawStrikeTargetLines(viewer, sel, params);
 			}
 		}
 	}
@@ -897,6 +908,55 @@ function _drawRoute(viewer, list, hex, prefix, loop, routeKey) {
 			clampToGround: false,
 		},
 	}));
+}
+
+// Draw a dashed line from the selected strike spawn to each of its
+// ordered targets, with a numbered ✸ badge at each — so the multi-target
+// strike list is visible on the map, not just in the panel.
+function _drawStrikeTargetLines(viewer, striker, params) {
+	const targets = Array.isArray(params.targets) ? params.targets : [];
+	if (!targets.length) return;
+	const from = _resolveSpawnPositionForDisplay(striker, _activeJson);
+	if (!from) return;
+	const red = Cesium.Color.fromCssColorString('#ff5544');
+	targets.forEach((t, i) => {
+		let pos = null;
+		if (t && typeof t.lon === 'number') {
+			pos = { lon: t.lon, lat: t.lat, alt: t.alt || 0 };
+		} else if (t && t.tag) {
+			const tgtSpawn = (_activeJson.spawns || []).find(sp => sp.tag === t.tag);
+			if (tgtSpawn) pos = _resolveSpawnPositionForDisplay(tgtSpawn, _activeJson);
+		}
+		if (!pos) return;
+		_entities.push(viewer.entities.add({
+			polyline: {
+				positions: [
+					Cesium.Cartesian3.fromDegrees(from.lon, from.lat, from.alt || 0),
+					Cesium.Cartesian3.fromDegrees(pos.lon, pos.lat, pos.alt || 0),
+				],
+				width: 1.5,
+				material: new Cesium.PolylineDashMaterialProperty({
+					color: red.withAlpha(0.75),
+					dashLength: 12.0,
+				}),
+				arcType: Cesium.ArcType.NONE,
+				clampToGround: false,
+			},
+		}));
+		_entities.push(viewer.entities.add({
+			position: Cesium.Cartesian3.fromDegrees(pos.lon, pos.lat, pos.alt || 0),
+			label: {
+				text: `✸${i + 1}`,
+				font: '11px AceCombat, monospace',
+				pixelOffset: new Cesium.Cartesian2(0, -16),
+				fillColor: red,
+				outlineColor: Cesium.Color.BLACK,
+				outlineWidth: 2,
+				style: Cesium.LabelStyle.FILL_AND_OUTLINE,
+				disableDepthTestDistance: Number.POSITIVE_INFINITY,
+			},
+		}));
+	});
 }
 
 function _spawnIsRandom(s) {
@@ -1192,6 +1252,45 @@ function _buildPanel() {
 		_close();
 	});
 
+	// Export the current scenario as a downloaded .json file. (Save also
+	// mirrors to <project>/scenarios/ via the dev server; this is the
+	// universal, browser-only path — for sharing or backing up anywhere.)
+	const exportBtn = panel.querySelector('#se-export');
+	if (exportBtn) exportBtn.addEventListener('click', () => {
+		if (!_activeJson) return;
+		const text = exportAsJsonText({ ..._activeJson, id: _activeId });
+		const safe = String(_activeJson.name || _activeId || 'scenario')
+			.replace(/[^a-z0-9_-]+/gi, '-').replace(/^-+|-+$/g, '').toLowerCase() || 'scenario';
+		const blob = new Blob([text], { type: 'application/json' });
+		const url = URL.createObjectURL(blob);
+		const a = document.createElement('a');
+		a.href = url; a.download = `${safe}.json`;
+		document.body.appendChild(a); a.click(); a.remove();
+		setTimeout(() => URL.revokeObjectURL(url), 1000);
+	});
+
+	// Import a .json scenario file: parse, store (localStorage + disk mirror),
+	// refresh the registry and open the imported copy in the editor.
+	const importBtn = panel.querySelector('#se-import');
+	const importInput = panel.querySelector('#se-import-file');
+	if (importBtn && importInput) {
+		importBtn.addEventListener('click', () => importInput.click());
+		importInput.addEventListener('change', (e) => {
+			const file = e.target.files && e.target.files[0];
+			if (!file) return;
+			const reader = new FileReader();
+			reader.onload = () => {
+				const usedIds = Object.keys(loadUserScenarios());
+				const newId = importFromJsonText(String(reader.result || ''), usedIds);
+				importInput.value = ''; // allow re-importing the same file
+				if (!newId) { alert('Import failed: not a valid scenario JSON.'); return; }
+				refreshScenarios();
+				open(newId);
+			};
+			reader.readAsText(file);
+		});
+	}
+
 	_wireObjectives(panel);
 	_renderSpawnList();
 }
@@ -1289,6 +1388,11 @@ function _panelHtml() {
 		<button id="se-save" type="button" style="flex:1;font-family:inherit;font-size:11px;letter-spacing:1px;background:transparent;border:1px solid #6ff;color:#6ff;padding:5px;cursor:pointer;">SAVE</button>
 		<button id="se-test" type="button" style="flex:1;font-family:inherit;font-size:11px;letter-spacing:1px;background:transparent;border:1px solid #ffd700;color:#ffd700;padding:5px;cursor:pointer;">TEST ▶</button>
 		<button id="se-exit" type="button" style="flex:1;font-family:inherit;font-size:11px;letter-spacing:1px;background:transparent;border:1px solid #ff8080;color:#ff8080;padding:5px;cursor:pointer;">EXIT</button>
+	</div>
+	<div style="display:flex;gap:5px;margin-top:5px;">
+		<button id="se-export" type="button" style="flex:1;font-family:inherit;font-size:10px;letter-spacing:1px;background:transparent;border:1px solid rgba(0,220,255,0.4);color:#9fe;padding:4px;cursor:pointer;">⤓ EXPORT .json</button>
+		<button id="se-import" type="button" style="flex:1;font-family:inherit;font-size:10px;letter-spacing:1px;background:transparent;border:1px solid rgba(0,220,255,0.4);color:#9fe;padding:4px;cursor:pointer;">⤒ IMPORT .json</button>
+		<input id="se-import-file" type="file" accept=".json,application/json" style="display:none;">
 	</div>
 	`;
 }
@@ -1427,8 +1531,10 @@ function _wireEditForm(panel) {
 				if (v === 'strike') {
 					s.pilot.params.ingressWaypoints = s.pilot.params.ingressWaypoints || [];
 					s.pilot.params.egressWaypoints  = s.pilot.params.egressWaypoints  || [];
-					s.pilot.params.weaponType = s.pilot.params.weaponType || 'STORM-SHADOW';
-					s.pilot.params.target = s.pilot.params.target || {};
+					// Weapon-agnostic by default: the pilot chooses the munition.
+					s.pilot.params.weaponType = s.pilot.params.weaponType || 'AUTO';
+					// Ordered multi-target list (migrates any legacy single target).
+					_ensureStrikeTargets(s.pilot.params);
 				}
 			}
 			// Auto-arm waypoint adding for the new pilot type.
@@ -1468,18 +1574,35 @@ function _wireEditForm(panel) {
 		_buildPanel();
 	});
 
-	// Tag dropdowns (strike target + escort) — share one class.
+	// Tag dropdowns (strike target add + escort) — share one class.
 	for (const sel of panel.querySelectorAll('.ed-tag-select')) {
 		sel.addEventListener('change', (e) => {
 			const field = sel.getAttribute('data-field');
 			const v = e.target.value;
 			s.pilot = s.pilot || {};
 			s.pilot.params = s.pilot.params || {};
-			if (field === 'strikeTarget') {
-				s.pilot.params.target = v ? { tag: v } : {};
+			if (field === 'strikeTargetAdd') {
+				if (!v) return;
+				_pushUndo();
+				const targets = _ensureStrikeTargets(s.pilot.params);
+				if (!targets.some(t => t && t.tag === v)) targets.push({ tag: v });
+				_buildPanel(); // re-render the list + reset the dropdown
 			} else if (field === 'escortTag') {
 				if (v) s.pilot.params.escortTag = v;
 				else delete s.pilot.params.escortTag;
+			}
+		});
+	}
+	// Strike target DEL buttons — remove one target from the ordered list.
+	for (const btn of panel.querySelectorAll('.ed-strike-tgt-del')) {
+		btn.addEventListener('click', () => {
+			const idx = parseInt(btn.getAttribute('data-idx'), 10);
+			if (!s.pilot || !s.pilot.params) return;
+			const targets = _ensureStrikeTargets(s.pilot.params);
+			if (idx >= 0 && idx < targets.length) {
+				_pushUndo();
+				targets.splice(idx, 1);
+				_buildPanel();
 			}
 		});
 	}
@@ -1684,15 +1807,16 @@ function _pilotSectionHtml(s) {
 	if (ptype === 'patrol') {
 		routeUI = routeBlock('waypoints', 'PATROL ROUTE', '#00ffaa');
 	} else if (ptype === 'strike') {
-		const targetTag = (params.target && params.target.tag) || '';
-		const weapon = params.weaponType || 'STORM-SHADOW';
+		const weapon = params.weaponType || 'AUTO';
 		const wpnPill = (w) =>
 			`<button type="button" class="ed-strike-wpn-pill" data-w="${w}" style="${_pillCss(w === weapon)}">${w}</button>`;
 		routeUI = `
-		${_tagPickerRow('target', 'ed-strike-tag', 'strikeTarget', targetTag)}
-		<div style="display:flex;gap:3px;flex-wrap:wrap;margin-top:3px;">
-			${['STORM-SHADOW', 'AGM-86', 'GBU-31', 'GBU-38', 'GBU-39'].map(wpnPill).join('')}
+		${_strikeTargetsHtml(params)}
+		<div style="opacity:0.7;font-size:10px;margin-top:5px;">WEAPON</div>
+		<div style="display:flex;gap:3px;flex-wrap:wrap;margin-top:2px;">
+			${['AUTO', 'STORM-SHADOW', 'AGM-86', 'GBU-31', 'GBU-38', 'GBU-39'].map(wpnPill).join('')}
 		</div>
+		<div style="opacity:0.5;font-size:9px;margin-top:2px;">AUTO = pilot picks the best A/G munition it carries for each target's range.</div>
 		${routeBlock('ingressWaypoints', 'INGRESS', '#ffaa44')}
 		${routeBlock('egressWaypoints',  'EGRESS',  '#aa88ff')}`;
 	} else if (ptype === 'escort') {
@@ -1806,6 +1930,56 @@ function _tagPickerRow(label, selectId, field, current) {
 		<button type="button" class="ed-tag-pick" data-field="${field}" style="${_pillCss(isPicking)}flex:0 0 auto;padding:3px 8px;">${isPicking ? 'CLICK MARKER…' : 'PICK'}</button>
 	</div>
 	${tags.length === 0 ? '<div style="opacity:0.55;font-size:9px;margin-top:2px;">no tagged spawns yet — click PICK then click any marker on the map (a tag will be auto-assigned)</div>' : ''}`;
+}
+
+// Normalize a strike pilot's params to the canonical ordered `targets`
+// array, migrating any legacy single `target` ({tag} or {lon,lat,alt}).
+// Idempotent — safe to call on every render. Returns the array.
+function _ensureStrikeTargets(params) {
+	if (!Array.isArray(params.targets)) {
+		const legacy = params.target;
+		params.targets = (legacy && (legacy.tag || typeof legacy.lon === 'number')) ? [legacy] : [];
+	}
+	if ('target' in params) delete params.target;
+	return params.targets;
+}
+
+// Multi-target strike list: an ordered, removable list of targets the
+// striker prosecutes in turn, plus an ADD row (dropdown of spawn tags +
+// a PICK pill that arms click-on-marker mode, appending instead of
+// replacing). The striker fires one weapon at each target in order.
+function _strikeTargetsHtml(params) {
+	const targets = _ensureStrikeTargets(params);
+	const rows = targets.length === 0
+		? '<div style="opacity:0.5;font-size:10px;font-style:italic;padding:2px 0;">no targets — add from the dropdown or click PICK then a marker</div>'
+		: targets.map((t, i) => {
+			const label = t.tag
+				? escapeHtml(t.tag)
+				: (typeof t.lon === 'number' ? `${t.lon.toFixed(3)}, ${t.lat.toFixed(3)}` : '—');
+			return `<div style="display:flex;gap:4px;font-size:10px;padding:1px 0;align-items:center;">
+				<span style="opacity:0.6;width:18px;">${i + 1}.</span>
+				<span style="flex:1;font-family:monospace;opacity:0.85;">${label}</span>
+				<button type="button" class="ed-strike-tgt-del" data-idx="${i}" style="background:transparent;border:1px solid rgba(255,128,128,0.4);color:#f88;font-size:9px;padding:1px 4px;cursor:pointer;letter-spacing:0.5px;">DEL</button>
+			</div>`;
+		}).join('');
+	const usedTags = new Set(targets.map(t => t && t.tag).filter(Boolean));
+	const tags = _collectSpawnTags().filter(t => {
+		const sel = _activeJson.spawns && _activeJson.spawns[_selectedIdx];
+		return (!sel || sel.tag !== t) && !usedTags.has(t);
+	});
+	const opts = ['<option value="">— add target —</option>']
+		.concat(tags.map(t => `<option value="${escapeAttr(t)}">${escapeHtml(t)}</option>`))
+		.join('');
+	const isPicking = !!(_pendingTagPick
+		&& _pendingTagPick.spawnIdx === _selectedIdx
+		&& _pendingTagPick.field === 'strikeTargetAdd');
+	return `
+	<div style="opacity:0.7;font-size:10px;margin-top:4px;">STRIKE TARGETS (hit in order)</div>
+	<div data-strike-targets>${rows}</div>
+	<div style="display:flex;gap:4px;align-items:center;font-size:10px;margin-top:3px;">
+		<select id="ed-strike-add" data-field="strikeTargetAdd" class="ed-tag-select" style="${_selectCss()}flex:1;">${opts}</select>
+		<button type="button" class="ed-tag-pick" data-field="strikeTargetAdd" style="${_pillCss(isPicking)}flex:0 0 auto;padding:3px 8px;">${isPicking ? 'CLICK MARKER…' : 'PICK'}</button>
+	</div>`;
 }
 
 // ----- Objectives authoring -----------------------------------------------
@@ -2012,7 +2186,7 @@ function _btnCss() {
 function _teamPillCss(team, active) {
 	const c = team === 'friendly'     ? '#40d0ff'
 		: team === 'hostile-red'  ? '#ff4040'
-		: team === 'hostile-blue' ? '#ff8080'
+		: team === 'hostile-blue' ? '#4a8cff'
 		: /* neutral */              '#ffd040';
 	const bg = active ? `${c}33` : 'rgba(0,0,0,0.3)';
 	const border = active ? c : `${c}55`;

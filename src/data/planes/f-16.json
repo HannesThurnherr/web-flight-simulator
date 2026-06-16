@@ -24,7 +24,7 @@
 		"thrustABMax": 129000,
 		"controlCoef": {
 			"pitch": 9.5,
-			"roll": 12.0,
+			"roll": 12,
 			"yaw": 2.5
 		},
 		"dampingCoef": {
@@ -42,8 +42,8 @@
 			"roll": 1100,
 			"yaw": 550
 		},
-		"gSoftLimit": 9.0,
-		"gHardLimit": 10.0,
+		"gSoftLimit": 9,
+		"gHardLimit": 10,
 		"pitchStabilityCoef": 0.25,
 		"yawStabilityCoef": 1.5,
 		"alphaStallDeg": 26,
@@ -159,7 +159,7 @@
 		"role": "Multirole Fighter",
 		"topSpeed": "Mach 2.0",
 		"combatRadius": "550 km",
-		"rcs": "~5 m\u00b2",
+		"rcs": "~5 m²",
 		"irSig": "Medium",
 		"radarRange": "90 km (APG-83)",
 		"agility": 9,
@@ -170,6 +170,26 @@
 			"type": "regex",
 			"pattern": "landingOn(?:Light)?_",
 			"flags": "i"
+		}
+	],
+	"equipmentSlots": [
+		{
+			"id": "eq-centerline",
+			"label": "Centerline Pod",
+			"location": "centerline",
+			"accepts": [
+				"jammer",
+				"laser_pd"
+			]
+		},
+		{
+			"id": "eq-sensor",
+			"label": "Sensor Pod",
+			"location": "pod",
+			"accepts": [
+				"tgp",
+				"irst"
+			]
 		}
 	]
 }

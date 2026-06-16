@@ -96,8 +96,14 @@ export function liftCoefficient(alpha, params = null) {
 	const clAlpha = clMax / alphaStall; // linear slope (per radian)
 	const absA = Math.abs(alpha);
 
+	// Negative-alpha (pushing / inverted-pull) flow separates much earlier:
+	// camber, LERX and strakes all work for positive alpha only. Stalling at
+	// ~65% of the positive stall angle caps negative CL at ~65% of clMax,
+	// so a jet simply cannot generate the same G pushing as pulling.
+	const stallA = alpha < 0 ? alphaStall * 0.65 : alphaStall;
+
 	// Smooth blend factor: 0 in attached regime, 1 in flat-plate regime.
-	const sigma = 0.5 * (1 + Math.tanh((absA - alphaStall) / Math.max(1e-3, blend)));
+	const sigma = 0.5 * (1 + Math.tanh((absA - stallA) / Math.max(1e-3, blend)));
 
 	const linearCl    = clAlpha * alpha;
 	const flatPlateCl = postStall * Math.sin(2 * alpha);

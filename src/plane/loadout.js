@@ -34,6 +34,35 @@ function _save() {
 }
 _load();
 
+// ---- Capacity model --------------------------------------------------------
+// Each munition occupies `bayUnits` of a hardpoint's `capacity` (both default
+// 1). A station therefore carries floor(capacity / bayUnits) rounds of the
+// chosen munition. This is what lets a single F-35 bay hold 1 AMRAAM (1 unit)
+// OR 4 SDBs (0.25 units each), and a B-2 bay (capacity 4) hold 16 SDBs — so a
+// full B-2 fields ~250 SDBs instead of one-per-slot's 16. One munition *type*
+// per station; the count is auto-filled to the rack maximum.
+function munitionBayUnits(m) {
+	return (m && typeof m.bayUnits === 'number' && m.bayUnits > 0) ? m.bayUnits : 1;
+}
+function hardpointCapacity(hp) {
+	return (hp && typeof hp.capacity === 'number' && hp.capacity > 0) ? hp.capacity : 1;
+}
+// How many rounds of `munId` fit on hardpoint `hp`. 0 if it doesn't fit.
+// `maxPerStation` (optional) caps the count regardless of capacity — large
+// stores (cruise missiles, 2000 lb bombs) set it to 1 so they never multi-pack
+// on a big-capacity bay (a B-2 rotary station holds ONE Storm Shadow, not 4),
+// while small munitions stay uncapped so SDBs still quad-pack / fill a bomber.
+export function countForHardpoint(hp, munId) {
+	if (!munId) return 0;
+	const m = MUNITIONS[munId];
+	if (!m) return 0;
+	let n = Math.floor(hardpointCapacity(hp) / munitionBayUnits(m) + 1e-9);
+	if (typeof m.maxPerStation === 'number' && m.maxPerStation > 0) {
+		n = Math.min(n, Math.floor(m.maxPerStation));
+	}
+	return n;
+}
+
 // Return the loadout for a plane, creating a default one if this is
 // the first time we see this plane. Default = fill every AAM-accepting
 // hardpoint with AIM-120 (or AIM-9 for short-range-only slots), leaving
@@ -100,24 +129,30 @@ export function clearAll(planeId) {
 // Aggregate counts by simType for the weaponSystem. E.g.
 // { 'AIM-120': 4, 'AIM-9': 2 }.
 export function simTypeCounts(planeId) {
+	const plane = PLANES[planeId];
 	const lo = getLoadout(planeId);
 	const counts = {};
-	for (const munId of Object.values(lo)) {
+	if (!plane || !Array.isArray(plane.hardpoints)) return counts;
+	for (const hp of plane.hardpoints) {
+		const munId = lo[hp.id];
 		if (!munId) continue;
 		const m = MUNITIONS[munId];
 		if (!m || !m.simType) continue;
-		counts[m.simType] = (counts[m.simType] || 0) + 1;
+		counts[m.simType] = (counts[m.simType] || 0) + countForHardpoint(hp, munId);
 	}
 	return counts;
 }
 
 export function totalWeightKg(planeId) {
+	const plane = PLANES[planeId];
 	const lo = getLoadout(planeId);
 	let w = 0;
-	for (const munId of Object.values(lo)) {
+	if (!plane || !Array.isArray(plane.hardpoints)) return w;
+	for (const hp of plane.hardpoints) {
+		const munId = lo[hp.id];
 		if (!munId) continue;
 		const m = MUNITIONS[munId];
-		if (m && typeof m.massKg === 'number') w += m.massKg;
+		if (m && typeof m.massKg === 'number') w += m.massKg * countForHardpoint(hp, munId);
 	}
 	return w;
 }
@@ -138,7 +173,7 @@ export function externalRcsM2(planeId) {
 		const munId = lo[hp.id];
 		if (!munId) continue;
 		const m = MUNITIONS[munId];
-		if (m && typeof m.rcsContributionM2 === 'number') sum += m.rcsContributionM2;
+		if (m && typeof m.rcsContributionM2 === 'number') sum += m.rcsContributionM2 * countForHardpoint(hp, munId);
 	}
 	return sum;
 }
@@ -183,12 +218,18 @@ export function buildHardpointPlan(planeId) {
 		if (!munId) continue;
 		const m = MUNITIONS[munId];
 		if (!m) continue;
-		plan.push({
-			hardpointId:  hp.id,
-			simType:      m.simType,
-			isInternal:   hp.type === 'internal',
-			rcsContribM2: (typeof m.rcsContributionM2 === 'number') ? m.rcsContributionM2 : 0,
-		});
+		// One plan entry per ROUND on the station (a quad-packed station
+		// contributes 4 entries), so each shot consumes one round's worth
+		// of RCS as stores leave the rails.
+		const n = countForHardpoint(hp, munId);
+		for (let i = 0; i < n; i++) {
+			plan.push({
+				hardpointId:  hp.id,
+				simType:      m.simType,
+				isInternal:   hp.type === 'internal',
+				rcsContribM2: (typeof m.rcsContributionM2 === 'number') ? m.rcsContributionM2 : 0,
+			});
+		}
 	}
 	return plan;
 }

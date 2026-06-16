@@ -29,7 +29,22 @@ import { getTeamDatalink, tickAllDatalinks } from './teamDatalink.js';
 import { isRadiating } from './sensorSystem.js';
 import { applyNpcMeshMatrix } from './npcRendering.js';
 import { tickFormationModes } from './formation.js';
+import { groundHeightAt } from '../world/terrain.js';
 import { Contrail } from '../plane/contrail.js';
+import { recordAdShot, adTargetColumn } from './adStats.js';
+
+// Diagnostic: log an air-defence "shot" when a STATIC AD platform (SAM/AAA)
+// fires a weapon, stamping the projectile with the platform type + target
+// column so the matching hit can be attributed when the round detonates.
+// Fighters (not static) and ground-attack munitions aren't counted.
+function _recordAdShot(npc, projectile, target) {
+	if (!npc || !npc.isStatic || !projectile) return;
+	const column = adTargetColumn(target);
+	if (!column) return;
+	const type = npc.platformId || npc.type || 'AD';
+	projectile._adStats = { type, column };
+	recordAdShot(type, column);
+}
 
 // Strike-class simTypes: any munition that takes a designation queue
 // point. When a wingman's combined ammo across these types hits zero,
@@ -125,7 +140,17 @@ export function npcSystemUpdate(sys, dt, playerState, simTime = 0) {
 	// SAMs from accidentally killing other friendly missiles.
 	const playerProjs = (playerState && playerState.weaponSystem && playerState.weaponSystem.projectiles)
 		|| [];
-	const targetList = [playerState, ...sys.npcs, ...playerProjs];
+	// NPC-fired GUIDED munitions (cruise missiles, JDAM/SDB, HARM, AAMs) are
+	// themselves valid intercept targets — an NPC SAM/AAA must be able to kill
+	// an NPC striker's Storm Shadow or AGM-88. They live in sys.projectiles
+	// alongside the interceptors, so without this they were invisible to every
+	// interceptor's swept-segment kill check and every bullet's hit test (the
+	// list only had player + NPCs + the PLAYER's projectiles). Filter to typed
+	// munitions so AAA bullets (no `type`) don't bloat the O(n) kill scan; the
+	// per-projectile loops skip self / launcher / same-team internally.
+	const npcMunitions = [];
+	for (const p of sys.projectiles) { if (p && p.active && p.type) npcMunitions.push(p); }
+	const targetList = [playerState, ...sys.npcs, ...playerProjs, ...npcMunitions];
 	for (let i = sys.projectiles.length - 1; i >= 0; i--) {
 		const p = sys.projectiles[i];
 		const wasActive = p.active;
@@ -138,6 +163,12 @@ export function npcSystemUpdate(sys, dt, playerState, simTime = 0) {
 			const dl = getTeamDatalink(p.launcher.team);
 			if (dl) dl.clearByMissile(p);
 		}
+		// Remove the body mesh the moment a projectile dies — including when
+		// it was killed as a TARGET (an intercepted cruise missile has its
+		// .active flipped by the interceptor's hitNPC, never calling its own
+		// destroy(), so its mesh would otherwise linger frozen in the scene).
+		// The trail keeps fading separately; the dead body just vanishes.
+		if (!p.active && p.mesh && p.mesh.parent) p.mesh.parent.remove(p.mesh);
 		const hasTrail = p.trail && p.trail.length > 0;
 		if (!p.active && !hasTrail) sys.projectiles.splice(i, 1);
 	}
@@ -169,35 +200,35 @@ export function npcSystemUpdate(sys, dt, playerState, simTime = 0) {
 			if (terrainHeight !== undefined) npc._cachedTerrainH = terrainHeight;
 		}
 
-		// One-shot ground clamp for static ground units. Runs BEFORE
-		// the pilot tick so the first-frame decision uses the
-		// correct altitude. Tries two height sources in order:
-		//   1. the async sampleTerrainMostDetailed result stashed at
-		//      spawn time (authoritative, forces tile load)
-		//   2. globe.getHeight() against the currently-loaded tile
-		//      (cheap, returns undefined if the tile isn't loaded)
-		// Whichever resolves first wins; subsequent frames retry
-		// until one does.
-		if (npc.isStatic && npc._needsGroundClamp) {
-			let h;
-			if (sys._pendingGroundHeight && sys._pendingGroundHeight.has(npc.name)) {
-				h = sys._pendingGroundHeight.get(npc.name);
-				sys._pendingGroundHeight.delete(npc.name);
-			}
-			if (h == null) {
-				const carto = Cesium.Cartographic.fromDegrees(npc.lon, npc.lat);
-				const g = sys.viewer.scene.globe.getHeight(carto);
-				if (g !== undefined) h = g;
-			}
-			if (h != null) {
-				npc.alt = h + (npc._groundOffsetM || 0);
-				npc._cachedTerrainH = h;
-				npc._needsGroundClamp = false;
+		// Ground clamp for static ground units. Runs BEFORE the pilot tick
+		// so the first-frame decision uses the correct altitude. Unlike the
+		// old one-shot version, this RE-CLAMPS at ~1 Hz: a unit spawned over
+		// a not-yet-streamed (or coarse-LOD) tile would clamp to a stale/low
+		// height and sit underground — and then any missile it fires is born
+		// below the terrain the collision check reads and self-detonates on
+		// the rail. Re-checking lifts it onto the real surface once the finer
+		// tile loads. groundHeightAt() reads the SAME source the missile
+		// collision uses (globe.getHeight), with the async detailed sample as
+		// a floor, so the unit can never end up below what its missiles hit.
+		if (npc.isStatic) {
+			npc._groundClampTimer = (npc._groundClampTimer || 0) - dt;
+			if (npc._needsGroundClamp || npc._groundClampTimer <= 0) {
+				npc._groundClampTimer = 1.0;
+				const sample = (sys._pendingGroundHeight && sys._pendingGroundHeight.has(npc.name))
+					? sys._pendingGroundHeight.get(npc.name) : null;
+				const gh = groundHeightAt(sys.viewer, npc.lon, npc.lat, sample);
+				if (gh != null) {
+					npc.alt = gh + (npc._groundOffsetM || 0);
+					npc._cachedTerrainH = gh;
+					npc._needsGroundClamp = false;
+				}
 			}
 		}
 
-		// Run the AI: pilot reads sensors/state, writes its command.
-		if (npc.pilot) {
+		// Run the AI: pilot reads sensors/state, writes its command. A
+		// mortally-wounded aircraft is along for the ride — no more flying
+		// or shooting — so skip its pilot entirely while it spirals in.
+		if (npc.pilot && !npc.dying) {
 			// Combined world projectile pool — lets WeaponSubsystem
 			// count in-flight missiles from this NPC and enforce
 			// maxInFlight, which produces shoot-look-shoot rather
@@ -296,16 +327,30 @@ export function npcSystemUpdate(sys, dt, playerState, simTime = 0) {
 						const aim = (cmd.gunHeading != null || cmd.gunPitch != null)
 							? { heading: cmd.gunHeading, pitch: cmd.gunPitch }
 							: null;
-						sys._spawnNpcBullet(npc, aim);
+						const bullet = sys._spawnNpcBullet(npc, aim);
+						_recordAdShot(npc, bullet, cmd.weaponTarget);
 					} else {
 						const projectile = sys._spawnNpcMissile(npc, cmd.weaponType, cmd.weaponTarget);
+						_recordAdShot(npc, projectile, cmd.weaponTarget);
 						// Register with the team datalink so
 						// wingmen don't immediately double-up on
 						// the same bogey. Cleared when the
 						// missile's active flag flips (above).
 						if (projectile && npc.team) {
 							const dl = getTeamDatalink(npc.team);
-							if (dl) dl.registerEngagement(npc, projectile, cmd.weaponTarget, simTime);
+							if (dl) {
+								dl.registerEngagement(npc, projectile, cmd.weaponTarget, simTime);
+								// A/G releases also claim the strike (with the
+								// live munition ref) so the rest of the package
+								// services other targets while it flies out —
+								// and re-attacks immediately if it gets shot
+								// down. The behavior supplies target + ETA.
+								if (cmd.strikeClaim && cmd.strikeClaim.target &&
+									typeof dl.claimStrike === 'function') {
+									dl.claimStrike(cmd.strikeClaim.target, npc, cmd.weaponType,
+										cmd.strikeClaim.etaS, simTime, projectile);
+								}
+							}
 						}
 					}
 				}
@@ -327,6 +372,54 @@ export function npcSystemUpdate(sys, dt, playerState, simTime = 0) {
 			npc.roll    = 0;
 			npc.isBoosting = false;
 		} else {
+			let input;
+			if (npc.dying) {
+				// ---- Violent death throe: engine out, FCS gone, the
+				// airframe flailing at ~3× full deflection in random,
+				// constantly-changing directions while pouring dense black
+				// smoke + fire. No autopilot. The physics + position +
+				// terrain code below runs unchanged, so the wreck tumbles
+				// down and detonates on ground impact OR at its (widely
+				// varied) break-up timer, whichever comes first.
+				const d = npc.dying;
+				d.elapsed += dt;
+
+				// Dense oily smoke.
+				d.smokeT += dt;
+				if (d.smokeT >= 0.03) {
+					d.smokeT = 0;
+					try { particles.spawnSmoke(npc.lon, npc.lat, npc.alt, { dark: true, count: 5, size: 2.2 }); } catch (e) { /* optional */ }
+				}
+				// Trailing fire.
+				d.fireT += dt;
+				if (d.fireT >= 0.03) {
+					d.fireT = 0;
+					try { particles.spawnFire(npc.lon, npc.lat, npc.alt, { count: 4, size: 1.0 }); } catch (e) { /* optional */ }
+				}
+
+				if (d.elapsed >= d.duration) {
+					try {
+						particles.spawnExplosion(npc.lon, npc.lat, npc.alt, { count: 90, smokeCount: 22, big: true });
+						particles.spawnWreckage(npc.lon, npc.lat, npc.alt, npc.heading, npc.pitch, { count: 48 });
+						soundManager.play('explode');
+					} catch (e) { /* optional */ }
+					npc.destroyed = true;
+					continue;
+				}
+
+				// Re-randomize the over-driven tumble stick a few times a
+				// second so it pitches/rolls/yaws chaotically rather than
+				// settling into one clean spin.
+				d.steerT += dt;
+				if (d.steerT >= 0.22) {
+					d.steerT = 0;
+					d.pitchCmd = (Math.random() * 2 - 1) * 3;
+					d.rollCmd = (Math.random() * 2 - 1) * 3;
+					d.yawCmd = (Math.random() * 2 - 1) * 3;
+				}
+				input = { pitch: d.pitchCmd, roll: d.rollCmd, yaw: d.yawCmd, throttle: 0, boost: false };
+				npc.isBoosting = false;
+			} else {
 			// ---- Autopilot: AI "I want heading X / pitch Y" →
 			// stick input. PlanePhysics takes the same input shape
 			// the player's stick produces: { pitch, roll, yaw,
@@ -427,13 +520,14 @@ export function npcSystemUpdate(sys, dt, playerState, simTime = 0) {
 			let useBoost = !!npc.isBoosting;
 			if (useBoost && (npc.speed || 0) > 480) useBoost = false;
 
-			const input = {
+			input = {
 				pitch:    pitchStick,
 				roll:     rollStick,
 				yaw:      0,
 				throttle: (npc.throttle != null) ? npc.throttle : 0.75,
 				boost:    useBoost,
 			};
+			} // end autopilot (non-dying) branch
 
 			// Feed PlanePhysics the current altitude so its density
 			// / thrust model is accurate at the NPC's flight level.
@@ -493,13 +587,19 @@ export function npcSystemUpdate(sys, dt, playerState, simTime = 0) {
 					// Emit wreckage + explosion effects so the
 					// kill reads visually the same as an air-to-
 					// air kill.
-					pushKill({
-						shooter: 'TERRAIN',
-						target:  npc,
-						weapon:  'TERRAIN',
-						at:      performance.now() * 0.001,
-						reason:  'crash',
-					});
+					// A plane already shot down (dying) that augers in keeps
+					// its original air-to-air attribution — don't overwrite
+					// it with a TERRAIN crash. A live plane flying into a
+					// ridge gets the crash credit as before.
+					if (!npc.dying) {
+						pushKill({
+							shooter: 'TERRAIN',
+							target:  npc,
+							weapon:  'TERRAIN',
+							at:      performance.now() * 0.001,
+							reason:  'crash',
+						});
+					}
 					npc.destroyed = true;
 					try {
 						particles.spawnExplosion(npc.lon, npc.lat, terrainH + 2,

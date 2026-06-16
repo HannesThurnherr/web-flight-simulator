@@ -366,6 +366,10 @@ export class StrikePlannerView {
 			nUnits++;
 			if (!u || u.destroyed) { nDestroyed++; continue; }
 			if (u.team === playerTeam) { nFriendly++; continue; }
+			// GPS strike weapons (JDAM / SDB) hit fixed coordinates — only
+			// ground targets make sense. Aircraft would just have a stale
+			// point dropped where they were a moment ago, so skip them.
+			if (u.kind !== 'ground') continue;
 
 			let lon, lat, alt;
 			const detected = (ownContacts && ownContacts.has(u))
@@ -1035,11 +1039,14 @@ export class StrikePlannerView {
 			// Click commits. 'unit' mode → add at unit's current pos
 			// (snapshotted at pointerup since GPS bombs freeze on
 			// release anyway). 'pan' mode → add at cursor terrain.
-			if (mode === 'unit' && unit) {
+			if (mode === 'unit' && unit && unit.kind === 'ground') {
 				addDesignation(unit.lon, unit.lat, unit.alt || 0);
 				return;
 			}
-			if (mode === 'pan') {
+			// 'pan' mode, OR a click on an airborne unit (not a valid
+			// fixed-coordinate strike target) → drop the point on the terrain
+			// under the cursor instead of chasing the moving aircraft.
+			if (mode === 'pan' || (mode === 'unit' && unit)) {
 				this._addAtScreen(e.clientX, e.clientY);
 			}
 		}, true);

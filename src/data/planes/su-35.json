@@ -1,7 +1,7 @@
 {
 	"id": "su-35",
 	"name": "Su-35S FLANKER-E",
-	"description": "Russian heavy air superiority. 2\u00d7 thrust-vectoring AL-41F1S, the longest-ranged radar of any 4th-gen+ fighter (Irbis-E PESA, ~350 km vs 3 m\u00b2), and a 9-G-rated airframe with post-stall maneuvering envelope. Heavy and not stealth, but in a knife-fight nothing turns harder.",
+	"description": "Russian heavy air superiority. 2× thrust-vectoring AL-41F1S, the longest-ranged radar of any 4th-gen+ fighter (Irbis-E PESA, ~350 km vs 3 m²), and a 9-G-rated airframe with post-stall maneuvering envelope. Heavy and not stealth, but in a knife-fight nothing turns harder.",
 	"model": "/assets/models/su-35.glb",
 	"modelRotation": {
 		"x": 0,
@@ -18,14 +18,14 @@
 	},
 	"physicsOverrides": {
 		"mass": 25000,
-		"wingArea": 62.0,
+		"wingArea": 62,
 		"cdZero": 0.022,
 		"thrustDryMax": 172000,
 		"thrustABMax": 284000,
 		"controlCoef": {
-			"pitch": 9.0,
+			"pitch": 9,
 			"roll": 9.5,
-			"yaw": 3.0
+			"yaw": 3
 		},
 		"dampingCoef": {
 			"pitch": 3000,
@@ -42,8 +42,8 @@
 			"roll": 1300,
 			"yaw": 700
 		},
-		"gSoftLimit": 9.0,
-		"gHardLimit": 10.0,
+		"gSoftLimit": 9,
+		"gHardLimit": 10,
 		"pitchStabilityCoef": 0.25,
 		"yawStabilityCoef": 1.5,
 		"alphaStallDeg": 28,
@@ -170,7 +170,7 @@
 		"role": "Heavy Air Superiority",
 		"topSpeed": "Mach 2.25",
 		"combatRadius": "1 600 km",
-		"rcs": "~3 m\u00b2",
+		"rcs": "~3 m²",
 		"irSig": "High",
 		"radarRange": "280 km (Irbis-E)",
 		"agility": 9,
@@ -181,6 +181,26 @@
 			"type": "regex",
 			"pattern": "landingOn(?:Light)?_",
 			"flags": "i"
+		}
+	],
+	"equipmentSlots": [
+		{
+			"id": "eq-centerline",
+			"label": "Centerline Pod",
+			"location": "centerline",
+			"accepts": [
+				"jammer",
+				"laser_pd"
+			]
+		},
+		{
+			"id": "eq-sensor",
+			"label": "Sensor Pod",
+			"location": "pod",
+			"accepts": [
+				"tgp",
+				"irst"
+			]
 		}
 	]
 }

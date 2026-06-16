@@ -120,6 +120,13 @@ let state = {
 	// Combat metadata: the player is a fighter, hostile to NPCs spawned by
 	// npcSystem. Sensor/contact data is populated each frame by sensorSystem.
 	team: 'friendly',
+	// Marks THIS object as the human-controlled jet (the audio listener).
+	// Used to scope cockpit-only cues — e.g. the RWR pitbull warble only
+	// fires when a missile's seeker goes active on the player, not on every
+	// AMRAAM in the theater. Persists across airframe switches (the state
+	// object is mutated in place); ex-player NPC clones are built fresh and
+	// never carry it.
+	isPlayer: true,
 	signature: { ...SIGNATURES.fighter },
 	sensors: {
 		radar:   { ...FIGHTER_RADAR_DEFAULT },

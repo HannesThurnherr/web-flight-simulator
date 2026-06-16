@@ -74,6 +74,7 @@ function _applyHideNodes(root, hideNodes) {
 // createMunition / getTeamDatalink / tickAllDatalinks moved with the
 // update-loop + spawn-helpers to the sibling modules listed below.
 import { resetAllDatalinks as _resetAllDatalinks } from './teamDatalink.js';
+import { resetAdStats as _resetAdStats } from './adStats.js';
 import { getPlatform } from './platforms.js';
 import { makePilot } from './npcPilots.js';
 import { applyNpcMeshMatrix, syncNpcMeshMatrices, spawnNpcBullet, spawnNpcMissile } from './npcRendering.js';
@@ -849,5 +850,7 @@ export class NPCSystem {
 		// Wipe datalinks so stale tracks from a prior run don't leak
 		// into the new scenario's first frame.
 		_resetAllDatalinks();
+		// Fresh air-defence hit-rate matrix per scenario run.
+		_resetAdStats();
 	}
 }

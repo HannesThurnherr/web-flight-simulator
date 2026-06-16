@@ -40,6 +40,17 @@ const SATELLITE_MEMORY_DEFAULT = 600.0;
 // is delayed a frame. Belt-and-braces — normal flow is explicit clear.
 const ENGAGEMENT_LINGER = 1.0;
 
+// After a claimed strike's predicted impact time passes, keep the claim on
+// the books this much longer — a battle-damage-assessment window. If the
+// target is still alive (still in the contact picture) once the claim
+// expires, it becomes eligible for re-attack.
+const STRIKE_ASSESS_S = 12.0;
+
+// How long a striker's "I'm prosecuting this target" assignment lasts without
+// a refresh. Refreshed every frame while committed, so a striker that dies or
+// breaks off drops out of the tally within this window and team-mates rebalance.
+const STRIKE_ASSIGN_TTL_S = 4.0;
+
 export class TeamDatalink {
 	constructor(team) {
 		this.team = team;
@@ -74,6 +85,83 @@ export class TeamDatalink {
 		this.engagements = new Map();
 		// Reverse index: missile → target, so clearByMissile() is O(1).
 		this._missileIndex = new Map();
+		// Ground-strike coordination ledger. When a team-mate releases an
+		// A/G weapon at a target it claims the strike with a predicted
+		// time-of-flight; other strikers consult strikeWeight() and pick a
+		// DIFFERENT target while a weapon is still inbound. Claims expire
+		// ETA + STRIKE_ASSESS_S after release, so a survivor naturally
+		// becomes eligible for re-attack after the impact is assessed.
+		// target → [{ shooter, weaponType, claimedAt, expiresAt }]
+		this.strikeClaims = new Map();
+		// Pre-release target ASSIGNMENTS: which strikers are currently committed
+		// to which target, so a package divvies the target list up instead of
+		// every jet marching the same sequence. Keyed by a STABLE string (tag
+		// or rounded coord) because the strike pilots work from coordinate
+		// objects that are re-created every frame. key → Map<unit, lastSeen>.
+		this.strikeAssignments = new Map();
+	}
+
+	// Register / refresh "this unit is going after the target at `key`".
+	assignStrike(key, unit, now) {
+		if (!key || !unit) return;
+		let m = this.strikeAssignments.get(key);
+		if (!m) { m = new Map(); this.strikeAssignments.set(key, m); }
+		m.set(unit, now);
+	}
+
+	// How many OTHER live strikers are committed to `key` right now.
+	strikeAssignCount(key, now, excludeUnit = null) {
+		const m = this.strikeAssignments.get(key);
+		if (!m) return 0;
+		let n = 0;
+		for (const [u, ts] of m) {
+			if (u === excludeUnit) continue;
+			if (now - ts > STRIKE_ASSIGN_TTL_S) continue;
+			if (!u || u.destroyed || u.active === false) continue;
+			n++;
+		}
+		return n;
+	}
+
+	// ---- Ground-strike coordination ------------------------------------------
+
+	// Register an inbound A/G weapon. `etaS` is the shooter's estimated
+	// time-of-flight; the claim self-expires after impact + assessment.
+	// Pass the live `missile` ref when available: a claim whose weapon
+	// DIES early (shot down by point defense, terrain) is released
+	// immediately, so the target goes straight back on the menu instead
+	// of being "covered" by a dead bomb for minutes.
+	claimStrike(target, shooter, weaponType, etaS, now, missile = null) {
+		if (!target) return;
+		let arr = this.strikeClaims.get(target);
+		if (!arr) { arr = []; this.strikeClaims.set(target, arr); }
+		const impactAt = now + Math.max(5, etaS || 0);
+		arr.push({
+			shooter, weaponType, missile,
+			claimedAt: now,
+			impactAt,
+			expiresAt: impactAt + STRIKE_ASSESS_S,
+		});
+	}
+
+	// How many weapons are currently inbound (or pending assessment) on this
+	// target. Strikers treat weight >= 1 as "covered — go service something
+	// else" so a strike package fans out across the target set instead of
+	// dog-piling the nearest SAM.
+	strikeWeight(target, now) {
+		const arr = this.strikeClaims.get(target);
+		if (!arr) return 0;
+		let n = 0;
+		for (const c of arr) {
+			if (now >= c.expiresAt) continue;
+			if (c.shooter && (c.shooter.destroyed || c.shooter.active === false)) continue;
+			// Weapon died well before its ETA (intercepted / hit terrain) —
+			// the target is NOT covered anymore. Death near/after the ETA is
+			// the impact itself; the assess window still applies then.
+			if (c.missile && !c.missile.active && now < (c.impactAt ?? 0) - 3) continue;
+			n++;
+		}
+		return n;
 	}
 
 	// Pre-mission intel publish. Called once at scenario start by the
@@ -358,6 +446,26 @@ export class TeamDatalink {
 				if (rec.missile) this._missileIndex.delete(rec.missile);
 			}
 		}
+		// Strike claims: drop dead targets wholesale, prune expired entries.
+		for (const [target, arr] of this.strikeClaims) {
+			if (!target || target.destroyed || target.active === false) {
+				this.strikeClaims.delete(target);
+				continue;
+			}
+			const live = arr.filter(c => now < c.expiresAt &&
+				!(c.missile && !c.missile.active && now < (c.impactAt ?? 0) - 3));
+			if (live.length !== arr.length) {
+				if (live.length) this.strikeClaims.set(target, live);
+				else this.strikeClaims.delete(target);
+			}
+		}
+		// Strike assignments: drop stale / dead committers; empty keys go too.
+		for (const [key, m] of this.strikeAssignments) {
+			for (const [u, ts] of m) {
+				if (now - ts > STRIKE_ASSIGN_TTL_S || !u || u.destroyed || u.active === false) m.delete(u);
+			}
+			if (m.size === 0) this.strikeAssignments.delete(key);
+		}
 	}
 
 	// Lookup API. Returns a fused contact entry if we have one, or null.
@@ -382,10 +490,14 @@ export class TeamDatalink {
 	}
 
 	// True if a team-mate already has a missile tracking this target.
+	// A missile that missed (lostLock after flyby) or went maddog no longer
+	// counts — the target is effectively unengaged and teammates should
+	// re-commit instead of watching a dead shot coast for minutes.
 	isEngaged(target) {
 		const rec = this.engagements.get(target);
 		if (!rec) return false;
 		if (!rec.missile || !rec.missile.active) return false;
+		if (rec.missile.lostLock || rec.missile.maddog) return false;
 		return true;
 	}
 

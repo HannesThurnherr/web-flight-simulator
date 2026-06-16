@@ -15,6 +15,7 @@
 import * as Cesium from 'cesium';
 import { getViewer } from '../world/cesiumWorld';
 import { particles } from '../utils/particles';
+import { updateGroundWrecks } from './deathSequence.js';
 import { update } from './simLoop';
 import {
 	isTakramReady,
@@ -128,6 +129,7 @@ export function startAnimateLoop(ctx) {
 			try {
 				if (currentState === 'FLYING' || currentState === 'CRASHED') {
 					particles.update(dt);
+					updateGroundWrecks(dt);
 				}
 			} catch (e) { }
 

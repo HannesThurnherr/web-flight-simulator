@@ -572,6 +572,12 @@ export class WeaponSystem {
 				weapon.ammo = Math.min(weapon.maxAmmo, weapon.ammo + 1);
 				return;
 			}
+			// Eject the store off the rack along the launch aircraft's
+			// belly-down axis (uses the firing jet's roll so an inverted
+			// launch pushes the store "up").
+			if (typeof projectile.applyLaunchEjection === 'function') {
+				projectile.applyLaunchEjection(shooter.roll || 0);
+			}
 			this.projectiles.push(projectile);
 
 			try { soundManager.play('missile-fire'); } catch (e) { }
@@ -908,6 +914,10 @@ export class WeaponSystem {
 		for (let i = this.projectiles.length - 1; i >= 0; i--) {
 			const p = this.projectiles[i];
 			p.update(dt, targets);
+			// Body mesh vanishes the instant the round dies (even if it was
+			// killed as a target without its own destroy() running); the
+			// trail fades on its own. Prevents the "last frame sticks around".
+			if (!p.active && p.mesh && p.mesh.parent) p.mesh.parent.remove(p.mesh);
 			const hasTrail = p.trail && p.trail.length > 0;
 			if (!p.active && !hasTrail) {
 				this.projectiles.splice(i, 1);

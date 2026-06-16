@@ -13,6 +13,30 @@
 // ============================================================================
 
 import { WeaponSubsystem } from './ai/subsystems.js';
+import { LaserPDSubsystem } from './laserPD.js';
+
+// Is `target` (an in-flight missile / PGM) closing on `unit`? Point-defence
+// batteries use this to engage the HARM / cruise / SAM-shot diving on THEM,
+// without wasting interceptors on every AAM crossing the sky toward some other
+// target. True when the threat is within `maxRangeM` AND its velocity vector
+// points within ~60° of the bearing from the threat to the unit (i.e. it's
+// actually inbound, not transiting past).
+function isInboundThreat(unit, target, maxRangeM) {
+	const cosLat = Math.cos((unit.lat || 0) * Math.PI / 180);
+	const dE = (unit.lon - target.lon) * 111320 * cosLat;  // target → unit
+	const dN = (unit.lat - target.lat) * 111320;
+	const dU = (unit.alt - target.alt);
+	const range = Math.sqrt(dE * dE + dN * dN + dU * dU);
+	if (range > maxRangeM) return false;
+	const tH = (target.heading || 0) * Math.PI / 180;
+	const tP = (target.pitch   || 0) * Math.PI / 180;
+	const vE = Math.sin(tH) * Math.cos(tP);
+	const vN = Math.cos(tH) * Math.cos(tP);
+	const vU = Math.sin(tP);
+	const r = Math.max(1, range);
+	const cosClose = (vE * dE + vN * dN + vU * dU) / r;
+	return cosClose > 0.5; // within ~60° of pointing at us
+}
 
 // Dispatcher. `type` comes from the platform JSON's pilot.type field.
 // Returns the pilot object the npcSystem caller attaches to the NPC.
@@ -24,6 +48,8 @@ export function makePilot(type, lon, lat, alt, params) {
 			return makeStaticSamPilot(params);
 		case 'static-aaa':
 			return makeStaticAaaPilot(params);
+		case 'static-laser':
+			return makeStaticLaserPilot(params);
 		case 'ewr':
 			return makeEwrPilot();
 		case 'static-target':
@@ -112,6 +138,14 @@ export function makeStaticSamPilot(params) {
 	const maxInFlight = params.maxInFlight ?? 4;
 	const minRange    = params.minRangeM ?? 1500;
 	const maxRange    = params.maxRangeM ?? 25000;
+	// Point-defence vs incoming missiles. When true, the battery will also
+	// engage `missile`-class threats (HARMs, other SAMs' shots, AAMs) that
+	// are inbound on IT — modern NASAMS / Tor do exactly this. Gated by
+	// isInboundThreat so it shoots the weapon diving on the battery, not
+	// every AAM transiting the envelope toward a fighter. Default off so
+	// legacy area-SAMs keep their old aircraft-only behaviour unless the
+	// platform opts in.
+	const engageMissiles = !!params.engageMissiles;
 
 	// Emissions discipline. When `emcon` is true, the SAM keeps its
 	// own radar OFF until cued by the team datalink (e.g. an EWR has
@@ -138,7 +172,14 @@ export function makeStaticSamPilot(params) {
 	// window (~10 s) is shorter than the shutdown wait, so a SAM
 	// that drops promptly tends to survive the HARM and still be a
 	// threat to subsequent passes.
-	const harmEvadeDetectM    = params.harmEvadeDetectM    ?? 35000;
+	// HARM-evade trigger range. Kept TERMINAL (≈18 km) rather than the old
+	// 35 km: a 35 km trigger meant any HARM lobbed from standoff kept the
+	// battery's radar perpetually dark (it could never engage anything,
+	// including the cruise missiles leaking past), which read as "the SAM
+	// does nothing". At ~18 km the battery stays up and fights — engaging
+	// aircraft, cruise missiles, and (if engageMissiles) the HARM itself —
+	// and only ducks in the final seconds as a last-ditch defeat attempt.
+	const harmEvadeDetectM    = params.harmEvadeDetectM    ?? 18000;
 	const harmEvadeDurationS  = params.harmEvadeDurationS  ?? 12;
 
 	const weapons = new WeaponSubsystem({
@@ -265,6 +306,10 @@ export function makeStaticSamPilot(params) {
 			'fighter', 'stealth_fighter', 'awacs', 'cargo',
 			'cruise_missile', 'bomb',
 		]);
+		// Opt-in point defence: also power up when an inbound missile
+		// (HARM etc.) is cued, so the battery can fight it instead of
+		// sitting dark.
+		if (engageMissiles) ENGAGEABLE.add('missile');
 		for (const [target] of dl.allContacts()) {
 			if (!target || target.destroyed || target.active === false) continue;
 			if (target.team && unit.team && target.team === unit.team) continue;
@@ -308,7 +353,11 @@ export function makeStaticSamPilot(params) {
 			//   - other SAMs (`sam_site`) — friendly fire
 			//   - ground / building / EWR class — not in their air
 			//     picture
-			if (sig.unitClass === 'missile') continue;
+			if (sig.unitClass === 'missile') {
+				// Engage incoming missiles only when this battery opts into
+				// point-defence AND the threat is actually inbound on us.
+				if (!engageMissiles || !isInboundThreat(unit, target, weapon.maxRange)) continue;
+			}
 			if (sig.unitClass === 'sam_site') continue;
 			// Need a radar range for a firing solution. A purely
 			// passive (IR / visual) detection isn't enough for an
@@ -326,7 +375,8 @@ export function makeStaticSamPilot(params) {
 			// but loses to a 25 km bomb terminal-diving on the SAM
 			// itself.
 			let classMul = 1.0;
-			if (sig.unitClass === 'cruise_missile') classMul = 1.6;
+			if (sig.unitClass === 'missile')        classMul = 0.5; // inbound HARM/ARM — top priority
+			else if (sig.unitClass === 'cruise_missile') classMul = 1.6;
 			else if (sig.unitClass === 'bomb')      classMul = 0.7;
 			const score = range * classMul;
 			if (score < bestScore) {
@@ -380,6 +430,16 @@ export function makeStaticSamPilot(params) {
 					} else {
 						unit.sensors.radar.active = false;
 					}
+				} else {
+					// Non-emcon battery: radar is always on EXCEPT during the
+					// brief HARM-evade shutdown handled above. This `else` is the
+					// re-enable — without it the evade set active=false and NOTHING
+					// ever turned it back on, so a single HARM permanently blinded
+					// the battery (radar off → no contacts → never fires again).
+					// That's the exact "SAM does nothing after one HARM" failure
+					// the evade logic claims to avoid; it was only avoided for
+					// emcon SAMs, which re-enable via the branch above.
+					unit.sensors.radar.active = true;
 				}
 			}
 
@@ -396,9 +456,31 @@ export function makeStaticSamPilot(params) {
 			}
 			pilotState.lastAmmoSeen = weapon.ammo;
 
-			// Dry magazine = nothing to do. The battery will silently
-			// sit and radiate; no reload plumbing exists yet.
-			if (weapon.ammo <= 0) return;
+			// Dry magazine = nothing to do. Clear any lingering engagement so
+			// an emcon battery that ran dry mid-salvo doesn't keep
+			// `currentEngagement` set forever (which would pin its radar ON via
+			// shouldRadarBeOn — a dead battery radiating as a free HARM magnet).
+			// No reload plumbing exists yet.
+			if (weapon.ammo <= 0) { pilotState.currentEngagement = null; return; }
+
+			// In-flight ceiling. The generic fire-gate in npcUpdate calls
+			// WeaponSubsystem.consume(), which only checks ammo + fireRate — NOT
+			// maxInFlight (that gate lives in pickWeaponFor, which this hand-
+			// rolled SAM doctrine never calls). So enforce the cap here, mirroring
+			// pickWeaponFor: count this battery's own live missiles of this type
+			// and hold fire while at the ceiling. Without it the salvo + per-
+			// target-cooldown logic still lets a battery ripple its whole magazine
+			// into the air across targets in a saturation raid — defeating the
+			// documented serial-engagement doctrine.
+			let liveInFlight = 0;
+			const projPool = context.projectiles || [];
+			for (const p of projPool) {
+				if (!p || !p.active) continue;
+				if (p.launcher !== unit || p.type !== weapon.type) continue;
+				if (p.lostLock || p.maddog) continue;
+				if (++liveInFlight >= maxInFlight) break;
+			}
+			const atInFlightCap = liveInFlight >= maxInFlight;
 
 			// ------------------------------------------------------
 			// Continue an in-progress salvo, if any.
@@ -426,10 +508,14 @@ export function makeStaticSamPilot(params) {
 					// enforces the intra-salvo gap via fireRate, so
 					// we can set fireWeapon every tick and the
 					// subsystem will only actually consume at the
-					// right cadence.
-					command.fireWeapon   = true;
-					command.weaponType   = weapon.type;
-					command.weaponTarget = t;
+					// right cadence. Hold fire (but keep the engagement
+					// alive) while at the in-flight ceiling; the salvo
+					// resumes as soon as a missile clears.
+					if (!atInFlightCap) {
+						command.fireWeapon   = true;
+						command.weaponType   = weapon.type;
+						command.weaponTarget = t;
+					}
 					return;
 				}
 				// Salvo done (kill, envelope break, or plannedShots
@@ -448,11 +534,21 @@ export function makeStaticSamPilot(params) {
 			const best = pickTarget(unit, weapon, now);
 			if (!best) return;
 
+			// At the in-flight ceiling — don't open a NEW engagement this frame.
+			// (An in-progress salvo above is allowed to wait out the cap; a fresh
+			// one just defers until a slot frees, re-picking next frame.)
+			if (atInFlightCap) return;
+
 			// Magazine-conservation policy. When the launcher is
 			// down to its last N missiles, switch to single-shot so
 			// the battery doesn't empty itself on one engagement.
+			// Single-shot against inbound missiles (HARM/ARM) — a 2-missile
+			// salvo on every leaker would empty an 8-round battery in one
+			// SEAD pass. Salvo only against aircraft.
+			const bestIsMissile = best.target && best.target.signature &&
+				best.target.signature.unitClass === 'missile';
 			const plannedShots = Math.min(
-				(weapon.ammo <= conserveN) ? 1 : salvoSize,
+				(bestIsMissile || weapon.ammo <= conserveN) ? 1 : salvoSize,
 				weapon.ammo,
 			);
 
@@ -534,6 +630,37 @@ export function makeStaticTargetPilot() {
 }
 
 // ============================================================================
+// Static directed-energy point-defense pilot (NFAC.4).
+//
+// The chassis never moves; all the behavior lives in a LaserPDSubsystem that
+// scans the in-flight munition list each frame, picks the most imminent
+// subsonic threat with line-of-sight, and burns it down over a short dwell
+// from a brownout-limited capacitor. No projectile is spawned — the laser
+// applies its kill directly — so unlike the AAA/SAM pilots this one writes no
+// fireWeapon command; it just ticks the subsystem.
+// ============================================================================
+export function makeStaticLaserPilot(params = {}) {
+	const command = {
+		targetHeading: 0,
+		targetPitch:   0,
+		throttle:      0,
+		targetSpeed:   0,
+		boost:         false,
+		fireFlare:     false,
+		fireWeapon:    false,
+		activeBehaviorName: 'StaticLaser',
+	};
+	const laser = new LaserPDSubsystem(params);
+	return {
+		command,
+		subsystems: { laser },
+		update(context, dt) {
+			laser.update(context.unit, context.projectiles, dt);
+		},
+	};
+}
+
+// ============================================================================
 // Static AAA pilot — radar-directed gun emplacement (ZSU-23 / Gepard /
 // Pantsir gun mount class).
 //
@@ -584,6 +711,11 @@ export function makeStaticAaaPilot(params = {}) {
 	const emcon       = !!params.emcon;
 	const cueRangeM   = params.cueRangeM   ?? (maxRange * 2);
 	const emconHoldS  = params.emconHoldS  ?? 3.0;
+	// Guns engage inbound missiles by default — a Shilka / CIWS-class mount
+	// IS a last-ditch hard-kill against HARMs, cruise missiles and terminal-
+	// diving PGMs. Gated by isInboundThreat so it only fires at what's
+	// actually coming at it. Set engageMissiles:false for aircraft-only.
+	const engageMissiles = params.engageMissiles !== false;
 
 	// Fire-control noise. Two sources of inaccuracy in real gun-radar
 	// laying that an idealized lead solution doesn't model:
@@ -689,7 +821,9 @@ export function makeStaticAaaPilot(params = {}) {
 			// (too small/fast for guns), other ground assets, or
 			// SAMs. Real Shilkas + Phalanx-class CIWS engage all
 			// these classes when in envelope.
-			if (sig.unitClass === 'missile') continue;
+			if (sig.unitClass === 'missile') {
+				if (!engageMissiles || !isInboundThreat(unit, target, maxRange)) continue;
+			}
 			if (sig.unitClass === 'sam_site' || sig.unitClass === 'building' ||
 				sig.unitClass === 'ground'   || sig.unitClass === 'ewr') continue;
 			if (!c.radar) continue;
@@ -745,7 +879,13 @@ export function makeStaticAaaPilot(params = {}) {
 		const dl = ctx && ctx.teamDatalink;
 		if (!dl) return false;
 		const cosLat = Math.cos((unit.lat || 0) * Math.PI / 180);
-		const ENG = new Set(['fighter', 'stealth_fighter', 'awacs', 'cargo', 'cruise_missile']);
+		// Cue set must match what pickTarget actually engages, or an emcon AAA
+		// stays dark against the very threats it exists to swat. pickTarget
+		// engages terminal-diving bombs and (when engageMissiles, the default)
+		// inbound missiles — so cue on them too, otherwise a lone HARM/bomb with
+		// no aircraft nearby never powers the radar up and the gun sits silent.
+		const ENG = new Set(['fighter', 'stealth_fighter', 'awacs', 'cargo', 'cruise_missile', 'bomb']);
+		if (engageMissiles) ENG.add('missile');
 		for (const [target] of dl.allContacts()) {
 			if (!target || target.destroyed || target.active === false) continue;
 			if (target.team && unit.team && target.team === unit.team) continue;

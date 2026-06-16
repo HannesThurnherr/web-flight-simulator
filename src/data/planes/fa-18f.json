@@ -23,8 +23,8 @@
 		"thrustDryMax": 124000,
 		"thrustABMax": 196000,
 		"controlCoef": {
-			"pitch": 7.0,
-			"roll": 8.0,
+			"pitch": 7,
+			"roll": 8,
 			"yaw": 2.4
 		},
 		"dampingCoef": {
@@ -48,7 +48,7 @@
 		"yawStabilityCoef": 1.5,
 		"alphaStallDeg": 35,
 		"clMaxStall": 1.85,
-		"postStallPlateau": 1.0,
+		"postStallPlateau": 1,
 		"stallBlendDeg": 6,
 		"departureSusceptibility": 0.45
 	},
@@ -163,7 +163,7 @@
 		"role": "Carrier Multirole",
 		"topSpeed": "Mach 1.8",
 		"combatRadius": "720 km",
-		"rcs": "~3 m\u00b2",
+		"rcs": "~3 m²",
 		"irSig": "High",
 		"radarRange": "110 km (APG-79)",
 		"agility": 8,
@@ -174,6 +174,26 @@
 			"type": "regex",
 			"pattern": "landingOn(?:Light)?_",
 			"flags": "i"
+		}
+	],
+	"equipmentSlots": [
+		{
+			"id": "eq-centerline",
+			"label": "Centerline Pod",
+			"location": "centerline",
+			"accepts": [
+				"jammer",
+				"laser_pd"
+			]
+		},
+		{
+			"id": "eq-sensor",
+			"label": "Sensor Pod",
+			"location": "pod",
+			"accepts": [
+				"tgp",
+				"irst"
+			]
 		}
 	]
 }

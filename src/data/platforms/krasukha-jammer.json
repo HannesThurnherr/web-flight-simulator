@@ -12,7 +12,8 @@
 		"power": 80000,
 		"beamCount": 2,
 		"coneHalfDeg": 60,
-		"burnThroughRangeM": 12000
+		"burnThroughRangeM": 12000,
+		"maxEffectRangeM": 45000
 	},
 	"pilot": { "type": "static-target" },
 	"physicsOverrides": { "mass": 16000, "wingArea": 1 }

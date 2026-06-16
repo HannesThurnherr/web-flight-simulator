@@ -24,6 +24,16 @@ class Subsystem {
 	update(_ctx, _dt) {}
 }
 
+// Air-breathing target classes a fighter may engage with an air-to-air
+// missile. Everything NOT in this set — ground SAM sites, EWRs, command
+// posts/buildings, in-flight AAMs (`missile`), free-fall bombs — is excluded
+// from the air-to-air target picker so pilots don't waste AAMs on the dirt.
+// `cruise_missile` is deliberately included (a CAP can swat a slow cruise).
+export const AIR_TARGET_CLASSES = new Set([
+	'fighter', 'stealth_fighter', 'stealth_bomber',
+	'awacs', 'cargo', 'drone_isr', 'cruise_missile',
+]);
+
 // ----------------------------------------------------------------------------
 // CountermeasureSubsystem — flare + chaff inventory and rate limiting.
 //
@@ -113,9 +123,33 @@ export class TargetManagerSubsystem extends Subsystem {
 		// forward after the last sensor contact expired. 20 s covers a
 		// full reversal turn at 400 m/s (≈4 km radius, ~15 s for 360°).
 		this.memoryTTL = opts.memoryTTL ?? 20;
-		this.memory = new Map(); // target → snapshot { lon, lat, alt, heading, pitch, speed, timeSeen }
+		// Tally persistence: once a pilot has VISUALLY (or IR) acquired a
+		// contact — a "tally" — they hold it in mind far longer than a
+		// fleeting radar blip. A bandit that bugs out cold isn't forgotten
+		// in 20 s; the pilot keeps searching the last-known area. Bumped
+		// well above memoryTTL so a fighter that saw you doesn't give up
+		// the hunt the moment you break contact.
+		this.tallyMemoryTTL = opts.tallyMemoryTTL ?? 45;
+		this.memory = new Map(); // target → snapshot { lon, lat, alt, heading, pitch, speed, timeSeen, tallySeen }
 		this._best = null;
+
+		// ---- Tally-and-commit -------------------------------------------------
+		// When a fresh CLOSE visual/IR contact appears that the pilot had no
+		// prior track on (a surprise merge — e.g. a stealth bomber sliding
+		// into the visual bubble), the pilot commits to an aggressive
+		// intercept (afterburner, hard turn) instead of treating it as a
+		// routine BVR contact and cruising past. `tallyCommitUntil` is the
+		// sim-time the commitment expires; EngageBehavior reads it.
+		this.tallyMergeRangeM = opts.tallyMergeRangeM ?? 32000; // "close" = inside the visual bubble
+		this.tallyCommitS     = opts.tallyCommitS     ?? 25;    // how long the firewall/turn lasts
+		this.tallyCommitUntil  = -Infinity;
+		this.tallyCommitTarget = null;
+		this._known = new Set(); // targets that were candidates last update
 	}
+
+	// True while the pilot is committed to running down a fresh tally.
+	isCommitting(now) { return now < this.tallyCommitUntil; }
+	getCommitTarget() { return this.tallyCommitTarget; }
 
 	// Score a candidate target. Heavy positive score = prefer. Closer is
 	// better; being already engaged by a teammate is a big penalty so the
@@ -129,6 +163,20 @@ export class TargetManagerSubsystem extends Subsystem {
 		// Memory (stale) contacts are still engageable but mildly
 		// deprioritized so a fresh sensor contact wins a tie.
 		if (cand.isMemory) score -= 500 * cand.age;
+		// Threat weighting: a bandit whose nose is on US is more dangerous
+		// than a closer one dragging away. Graded bonus up to ~12 km of
+		// equivalent range for a hot, fast closer.
+		const unit = ctx.unit;
+		if (unit && cand.estVel && cand.estSpeed > 50) {
+			const cosLat = Math.cos(unit.lat * Math.PI / 180);
+			const dE = (unit.lon - cand.estPos.lon) * 111320 * cosLat;
+			const dN = (unit.lat - cand.estPos.lat) * 111320;
+			const dU = unit.alt - cand.estPos.alt;
+			const dLen = Math.sqrt(dE*dE + dN*dN + dU*dU) || 1;
+			const hotCos = (dE*cand.estVel.E + dN*cand.estVel.N + dU*cand.estVel.U)
+				/ (dLen * cand.estSpeed);
+			if (hotCos > 0) score += hotCos * 12000;
+		}
 		// Cruise missiles are valid targets but a CAP shouldn't
 		// abandon a fighter for a slow drone unless the cruise is
 		// closer. ~20 km penalty puts a fighter at parity with a
@@ -141,7 +189,14 @@ export class TargetManagerSubsystem extends Subsystem {
 	// Refresh memory snapshot for a target we can currently see. Stores
 	// the truth state — it's fair because the sensor DID detect the
 	// target this frame; we're just recording what the pilot observed.
-	_refreshMemory(target, now) {
+	// `channels` (optional) flags which sensor channels saw the target this
+	// refresh: { radar, ir, visual }. A visual/IR hit marks the snapshot as
+	// a "tally" (sticky) so it earns the longer tallyMemoryTTL even if later
+	// refreshes are radar/datalink only. Datalink refreshes pass null (BVR-
+	// quality track, not a close tally).
+	_refreshMemory(target, now, channels = null) {
+		const prev = this.memory.get(target);
+		const closeSensor = !!(channels && (channels.visual || channels.ir));
 		this.memory.set(target, {
 			lon: target.lon,
 			lat: target.lat,
@@ -150,6 +205,7 @@ export class TargetManagerSubsystem extends Subsystem {
 			pitch:   target.pitch   || 0,
 			speed:   target.speed   || 0,
 			timeSeen: now,
+			tallySeen: closeSensor || (prev && prev.tallySeen) || false,
 		});
 	}
 
@@ -200,22 +256,26 @@ export class TargetManagerSubsystem extends Subsystem {
 		if (unit.contacts) {
 			for (const [target, c] of unit.contacts) {
 				if (!target || target.destroyed) continue;
-				if (c.radar || c.ir || c.visual) this._refreshMemory(target, now);
+				if (c.radar || c.ir || c.visual) {
+					this._refreshMemory(target, now, { radar: !!c.radar, ir: !!c.ir, visual: !!c.visual });
+				}
 			}
 		}
 		if (ctx.teamDatalink) {
 			for (const [target] of ctx.teamDatalink.allContacts()) {
 				if (!target || target.destroyed) continue;
 				if (!this.memory.has(target) || (now - this.memory.get(target).timeSeen) > 0.5) {
-					this._refreshMemory(target, now);
+					this._refreshMemory(target, now, null);
 				}
 			}
 		}
 
-		// Step 2: expire stale memory. Targets we haven't seen in
-		// memoryTTL seconds fall off the engageable list entirely.
+		// Step 2: expire stale memory. A plain radar/datalink track fades in
+		// memoryTTL; a visually/IR-tallied contact is held tallyMemoryTTL —
+		// the pilot keeps searching where they last saw the bandit.
 		for (const [target, snap] of this.memory) {
-			if (!target || target.destroyed || (now - snap.timeSeen) > this.memoryTTL) {
+			const ttl = snap.tallySeen ? this.tallyMemoryTTL : this.memoryTTL;
+			if (!target || target.destroyed || (now - snap.timeSeen) > ttl) {
 				this.memory.delete(target);
 			}
 		}
@@ -226,6 +286,7 @@ export class TargetManagerSubsystem extends Subsystem {
 		// stale contacts the projection holds the ghost of the bandit
 		// in the spot the pilot expects based on what they last saw.
 		const candidates = [];
+		const nowKnown = new Set(); // targets that are candidates THIS update
 		for (const [target, snap] of this.memory) {
 			if (target === unit) continue;
 			if (target.team === unit.team) continue;
@@ -239,19 +300,39 @@ export class TargetManagerSubsystem extends Subsystem {
 			// downweights them vs fighters (see _scoreCandidate)
 			// so a CAP doesn't abandon a real bandit to chase a slow
 			// drone.
-			if (sig.unitClass === 'missile') continue;
+			//
+			// Ground units (SAM sites, EWRs, command posts, buildings) are
+			// NOT valid AAM targets — an AMRAAM/Meteor can't hit the dirt, so
+			// a pilot that locked a SAM site just threw missiles at the ground
+			// and missed. Restrict candidates to air-breathing platforms +
+			// cruise missiles via an explicit allow-list.
+			if (!AIR_TARGET_CLASSES.has(sig.unitClass)) continue;
 			const cand = this._projectMemory(target, snap, unit, now);
 			if (cand.range > this.maxEngagementRange) continue;
 			candidates.push(cand);
+
+			// Fresh tally-and-commit trigger: a CLOSE visual/IR contact we
+			// were NOT already tracking last update. That's a surprise merge
+			// — someone slid into the visual bubble (classic against a low-
+			// RCS / stealth target the radar net never saw). Commit hard.
+			if (snap.tallySeen && !this._known.has(target) &&
+				cand.range <= this.tallyMergeRangeM) {
+				this.tallyCommitUntil  = now + this.tallyCommitS;
+				this.tallyCommitTarget = target;
+			}
+			nowKnown.add(target);
 		}
+		this._known = nowKnown;
 
 		let best = null;
 		let bestScore = -Infinity;
 		for (const cand of candidates) {
 			const score = this._scoreCandidate(cand, ctx);
+			cand.score = score; // exposed for the spectator HUD
 			if (score > bestScore) { bestScore = score; best = cand; }
 		}
 		this._best = best;
+		this.lastCandidates = candidates; // exposed for the spectator HUD
 	}
 
 	getBest() { return this._best; }
@@ -325,6 +406,11 @@ export class WeaponSubsystem extends Subsystem {
 					if (!p || !p.active) continue;
 					if (p.launcher !== launcher) continue;
 					if (p.type !== w.type) continue;
+					// A missile that flew past its target (miss-abort), lost
+					// lock for good, or went maddog is SPENT for fire-control:
+					// the pilot knows the shot is trashed and shouldn't wait
+					// out its remaining 100+ s of flight time to shoot again.
+					if (p.lostLock || p.maddog) continue;
 					live++;
 					if (live >= w.maxInFlight) break;
 				}

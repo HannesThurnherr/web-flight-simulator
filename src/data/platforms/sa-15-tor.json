@@ -33,7 +33,8 @@
 			"maxRangeM": 12000,
 			"emcon": true,
 			"cueRangeM": 35000,
-			"emconHoldS": 4
+			"emconHoldS": 4,
+			"engageMissiles": true
 		}
 	},
 	"physicsOverrides": { "mass": 35000, "wingArea": 1 }

@@ -21,6 +21,8 @@ import { JetFlame } from './jetFlame';
 import { SIGNATURES } from '../systems/signatures';
 import { FIGHTER_RADAR_DEFAULT, FIGHTER_IRST_DEFAULT } from '../systems/sensorSystem';
 import { createJammer } from '../systems/ew/jammerSubsystem.js';
+import { LaserPDSubsystem } from '../systems/laserPD.js';
+import { equippedItems } from './equipmentLoadout.js';
 import { WeaponSystem } from '../systems/weaponSystem';
 import { getViewer } from '../world/cesiumWorld';
 import { soundManager } from '../utils/soundManager';
@@ -116,6 +118,38 @@ export function loadPlayerPlane(plane, ctx) {
 			state.jammer.defensiveOn = false;
 		} else {
 			state.jammer = null;
+		}
+
+		// Equipment pods (jammer / TGP / defensive laser / IRST), chosen in
+		// the loadout editor's SYSTEMS section. Instantiated onto player
+		// state here, the single place per-plane systems are attached.
+		// Dispose any laser from a previous airframe first (plane switch).
+		if (state.equipment && state.equipment.laserPD) {
+			try { state.equipment.laserPD.destroy(); } catch (e) { /* no-op */ }
+		}
+		state.equipment = {};
+		// Legacy airframes without equipment slots keep TGP always-on; slot-
+		// equipped airframes require an actual TGP pod to lase.
+		state.hasTgp = !Array.isArray(plane.equipmentSlots);
+		for (const { item } of equippedItems(plane.id)) {
+			const cfg = item.config || {};
+			switch (item.kind) {
+				case 'jammer':
+					state.jammer = createJammer(cfg.jammer || {});
+					state.jammer.defensiveOn = false;
+					break;
+				case 'laser_pd':
+					state.equipment.laserPD = new LaserPDSubsystem(cfg.laser || {});
+					break;
+				case 'tgp':
+					state.hasTgp = true;
+					break;
+				case 'irst':
+					if (cfg.ir) Object.assign(state.sensors.ir, cfg.ir);
+					break;
+				default:
+					break;
+			}
 		}
 		// Replace the shared physics instance with one constructed
 		// from this plane's spec. PlanePhysics is strict — the spec
@@ -264,17 +298,44 @@ export function loadPlayerPlane(plane, ctx) {
 		// up from 0.4 m once planes started rendering at real size.
 		const FLAME_WORLD_TARGET = 1.5;
 		const flameGroupScale = FLAME_WORLD_TARGET / (2 * cockpitScale);
+		// Per-airframe exhaust styling: `exhaust.scale` fattens/brightens the
+		// plume, `exhaust.length` stretches it down the engine axis (the
+		// flame's local +Z). The SR-72's scramjet wants a big, long, searing
+		// torch; conventional jets leave both at 1.
+		const exhaust = plane.exhaust || {};
+		const exScale = exhaust.scale || 1.0;
+		const exLength = exhaust.length || 1.0;
 		for (const p of flamePositions) {
 			const f = new JetFlame();
 			f.group.position.set(p.x, p.y, p.z);
-			f.group.scale.setScalar(flameGroupScale);
+			f.group.scale.set(
+				flameGroupScale * exScale,
+				flameGroupScale * exScale,
+				flameGroupScale * exScale * exLength,
+			);
 			planeModel.add(f.group);
 			jetFlames.push(f);
 		}
 
 		ctx.setPlaneModel(planeModel);
 
+		// Switching airframe constructs a fresh WeaponSystem, which would
+		// orphan the previous one's in-flight projectiles (the player's
+		// HARMs / Storm Shadows / AAMs still en route to their targets) —
+		// they'd stop being ticked and silently vanish. Migrate them onto
+		// the new system so they keep flying, guiding, and impacting. The
+		// missiles carry their own launcher reference (the playerState that
+		// fired them), so their guidance is unaffected by the swap; they
+		// just need to live on a projectiles array that's still updated each
+		// frame. Trailing/dead rounds move too, so their trails fade and get
+		// cleaned up normally instead of freezing on the old orphaned list.
+		const prevWeaponSystem = ctx.weaponSystem;
 		const weaponSystem = new WeaponSystem(getViewer(), scene, planeModel);
+		if (prevWeaponSystem && Array.isArray(prevWeaponSystem.projectiles) &&
+			prevWeaponSystem.projectiles.length > 0) {
+			for (const p of prevWeaponSystem.projectiles) weaponSystem.projectiles.push(p);
+			prevWeaponSystem.projectiles = [];
+		}
 		weaponSystem.onKill = (npc) => {
 			state.score += 1000;
 			try { soundManager.play('glitch-random'); } catch (e) { }

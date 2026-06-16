@@ -3,8 +3,15 @@
 	"name": "AIM-9M SIDEWINDER",
 	"shortName": "AIM-9M",
 	"category": "AAM",
-	"tags": ["aam", "wvr", "ir", "fox-2", "reticle"],
+	"tags": [
+		"aam",
+		"wvr",
+		"ir",
+		"fox-2",
+		"reticle"
+	],
 	"massKg": 86,
+	"bayUnits": 0.5,
 	"rcsContributionM2": 0.01,
 	"description": "All-aspect AIM-9M Sidewinder with rosette-scanning IR reticle seeker. Cheap, plentiful, but a point-source tracker — easily fooled by hot flares dropped in the seeker's range. No thrust vectoring; modest envelope. Standard pre-9X load on legacy fighters.",
 	"simType": "AIM-9M",
@@ -18,7 +25,7 @@
 		"minSpeed": 70,
 		"maxLifeS": 45,
 		"maxTurnDegPerSec": 60,
-		"pnGain": 4.0,
+		"pnGain": 4,
 		"dragRef": 22,
 		"dragRefSpeed": 700,
 		"dragRefAltitude": 5000,
@@ -32,7 +39,7 @@
 	"seeker": {
 		"coneHalfAngleDeg": 30,
 		"maxG": 30,
-		"flareResistance": 0.10,
+		"flareResistance": 0.1,
 		"trackRangeM": 12000,
 		"aspectIrEnabled": true
 	}

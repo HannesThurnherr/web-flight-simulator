@@ -280,6 +280,93 @@ export function unitForwardENU(unit) {
 	};
 }
 
+// ---- Per-frame unit-frame cache --------------------------------------------
+//
+// The LOS math between any two units needs: each unit's ECEF position, the
+// observer's local ENU basis (east/north/up unit vectors in ECEF), and the
+// observer's body frame (forward/right/up in ENU) from its heading/pitch.
+// All of these change at most ONCE per frame, but the old code rebuilt them
+// inside every (observer,target) pair — including a full `Matrix4.inverse`
+// and two `Cartesian3.fromDegrees` per call, 3–4× per pair across the O(N²)
+// scan. That allocation + matrix-inverse churn was the dominant sensor cost.
+//
+// Now we stamp each unit's frame ONCE per `updateSensors` pass (in a cheap
+// pre-pass) and the inner loop reads cached vectors and does plain dot
+// products. The ENU basis is just the rotation columns of
+// eastNorthUpToFixedFrame, and the inverse of an orthonormal rotation is its
+// transpose — so `losENU_i = los · basis_i` is exactly what the old
+// Matrix4.inverse * losECEF produced, minus the allocation and the inverse.
+//
+// `_frameStamp` lets debug callers (explainRadarRejection, run on demand
+// outside the scan) lazily refresh a unit whose cache is from an older frame
+// or missing entirely, so they never read stale geometry.
+let _frameStamp = 0;
+const _enuMatScratch = new Cesium.Matrix4();
+
+export function refreshUnitFrame(unit) {
+	if (!unit) return;
+	unit._ecef = Cesium.Cartesian3.fromDegrees(
+		unit.lon, unit.lat, unit.alt, undefined,
+		unit._ecef || new Cesium.Cartesian3());
+	const m = Cesium.Transforms.eastNorthUpToFixedFrame(
+		unit._ecef, undefined, _enuMatScratch);
+	unit._enuEast  = Cesium.Matrix4.getColumn(m, 0, unit._enuEast  || new Cesium.Cartesian4());
+	unit._enuNorth = Cesium.Matrix4.getColumn(m, 1, unit._enuNorth || new Cesium.Cartesian4());
+	unit._enuUp    = Cesium.Matrix4.getColumn(m, 2, unit._enuUp    || new Cesium.Cartesian4());
+	// Body frame in ENU from heading/pitch (same construction the old
+	// losObserverToTarget used inline).
+	const fwd = unitForwardENU(unit);
+	const f = unit._fwdENU || (unit._fwdENU = { x: 0, y: 0, z: 0 });
+	f.x = fwd.x; f.y = fwd.y; f.z = fwd.z;
+	const rightLen = Math.hypot(fwd.x, fwd.y) || 1;
+	const r = unit._rightENU || (unit._rightENU = { x: 0, y: 0, z: 0 });
+	r.x = fwd.y / rightLen; r.y = -fwd.x / rightLen; r.z = 0;
+	const up = unit._upENU || (unit._upENU = { x: 0, y: 0, z: 0 });
+	up.x = r.y * fwd.z - r.z * fwd.y;
+	up.y = r.z * fwd.x - r.x * fwd.z;
+	up.z = r.x * fwd.y - r.y * fwd.x;
+	unit._frameStamp = _frameStamp;
+}
+
+function refreshFrameIfStale(unit) {
+	if (!unit) return;
+	if (!unit._ecef || unit._frameStamp !== _frameStamp) refreshUnitFrame(unit);
+}
+
+// Conservative upper bound on any channel's detection range for this observer
+// against ANY target, used for the broad-phase squared-range cull. Uses the
+// largest plausible signature bin per channel × a safety margin, so the cull
+// can only ever SKIP pairs no channel could detect — never suppress a real
+// contact. Recomputed per frame (radar can flip on/off via emcon).
+function observerCullRadiusM(observer) {
+	const s = observer.sensors;
+	if (!s) return 0;
+	let maxR = 0;
+	const r = s.radar;
+	if (r && r.enabled !== false && r.nominalRange) {
+		const ref = r.referenceRcs || 5;
+		// Biggest RCS bin ≈ 200 m² (AWACS-ish), 4th-root law, ×1.35 for the
+		// realistic-mode 1.3 hard ceiling + slack.
+		maxR = Math.max(maxR, r.nominalRange * Math.pow(200 / ref, 0.25) * 1.35);
+	}
+	const ir = s.ir;
+	if (ir && ir.enabled !== false && ir.nominalRange) {
+		const ref = ir.referenceIr || 200;
+		maxR = Math.max(maxR, ir.nominalRange * Math.sqrt(900 / ref) * 1.35);
+	}
+	const eye = s.eyeball;
+	if (eye && eye.enabled !== false && eye.nominalRange) {
+		const ref = eye.referenceVisualSize || 19;
+		maxR = Math.max(maxR, eye.nominalRange * (60 / ref) * 1.35);
+	}
+	return maxR;
+}
+
+// Hot-loop LOS scratch objects (one per pair + one for the reverse-RWR LOS).
+// Reused every pair so the inner loop allocates nothing.
+const _losPair = { losHat: { x: 0, y: 0, z: 0 } };
+const _losRev  = { losHat: { x: 0, y: 0, z: 0 } };
+
 // Convert ECEF LOS to the observer's local ENU frame and also the
 // observer's body frame (so we can check FOV cones and compute bearing
 // relative to the observer's nose). Returns { losENU, losLenMeters, losLen,
@@ -287,59 +374,55 @@ export function unitForwardENU(unit) {
 //
 // bearingBody    radians, positive = right of nose
 // elevationBody  radians, positive = above horizon
-function losObserverToTarget(observer, target) {
-	const obsECEF = Cesium.Cartesian3.fromDegrees(observer.lon, observer.lat, observer.alt);
-	const tgtECEF = Cesium.Cartesian3.fromDegrees(target.lon,   target.lat,   target.alt);
-	const losECEF = Cesium.Cartesian3.subtract(tgtECEF, obsECEF, new Cesium.Cartesian3());
-	const enu = Cesium.Transforms.eastNorthUpToFixedFrame(obsECEF);
-	const invEnu = Cesium.Matrix4.inverse(enu, new Cesium.Matrix4());
-	const losENU = Cesium.Matrix4.multiplyByPointAsVector(invEnu, losECEF, new Cesium.Cartesian3());
-	const len = Cesium.Cartesian3.magnitude(losENU);
+function losObserverToTarget(observer, target, out = null) {
+	// Frame geometry. The hot scan loop passes a scratch `out` and has
+	// already refreshed every unit's frame in its pre-pass, so we read the
+	// cache. External callers (AAM/HARM seekers, AI, debug overlay) pass no
+	// scratch and may run mid-frame AFTER a unit moved, so we force a fresh
+	// frame for them — identical to the old "recompute ECEF every call"
+	// behavior, just without the Matrix4.inverse.
+	if (out) {
+		refreshFrameIfStale(observer);
+		refreshFrameIfStale(target);
+	} else {
+		refreshUnitFrame(observer);
+		refreshUnitFrame(target);
+	}
 
-	// Build the observer's body frame axes from its heading/pitch. Body
-	// forward = unitForwardENU; body up is world-up rotated by pitch; body
-	// right is forward × up. That's enough to express LOS in body-relative
-	// azimuth/elevation.
-	const fwd = unitForwardENU(observer);
-	// Simple right-vector: perpendicular to forward in the horizontal plane.
-	// At zero pitch this is exact; at non-zero pitch we lose the tiny body
-	// roll component, which doesn't matter for detection logic.
-	const rightLen = Math.hypot(fwd.x, fwd.y) || 1;
-	const right = { x: fwd.y / rightLen, y: -fwd.x / rightLen, z: 0 };
-	// Up = right × forward.
-	const up = {
-		x: right.y * fwd.z - right.z * fwd.y,
-		y: right.z * fwd.x - right.x * fwd.z,
-		z: right.x * fwd.y - right.y * fwd.x,
-	};
+	const o = observer._ecef, t = target._ecef;
+	const lx = t.x - o.x, ly = t.y - o.y, lz = t.z - o.z;
 
-	// Normalized LOS for dot products.
+	// LOS in the observer's local ENU frame = LOS·(east, north, up). This is
+	// exactly invEnu · losECEF (transpose of the orthonormal ENU rotation),
+	// without building or inverting a Matrix4.
+	const e = observer._enuEast, n = observer._enuNorth, u = observer._enuUp;
+	const ee = lx * e.x + ly * e.y + lz * e.z;
+	const nn = lx * n.x + ly * n.y + lz * n.z;
+	const uu = lx * u.x + ly * u.y + lz * u.z;
+	const len = Math.sqrt(ee * ee + nn * nn + uu * uu);
 	const inv = len > 1e-6 ? 1 / len : 0;
-	const losHat = { x: losENU.x * inv, y: losENU.y * inv, z: losENU.z * inv };
+	const hx = ee * inv, hy = nn * inv, hz = uu * inv;
 
-	const dotForward = losHat.x * fwd.x + losHat.y * fwd.y + losHat.z * fwd.z;
-	const dotRight   = losHat.x * right.x + losHat.y * right.y + losHat.z * right.z;
-	const dotUp      = losHat.x * up.x + losHat.y * up.y + losHat.z * up.z;
+	// Body-relative azimuth/elevation via the cached forward/right/up axes.
+	const fwd = observer._fwdENU, right = observer._rightENU, up = observer._upENU;
+	const dotForward = hx * fwd.x + hy * fwd.y + hz * fwd.z;
+	const dotRight   = hx * right.x + hy * right.y + hz * right.z;
+	const dotUp      = hx * up.x + hy * up.y + hz * up.z;
 
-	// Azimuth/elevation relative to the nose, using the +forward/+right/+up
-	// body frame.
-	const bearingBody   = Math.atan2(dotRight, dotForward);
-	const elevationBody = Math.atan2(dotUp, Math.hypot(dotForward, dotRight));
-
-	return {
-		losENU, losHat,
-		losLenMeters: len,
-		bearingBody,
-		elevationBody,
-		// Forward dot — negative means target is behind observer.
-		dotForward,
-		// Expose body-axis directions (used later for FOV checks in custom frames).
-		forward: fwd,
-		// ECEF positions so the caller can run the terrain raycast without
-		// recomputing them.
-		obsECEF,
-		tgtECEF,
-	};
+	const res = out || { losHat: { x: 0, y: 0, z: 0 } };
+	res.losLenMeters = len;
+	res.bearingBody   = Math.atan2(dotRight, dotForward);
+	res.elevationBody = Math.atan2(dotUp, Math.hypot(dotForward, dotRight));
+	// Forward dot — negative means target is behind observer.
+	res.dotForward = dotForward;
+	res.losHat.x = hx; res.losHat.y = hy; res.losHat.z = hz;
+	// Body forward (used by some FOV checks in custom frames).
+	res.forward = fwd;
+	// ECEF positions (cached refs) so the caller runs the terrain raycast
+	// without recomputing them.
+	res.obsECEF = o;
+	res.tgtECEF = t;
+	return res;
 }
 
 // Get or create the contacts map on an observer, keyed on target reference.
@@ -388,6 +471,22 @@ function _mergeIff(contact, proposed) {
 // them all at once. Leave `true` for normal play — notching is a core
 // sensor mechanic, not a cosmetic one.
 export const NOTCH_ENABLED = true;
+
+// Look-up clutter exemption for the Doppler notch. The main-lobe clutter the
+// notch models only sits BEHIND the target when the radar is looking down or
+// level at it (ground beyond the target along the LOS). Looking UP at a target
+// against clear sky there is no clutter to hide in, so a beaming target stays
+// visible. This is why a ground SAM looking up at an aircraft is NOT defeated
+// by a crossing/beaming pass the way a co-altitude or look-down BVR shot is —
+// and it's the fix for "a fighter flew right past my SAM and it never fired."
+// When the LOS elevation (observer→target) exceeds this angle, the notch is
+// suppressed. `los.losHat.z` is the sine of that elevation in the observer's
+// local ENU frame, so we compare against the sine of the threshold.
+// Geometry self-limits the effect: a low crosser must come close before its
+// look-up angle is steep enough to clear the notch, while a high crosser is
+// seen far out — exactly the realistic behaviour.
+const NOTCH_LOOKUP_CLEAR_DEG = 8;
+const NOTCH_LOOKUP_CLEAR_SIN = Math.sin(NOTCH_LOOKUP_CLEAR_DEG * Math.PI / 180);
 
 // ---- Unified radar detection -----------------------------------------------
 //
@@ -472,7 +571,7 @@ export function explainRadarRejection(observer, target, radar) {
 	if (Math.abs(elRel) > radar.fovV) {
 		return `FOV-EL (el ${d2(elRel)}° > ±${d2(radar.fovV)}°)`;
 	}
-	const tgtFwd = unitForwardENU(target);
+	const tgtFwd = target._fwdENU || unitForwardENU(target);
 	const aspect = aspectAngleFromVectors(los.losHat, tgtFwd);
 	const effRcs = sig.rcs * rcsAspectFactor(aspect);
 	const ratio = effRcs / radar.referenceRcs;
@@ -504,13 +603,14 @@ export function explainRadarRejection(observer, target, radar) {
 		tgtFwd.x * los.losHat.x + tgtFwd.y * los.losHat.y + tgtFwd.z * los.losHat.z;
 	const tgtLosSpeed = Math.abs(tgtLosCos) * tgtSpeed;
 	const notchThreshold = (radar.notchThreshold != null) ? radar.notchThreshold : 90;
-	if (NOTCH_ENABLED && tgtLosSpeed < notchThreshold) {
+	const lookUpClear = los.losHat.z > NOTCH_LOOKUP_CLEAR_SIN;
+	if (NOTCH_ENABLED && !lookUpClear && tgtLosSpeed < notchThreshold) {
 		return `NOTCH (LOS-vel ${tgtLosSpeed.toFixed(0)} < ${notchThreshold} m/s — beaming)`;
 	}
 	return 'DETECTED';
 }
 
-export function detectRadar(observer, target, radar) {
+export function detectRadar(observer, target, radar, los = null) {
 	if (!isRadiating(radar)) return null;
 	const sig = target && target.signature;
 	if (!sig) return null;
@@ -527,7 +627,7 @@ export function detectRadar(observer, target, radar) {
 		if (!radar.targetKinds.includes(target.kind)) return null;
 	}
 
-	const los = losObserverToTarget(observer, target);
+	if (!los) los = losObserverToTarget(observer, target);
 	if (los.losLenMeters < 1) return null;
 
 	// 1) FOV (rectangular cone — separate az/el like a real mech-scan set).
@@ -552,7 +652,7 @@ export function detectRadar(observer, target, radar) {
 	if (Math.abs(elRel) > radar.fovV) return null;
 
 	// 2) Aspect-modulated RCS. Nose-on/tail-on different from beam.
-	const tgtFwd = unitForwardENU(target);
+	const tgtFwd = target._fwdENU || unitForwardENU(target);
 	const aspect = aspectAngleFromVectors(los.losHat, tgtFwd);
 	const effRcs = sig.rcs * rcsAspectFactor(aspect);
 
@@ -624,7 +724,12 @@ export function detectRadar(observer, target, radar) {
 		tgtFwd.x * los.losHat.x + tgtFwd.y * los.losHat.y + tgtFwd.z * los.losHat.z;
 	const tgtLosSpeed = Math.abs(tgtLosCos) * tgtSpeed;
 	const notchThreshold = (radar.notchThreshold != null) ? radar.notchThreshold : 90;
-	if (NOTCH_ENABLED && tgtLosSpeed < notchThreshold) return null;
+	// Looking up at a target against clear sky → no main-lobe clutter → the
+	// notch doesn't apply (see NOTCH_LOOKUP_CLEAR_DEG). This is what lets a
+	// ground SAM see a fighter crossing/beaming overhead instead of going
+	// blind the instant the target turns perpendicular.
+	const lookUpClear = los.losHat.z > NOTCH_LOOKUP_CLEAR_SIN;
+	if (NOTCH_ENABLED && !lookUpClear && tgtLosSpeed < notchThreshold) return null;
 
 	// Signal strength 0..1, cheap proxy for return-power margin. Used for
 	// RWR strength and for the lock-integrity hysteresis in seekers.
@@ -651,15 +756,15 @@ export function detectRadar(observer, target, radar) {
 // writes the contact record and the target's RWR entry. Returns true on
 // detection (matches the previous API so the updateSensors loop is
 // unchanged).
-function scanRadar(observer, target, now) {
+function scanRadar(observer, target, now, los = null) {
 	const s = observer.sensors && observer.sensors.radar;
-	const det = detectRadar(observer, target, s);
+	const det = detectRadar(observer, target, s, los);
 	if (!det) return false;
 
 	// Velocity estimate: radar gives closing rate via Doppler; we expose
 	// the full 3D velocity because we have ground truth and downstream
 	// consumers (datalink, HUD) want it.
-	const vel = unitForwardENU(target);
+	const vel = target._fwdENU || unitForwardENU(target);
 	const spd = target.speed || 0;
 
 	const contact = touchContact(observer.contacts, target);
@@ -685,8 +790,9 @@ function scanRadar(observer, target, now) {
 	}));
 
 	// RWR on the target: "observer is painting me". Bearing is relative to
-	// the target's own body, not the observer's.
-	const reverseLos = losObserverToTarget(target, observer);
+	// the target's own body, not the observer's. Uses a scratch object so
+	// the per-detection reverse-LOS allocates nothing.
+	const reverseLos = losObserverToTarget(target, observer, _losRev);
 	const rwr = ensureRwr(target);
 	rwr.set(observer, {
 		source: observer,
@@ -700,13 +806,13 @@ function scanRadar(observer, target, now) {
 	return true;
 }
 
-function scanIR(observer, target, now) {
+function scanIR(observer, target, now, los = null) {
 	const s = observer.sensors && observer.sensors.ir;
 	if (!s || !s.enabled) return false;
 	const sig = target.signature;
 	if (!sig) return false;
 
-	const los = losObserverToTarget(observer, target);
+	if (!los) los = losObserverToTarget(observer, target);
 	if (los.losLenMeters < 1) return false;
 
 	// Modern fighters combine an IRST (narrow forward cone, used for
@@ -721,7 +827,7 @@ function scanIR(observer, target, now) {
 		if (angleFromNose > s.fov) return false;
 	}
 
-	const tgtFwd = unitForwardENU(target);
+	const tgtFwd = target._fwdENU || unitForwardENU(target);
 	const aspect = aspectAngleFromVectors(los.losHat, tgtFwd);
 
 	// Realistic-IR mode (gameSettings.irFidelity === 'realistic')
@@ -816,13 +922,13 @@ function scanIR(observer, target, now) {
 	return true;
 }
 
-function scanVisual(observer, target, now) {
+function scanVisual(observer, target, now, los = null) {
 	const s = observer.sensors && observer.sensors.eyeball;
 	if (!s || !s.enabled) return false;
 	const sig = target.signature;
 	if (!sig) return false;
 
-	const los = losObserverToTarget(observer, target);
+	if (!los) los = losObserverToTarget(observer, target);
 	if (los.losLenMeters < 1) return false;
 
 	// Visual is omnidirectional for a bubble canopy — angle check is just
@@ -830,7 +936,7 @@ function scanVisual(observer, target, now) {
 	const angleFromNose = Math.hypot(los.bearingBody, los.elevationBody);
 	if (angleFromNose > s.fov) return false;
 
-	const tgtFwd = unitForwardENU(target);
+	const tgtFwd = target._fwdENU || unitForwardENU(target);
 	const aspect = aspectAngleFromVectors(los.losHat, tgtFwd);
 	let effSize = sig.visualSize * visualAspectFactor(aspect);
 
@@ -884,6 +990,15 @@ function scanVisual(observer, target, now) {
 // Call once per game tick, after physics. `units` is the array of every
 // sensable thing (player, NPCs, missiles). `now` is a monotonic sim-time
 // scalar — same convention as commanderView uses.
+// Round-robin frame counter for staggering the O(N²) sensor scan across
+// frames. The full scan of every observer×target pair every frame is the
+// dominant cost in large scenarios; spreading NPC observers over
+// SENSOR_STAGGER frames cuts per-frame work ~SENSOR_STAGGER× with no
+// gameplay impact (radar sweeps are slow; contact memory is seconds).
+let _sensorFrame = 0;
+const SENSOR_STAGGER = 3;
+let _sensorMsEMA = 0;
+
 export function updateSensors(units, now, dt) {
 	// Snapshot the current set of active jammers so detectRadar can
 	// apply attenuation without threading the full units array
@@ -891,22 +1006,69 @@ export function updateSensors(units, now, dt) {
 	// detectRadar).
 	setJammerRegistry(units);
 
+	_sensorFrame = (_sensorFrame + 1) | 0;
+	const phase = _sensorFrame % SENSOR_STAGGER;
+
+	const _perfT0 = performance.now();
+
+	// Pre-pass: stamp every live unit's ECEF + ENU basis + body frame ONCE
+	// this frame. The inner scan loop then reads cached vectors instead of
+	// rebuilding them (Matrix4.inverse + fromDegrees) 3–4× per pair.
+	_frameStamp = (_frameStamp + 1) | 0;
+	for (const u of units) {
+		if (!u || u.destroyed || u.active === false) continue;
+		refreshUnitFrame(u);
+	}
+
 	// Scan step. A destroyed / inactive observer doesn't scan — its
 	// radar is off, its eyes are closed. Previously we only filtered
 	// out destroyed TARGETS, so a dead player's radar kept populating
 	// contacts, which in turn kept refreshing team-datalink fused
 	// tracks — resulting in in-flight friendly missiles staying in DL
 	// mode after the player died even with no other platform around.
+	let oi = -1;
 	for (const observer of units) {
+		oi++;
 		if (!observer || !observer.sensors) continue;
 		if (observer.destroyed || observer.active === false) continue;
+		// Stagger NPC observers across frames; the player (units[0]) always
+		// scans so the HUD/threat picture stays frame-fresh.
+		if (oi !== 0 && (oi % SENSOR_STAGGER) !== phase) continue;
+		const obsStatic = observer.isStatic;
+		// Broad-phase: any target beyond this observer's max plausible
+		// detection range can't be seen by ANY channel — skip it before the
+		// per-channel math. Compared as squared distance against the cached
+		// ECEF positions (no sqrt, no allocation).
+		const cullR = observerCullRadiusM(observer);
+		const cullR2 = cullR > 0 ? cullR * cullR : Infinity;
+		const oe = observer._ecef;
 		for (const target of units) {
 			if (!target || target === observer) continue;
 			if (target.destroyed || target.active === false) continue;
-			scanRadar (observer, target, now);
-			scanIR    (observer, target, now);
-			scanVisual(observer, target, now);
+			// Ground emplacements don't need to detect other ground units —
+			// SAMs/AAA/EWR only care about airborne targets. Skips a large
+			// block of pointless static-vs-static pairs in IADS scenarios.
+			if (obsStatic && target.isStatic) continue;
+			// Broad-phase range cull.
+			const te = target._ecef;
+			const ddx = te.x - oe.x, ddy = te.y - oe.y, ddz = te.z - oe.z;
+			if (ddx * ddx + ddy * ddy + ddz * ddz > cullR2) continue;
+			// One shared LOS per pair, reused across all three channels.
+			const los = losObserverToTarget(observer, target, _losPair);
+			scanRadar (observer, target, now, los);
+			scanIR    (observer, target, now, los);
+			scanVisual(observer, target, now, los);
 		}
+	}
+
+	// Lightweight perf counter — exponential moving average of the scan cost
+	// in ms, exposed on globalThis for the HUD/console and logged ~every 2 s
+	// so the IADS-scenario before/after is visible without a profiler.
+	const _perfMs = performance.now() - _perfT0;
+	_sensorMsEMA = _sensorMsEMA * 0.9 + _perfMs * 0.1;
+	globalThis.__sensorMs = _sensorMsEMA;
+	if ((_sensorFrame % 120) === 0) {
+		console.info(`[sensors] updateSensors ≈ ${_sensorMsEMA.toFixed(2)} ms/frame (${units.length} units)`);
 	}
 
 	// Age / prune step. Stale channel entries expire on their own memory

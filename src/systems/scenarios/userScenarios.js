@@ -17,6 +17,23 @@
 
 const LS_KEY = 'web-flight-sim:user-scenarios';
 
+// Best-effort mirror of a save/delete to a real file on disk via the dev
+// server (see vite.config.js userScenarioFilesPlugin). Fire-and-forget: the
+// editor stays responsive off localStorage, and this just keeps a durable,
+// version-controllable `scenarios/<id>.json` in sync. Silently no-ops in a
+// production build (no endpoint) or if fetch is unavailable.
+function _mirrorToDisk(action, payload) {
+	try {
+		if (typeof fetch !== 'function') return;
+		fetch(`/__scenarios/${action}`, {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify(payload),
+			keepalive: true,
+		}).catch(() => {});
+	} catch (e) { /* dev-only convenience; never block a save */ }
+}
+
 function _readAll() {
 	try {
 		const raw = localStorage.getItem(LS_KEY);
@@ -52,15 +69,20 @@ export function loadUserScenarios() {
 export function saveUserScenario(id, json) {
 	if (!id) return false;
 	const all = _readAll();
-	all[id] = { ...json, id, modifiedAt: new Date().toISOString() };
-	return _writeAll(all);
+	const record = { ...json, id, modifiedAt: new Date().toISOString() };
+	all[id] = record;
+	const ok = _writeAll(all);
+	_mirrorToDisk('save', { id, json: record });
+	return ok;
 }
 
 export function deleteUserScenario(id) {
 	const all = _readAll();
 	if (!(id in all)) return false;
 	delete all[id];
-	return _writeAll(all);
+	const ok = _writeAll(all);
+	_mirrorToDisk('delete', { id });
+	return ok;
 }
 
 // Build a fresh empty scenario record for the "+ NEW SCENARIO"

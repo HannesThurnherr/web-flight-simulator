@@ -1,7 +1,7 @@
 {
 	"id": "f-15",
 	"name": "F-15EX EAGLE II",
-	"description": "Latest-generation Strike Eagle derivative. Same F-15 platform but with AMBER racks giving up to 16 AMRAAMs \u2014 the 'Raptor Eagle' air-dominance loadout. No stealth, but unmatched BVR magazine depth.",
+	"description": "Latest-generation Strike Eagle derivative. Same F-15 platform but with AMBER racks giving up to 16 AMRAAMs — the 'Raptor Eagle' air-dominance loadout. No stealth, but unmatched BVR magazine depth.",
 	"model": "/assets/models/f-15-strike-eagle.glb",
 	"modelRotation": {
 		"x": 0,
@@ -23,8 +23,8 @@
 		"thrustDryMax": 158000,
 		"thrustABMax": 258000,
 		"controlCoef": {
-			"pitch": 8.0,
-			"roll": 9.0,
+			"pitch": 8,
+			"roll": 9,
 			"yaw": 2.5
 		},
 		"dampingCoef": {
@@ -42,8 +42,8 @@
 			"roll": 1200,
 			"yaw": 600
 		},
-		"gSoftLimit": 8.0,
-		"gHardLimit": 10.0,
+		"gSoftLimit": 8,
+		"gHardLimit": 10,
 		"pitchStabilityCoef": 0.3,
 		"yawStabilityCoef": 1.5,
 		"alphaStallDeg": 18,
@@ -215,7 +215,7 @@
 		"role": "Air Superiority / Strike",
 		"topSpeed": "Mach 2.5",
 		"combatRadius": "1 480 km",
-		"rcs": "~12 m\u00b2",
+		"rcs": "~12 m²",
 		"irSig": "High",
 		"radarRange": "180 km (APG-82)",
 		"agility": 7,
@@ -226,6 +226,26 @@
 			"type": "regex",
 			"pattern": "landingOn(?:Light)?_",
 			"flags": "i"
+		}
+	],
+	"equipmentSlots": [
+		{
+			"id": "eq-centerline",
+			"label": "Centerline Pod",
+			"location": "centerline",
+			"accepts": [
+				"jammer",
+				"laser_pd"
+			]
+		},
+		{
+			"id": "eq-sensor",
+			"label": "Sensor Pod",
+			"location": "pod",
+			"accepts": [
+				"tgp",
+				"irst"
+			]
 		}
 	]
 }

@@ -1,0 +1,24 @@
+{
+	"schemaVersion": 2,
+	"id": "roundtrip-test",
+	"name": "ROUNDTRIP TEST",
+	"anchor": {
+		"mode": "player-relative"
+	},
+	"spawns": [
+		{
+			"type": "fighter",
+			"fighterModel": "f-16",
+			"team": "hostile-red",
+			"tag": "red-1"
+		},
+		{
+			"type": "platform",
+			"platformId": "nasams-sam",
+			"team": "hostile-blue",
+			"tag": "blue-sam"
+		}
+	],
+	"objectives": [],
+	"triggers": []
+}

@@ -1,0 +1,112 @@
+{
+	"id": "sr-72-darkstar",
+	"name": "SR-72 DARKSTAR",
+	"description": "Unmanned hypersonic strike platform. Dual-mode propulsion: a turbofan for subsonic/supersonic flight, and a scramjet that lights past Mach 3 to dash to Mach 10. Built to outrun threats, not out-turn them — sluggish and structurally g-limited. Internal bays for standoff ground attack.",
+	"model": "/assets/models/sr-72-darkstar.glb",
+	"modelRotation": { "x": 0, "y": 180, "z": 0 },
+	"realLengthM": 30.0,
+	"signature": "hypersonic_strike",
+	"engineCount": 2,
+	"exhaust": { "scale": 2.6, "length": 2.4 },
+	"physicsOverrides": {
+		"mass": 36000,
+		"wingArea": 62.0,
+		"cdZero": 0.013,
+		"thrustDryMax": 320000,
+		"thrustABMax": 580000,
+		"controlCoef": {
+			"pitch": 6.8,
+			"roll": 5.5,
+			"yaw": 3.0
+		},
+		"dampingCoef": {
+			"pitch": 4200,
+			"roll": 1600,
+			"yaw": 12000
+		},
+		"inertia": {
+			"pitch": 420000,
+			"roll": 95000,
+			"yaw": 470000
+		},
+		"controlAuthorityFloor": {
+			"pitch": 3200,
+			"roll": 1800,
+			"yaw": 1200
+		},
+		"gSoftLimit": 5.0,
+		"gHardLimit": 6.5,
+		"pitchStabilityCoef": 0.4,
+		"yawStabilityCoef": 1.5,
+		"alphaStallDeg": 14,
+		"clMaxStall": 1.2,
+		"postStallPlateau": 0.8,
+		"stallBlendDeg": 6,
+		"departureSusceptibility": 0.30,
+		"propulsion": {
+			"type": "dual",
+			"soundSpeedMps": 300,
+			"turbofanFadeStartMach": 3.0,
+			"turbofanFadeEndMach": 4.0,
+			"scramjetSpoolStartMach": 2.8,
+			"scramjetSpoolFullMach": 4.5,
+			"scramjetThrustMax": 1200000,
+			"scramjetCutoffStartMach": 9.0,
+			"scramjetCutoffEndMach": 11.0,
+			"scramjetAltPenaltyExp": 0.25
+		}
+	},
+	"radarOverride": {
+		"nominalRange": 160000
+	},
+	"irOverride": {
+		"fov": 0,
+		"nominalRange": 30000
+	},
+	"nozzle": {
+		"xRatio": 0.187,
+		"yRatio": -0.3,
+		"zRatio": 0.86
+	},
+	"hardpoints": [
+		{
+			"id": "bay-fwd-L",
+			"label": "Forward Bay Left",
+			"type": "internal",
+			"accepts": ["AGM", "GBU"]
+		},
+		{
+			"id": "bay-fwd-R",
+			"label": "Forward Bay Right",
+			"type": "internal",
+			"accepts": ["AGM", "GBU"]
+		},
+		{
+			"id": "bay-aft-L",
+			"label": "Aft Bay Left",
+			"type": "internal",
+			"accepts": ["AGM", "GBU"]
+		},
+		{
+			"id": "bay-aft-R",
+			"label": "Aft Bay Right",
+			"type": "internal",
+			"accepts": ["AGM", "GBU"]
+		}
+	],
+	"maxLoadoutKg": 6000,
+	"equipmentSlots": [
+		{ "id": "eq-bay-c", "label": "Center Systems Bay", "location": "internal", "accepts": ["jammer", "irst"] },
+		{ "id": "eq-sensor", "label": "Sensor Pod", "location": "internal", "accepts": ["tgp", "irst"] }
+	],
+	"specs": {
+		"role": "Hypersonic Strike",
+		"topSpeed": "Mach 10",
+		"combatRadius": "4800 km",
+		"rcs": "~0.35 m²",
+		"irSig": "Very High (scramjet)",
+		"radarRange": "160 km",
+		"agility": 2,
+		"supercruise": true
+	}
+}

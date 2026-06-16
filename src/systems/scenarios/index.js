@@ -28,6 +28,15 @@ import { loadUserScenarios } from './userScenarios.js';
 // Auto-discover every JSON scenario.
 const _scenarioModules = import.meta.glob('../../data/scenarios/*.json', { eager: true });
 
+// User-authored scenarios persisted to disk under <project>/scenarios/ by the
+// editor (mirrored there from localStorage — see userScenarios._mirrorToDisk
+// and vite.config.js). Loaded here so they survive a localStorage wipe, are
+// version-controllable, and can be shared as plain files. Unlike the bundled
+// set these stay EDITABLE. Empty/absent dir → {} (no-op). New files written
+// during a session appear after a dev-server restart; live edits go through
+// localStorage and override the file copy below.
+const _userFileModules = import.meta.glob('../../../scenarios/*.json', { eager: true });
+
 // Keep the raw JSONs around — the editor (and the picker, for the
 // description / name fields) needs to read them after the runner
 // has wrapped them into {onStart, update, onStop} objects. JS
@@ -51,6 +60,19 @@ for (const [path, mod] of Object.entries(_scenarioModules)) {
 _bundledIds.add('notching');
 _bundledIds.add('jamming');
 
+// Disk-backed user scenarios (editable, NOT bundled). Keyed by id so a
+// localStorage copy of the same id wins in _buildRegistry.
+const _fileScenarios = {};
+const _fileIds = new Set();
+for (const [path, mod] of Object.entries(_userFileModules)) {
+	const raw = mod.default || mod;
+	const fallbackId = path.match(/\/([^/]+)\.json$/)?.[1];
+	const id = (raw && raw.id) || fallbackId;
+	if (!id) continue;
+	_fileScenarios[id] = raw;
+	_fileIds.add(id);
+}
+
 // Build the merged registry. User scenarios layered on top so a
 // user-edited copy with the same id (rare — we usually pick a fresh
 // id on duplicate) wins. Both kinds run through buildScenarioFromJson
@@ -63,6 +85,14 @@ function _buildRegistry() {
 		notching: notchingTestScenario,
 		jamming:  jammingTestScenario,
 	};
+	// Disk-backed user scenarios first, then the localStorage copies on top —
+	// a live edit (localStorage) wins over the last-mirrored file of the same
+	// id, while a file with no localStorage copy (fresh browser / shared
+	// scenario) still shows up and stays editable.
+	for (const [id, raw] of Object.entries(_fileScenarios)) {
+		_rawJsons[id] = raw;
+		out[id] = buildScenarioFromJson(raw);
+	}
 	const userScenarios = loadUserScenarios();
 	for (const [id, raw] of Object.entries(userScenarios)) {
 		_rawJsons[id] = raw;
@@ -91,7 +121,8 @@ export function isBundled(id) {
 }
 
 export function isUserScenario(id) {
-	return !_bundledIds.has(id) && id in (loadUserScenarios());
+	if (_bundledIds.has(id)) return false;
+	return (id in loadUserScenarios()) || _fileIds.has(id);
 }
 
 // Default on first load. User's pick from the main-menu dropdown

@@ -1,0 +1,19 @@
+{
+	"id": "alq-249-ngj",
+	"name": "ALQ-249 Next Gen Jammer",
+	"shortName": "NGJ POD",
+	"kind": "jammer",
+	"category": "EW",
+	"massKg": 500,
+	"rcsContributionM2": 0.02,
+	"description": "Podded electronic-attack jammer. GaN AESA jamming across three steerable beams — degrades hostile radar lock and detection range in a forward cone. Toggle with J.",
+	"config": {
+		"jammer": {
+			"type": "both",
+			"power": 40000,
+			"beamCount": 2,
+			"coneHalfDeg": 45,
+			"burnThroughRangeM": 8000
+		}
+	}
+}

@@ -149,6 +149,12 @@ export class HUD {
 		this.npcContainer.style.cssText = 'position:fixed; top:0; left:0; width:100%; height:100%; pointer-events:none; z-index:15;';
 		document.body.appendChild(this.npcContainer);
 
+		// Dual-mode propulsion gauge — only shown when the active airframe
+		// has dual (turbo/scram) propulsion (SR-72). Built dynamically so it
+		// needs no index.html entry. Layout: a mode label, a Mach readout,
+		// and a horizontal Mach bar with a marker at the scramjet-light Mach.
+		this._buildPropulsionGauge();
+
 		this.createHorizon();
 		this.createMissileCrosshair();
 		this.createCompass();
@@ -2458,8 +2464,53 @@ export class HUD {
 		return best;
 	}
 
+	_buildPropulsionGauge() {
+		const el = document.createElement('div');
+		el.id = 'propulsion-gauge';
+		el.style.cssText = 'position:fixed; right:18px; bottom:130px; width:226px; padding:8px 11px; background:rgba(0,18,10,0.6); border:1px solid rgba(0,255,120,0.4); border-radius:4px; font:11px monospace; color:#6f9; z-index:16; pointer-events:none; display:none;';
+		el.innerHTML = '' +
+			'<div style="display:flex;justify-content:space-between;align-items:center;">' +
+			'<span id="prop-mode" style="font-weight:bold;letter-spacing:1.5px;">TURBOFAN</span>' +
+			'<span id="prop-mach">M 0.00</span></div>' +
+			'<div style="position:relative;height:9px;margin-top:7px;background:rgba(0,255,120,0.12);border-radius:3px;overflow:hidden;">' +
+			'<div id="prop-bar" style="position:absolute;left:0;top:0;height:100%;width:0%;background:linear-gradient(90deg,#0f8,#fc3);"></div>' +
+			'<div id="prop-mach3" style="position:absolute;top:-2px;left:30%;width:2px;height:13px;background:#fff;opacity:0.8;"></div></div>' +
+			'<div id="prop-status" style="margin-top:5px;font-size:10px;color:#9c6;">scramjet offline</div>';
+		document.body.appendChild(el);
+		this.propGauge = el;
+		this.propModeEl = el.querySelector('#prop-mode');
+		this.propMachEl = el.querySelector('#prop-mach');
+		this.propBarEl = el.querySelector('#prop-bar');
+		this.propMach3El = el.querySelector('#prop-mach3');
+		this.propStatusEl = el.querySelector('#prop-status');
+	}
+
+	updatePropulsionGauge(state) {
+		const p = state && state.propulsion;
+		if (!this.propGauge) return;
+		if (!p) { this.propGauge.style.display = 'none'; return; }
+		this.propGauge.style.display = 'block';
+		const machMax = p.cutoffEndMach || 11;
+		const mach = p.mach || 0;
+		const minMach = p.scramjetMinMach || 3;
+		const mode = p.mode || 'turbofan';
+		const spool = p.scramjetSpool || 0;
+		this.propMachEl.textContent = 'M ' + mach.toFixed(2);
+		this.propBarEl.style.width = Math.max(0, Math.min(100, (mach / machMax) * 100)) + '%';
+		this.propMach3El.style.left = Math.min(100, (minMach / machMax) * 100) + '%';
+		let color, status;
+		if (mode === 'scramjet') { color = '#fc3'; status = 'SCRAMJET — ' + Math.round(spool * 100) + '% spool'; }
+		else if (mode === 'transition') { color = '#fa0'; status = 'TRANSITION — scramjet lighting'; }
+		else { color = '#6f9'; status = mach >= minMach ? 'scramjet ready' : 'scramjet offline (need M' + minMach.toFixed(0) + ')'; }
+		this.propModeEl.textContent = mode.toUpperCase();
+		this.propModeEl.style.color = color;
+		this.propStatusEl.textContent = status;
+		this.propStatusEl.style.color = color;
+	}
+
 	update(state, npcs = []) {
 		const lerpFactor = 0.5;
+		this.updatePropulsionGauge(state);
 
 		// 6c — radar emitter state badge. Shows the active mode so the
 		// player can read their own EW posture at a glance:

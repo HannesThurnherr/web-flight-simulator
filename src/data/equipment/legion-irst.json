@@ -1,0 +1,13 @@
+{
+	"id": "legion-irst",
+	"name": "Legion IRST Pod",
+	"shortName": "IRST",
+	"kind": "irst",
+	"category": "EO",
+	"massKg": 200,
+	"rcsContributionM2": 0.01,
+	"description": "Podded infrared search-and-track. Passive long-range IR detection — extends the airframe's IRST reach without radiating. The primary way to find broadband-stealth targets by their plume.",
+	"config": {
+		"ir": { "nominalRange": 60000 }
+	}
+}

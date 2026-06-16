@@ -1,0 +1,24 @@
+{
+	"id": "shield-helws",
+	"name": "SHiELD HELWS Pod",
+	"shortName": "LASER",
+	"kind": "laser_pd",
+	"category": "DEW",
+	"massKg": 600,
+	"rcsContributionM2": 0.02,
+	"description": "Self-protect high-energy laser. Hard-kills inbound missiles, drones, and glide bombs in a last-ditch envelope. Capacitor-limited: a sustained burn browns out, so a salvo can saturate it. Useless against hypersonics.",
+	"config": {
+		"laser": {
+			"maxRangeM": 11000,
+			"minRangeM": 80,
+			"dwellSecToKill": 5.5,
+			"capDrainS": 18.0,
+			"capRechargeS": 10.0,
+			"brownout": 0.7,
+			"coolPerSec": 0.3,
+			"emitterHeightM": 0,
+			"engageClasses": ["missile", "cruise_missile", "bomb", "drone_isr", "decoy"],
+			"maxEngageSpeedMs": 1500
+		}
+	}
+}

@@ -23,6 +23,8 @@
 import * as Cesium from 'cesium';
 import { Bullet } from '../weapon/bullet.js';
 import { createMunition, munitionIdForSimType } from '../weapon/munitionFactory.js';
+import { MUNITIONS } from '../weapon/munitions.js';
+import { groundHeightAt } from '../world/terrain.js';
 
 // Bake a single NPC's world position + HPR into its THREE mesh matrix,
 // expressed in the supplied Cesium viewMatrix (world → camera-space)
@@ -146,39 +148,75 @@ export function spawnNpcBullet(npcSys, npc, aim = null) {
 export function spawnNpcMissile(npcSys, npc, weaponType, target) {
 	const isStatic = !!npc.isStatic;
 	const downOffsetM = isStatic ? 3 : -3;
+	let launchAlt = npc.alt + downOffsetM;
+	// Ground launchers: make sure the round is born ABOVE the terrain the
+	// missile collision check reads, so it doesn't self-detonate on the rail
+	// if the battery is clamped a hair underground. (The missile's own launch
+	// grace is the backstop; this keeps the very first frame clean too.)
+	if (isStatic) {
+		const gh = groundHeightAt(npcSys.viewer, npc.lon, npc.lat, npc._cachedTerrainH ?? null);
+		if (gh != null) launchAlt = Math.max(launchAlt, gh + 5);
+	}
 	const launch = {
 		lon: npc.lon,
 		lat: npc.lat,
-		alt: npc.alt + downOffsetM,
+		alt: launchAlt,
 	};
 
-	// Initial attitude of the missile. For an air-launched shot, the
-	// launcher's own heading + pitch is right — the missile is
-	// momentarily going where the firing jet was going. For a SAM,
-	// the launcher is static and its heading is 0; we point the
-	// missile at the target's bearing and pitch it up ~15° above
-	// the direct geometric elevation, roughly mimicking a canister
-	// that elevates before firing. The missile's own PN guidance
-	// takes over the moment it leaves the rail, so this is really
-	// just a cosmetic / initial-condition choice.
+	// Resolve the munition up front so we know whether it's a rail-launched
+	// missile or a released store — they leave the aircraft very differently.
+	const munitionId = munitionIdForSimType(weaponType);
+	const munData = munitionId ? MUNITIONS[munitionId] : null;
+	const seeker = munData && munData.seekerType;
+	// Rail-launched powered missiles: AAMs, HARM, surface SAMs. These get the
+	// off-boresight azimuth aim below. Released / programmed stores — glide
+	// bombs (gps/laser), cruise missiles (cruise), decoys (MALD) — leave the
+	// rack along the aircraft's flight path and let their own guidance fly
+	// them onto the target, exactly like the player's release.
+	const isRailMissile =
+		seeker === 'active_radar' || seeker === 'ir' ||
+		seeker === 'iir' || seeker === 'anti_radiation';
+
+	// Initial attitude. The default is the launcher's own heading + pitch (the
+	// store leaves going where the jet was pointed). For a rail missile whose
+	// jet nose is OFF the target — most notably a defending fighter cranked
+	// ~60° away while shooting back — launching along the nose sends the
+	// missile wide and makes it claw back onto the target (the "missiles
+	// don't track who they were meant for" artefact). So for rail missiles we
+	// aim the launch AZIMUTH at the target, clamped to ±90° off the nose (you
+	// can't rail-launch sideways/backward), keeping the launcher's PITCH so a
+	// BVR loft is preserved. A released bomb / cruise missile is NOT aimed
+	// this way — pointing an SDB or Storm Shadow 90° off the jet's flight
+	// path is exactly the "munition launches perpendicular to flight" bug;
+	// they ride the flight path out and steer in afterward.
 	let launchHeading = npc.heading;
 	let launchPitch   = npc.pitch;
-	if (isStatic && target) {
+	if (isRailMissile && target && typeof target.lon === 'number' && typeof target.lat === 'number') {
 		const plat = npc.lat * Math.PI / 180;
 		const dE = (target.lon - npc.lon) * 111320 * Math.cos(plat);
 		const dN = (target.lat - npc.lat) * 111320;
-		const dU = (target.alt - npc.alt);
-		launchHeading = (Math.atan2(dE, dN) * 180 / Math.PI + 360) % 360;
+		const dU = ((target.alt || 0) - npc.alt);
+		const bearingToTgt = (Math.atan2(dE, dN) * 180 / Math.PI + 360) % 360;
 		const horiz = Math.hypot(dE, dN);
 		const directElev = Math.atan2(dU, Math.max(1, horiz)) * 180 / Math.PI;
-		// Lead the climb: real SAMs nose-over, they don't fly the
-		// pure line-of-sight. +15° over direct-to-target, capped.
-		launchPitch = Math.max(15, Math.min(80, directElev + 15));
+		if (isStatic) {
+			// SAM: free to point straight at the bearing and nose-over ~15°.
+			launchHeading = bearingToTgt;
+			launchPitch = Math.max(15, Math.min(80, directElev + 15));
+		} else {
+			// Air-launched: aim azimuth at the target, but never more than
+			// 90° off the jet's nose (beyond that it's not a real rail shot;
+			// the fire gates already keep this ≤60°). Pitch stays = jet pitch.
+			let off = bearingToTgt - npc.heading;
+			while (off < -180) off += 360;
+			while (off >  180) off -= 360;
+			off = Math.max(-90, Math.min(90, off));
+			launchHeading = (npc.heading + off + 360) % 360;
+		}
 	}
 
 	const onKill = null; // NPC kills don't score for the player
 
-	const munitionId = munitionIdForSimType(weaponType);
 	const projectile = createMunition(
 		munitionId,
 		npcSys.scene, npcSys.viewer, launch,
@@ -186,6 +224,10 @@ export function spawnNpcMissile(npcSys, npc, weaponType, target) {
 		target, onKill, npc,
 	);
 	if (!projectile) return null;
+	// Eject the store off the rack along the firing NPC's belly-down axis.
+	if (typeof projectile.applyLaunchEjection === 'function') {
+		projectile.applyLaunchEjection(npc.roll || 0);
+	}
 	npcSys.projectiles.push(projectile);
 	return projectile;
 }

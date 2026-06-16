@@ -3,17 +3,41 @@
 	"name": "B-2A SPIRIT",
 	"description": "Northrop Grumman flying-wing strategic stealth bomber. RCS ~0.001 m² makes it essentially invisible to radar at any practical range — buried engines keep IR low from beneath. Subsonic, unmanoeuvrable, but carries 16 GBU-class weapons in two internal rotary bays. The default loadout for high-altitude SEAD penetration: drop everything, fly home.",
 	"model": "/assets/models/b-2-spirit.glb",
-	"modelRotation": { "x": 0, "y": 90, "z": 0 },
-	"realLengthM": 21.0,
+	"modelRotation": {
+		"x": 0,
+		"y": 90,
+		"z": 0
+	},
+	"realLengthM": 21,
 	"realMaxExtentM": 52.4,
 	"signature": "stealth_bomber",
 	"engineCount": 4,
-	"nozzle": { "xRatio": 0.081, "yRatio": 0.151, "zRatio": 0.40 },
+	"nozzle": {
+		"xRatio": 0.081,
+		"yRatio": 0.151,
+		"zRatio": 0.4
+	},
 	"nozzlePositions": [
-		{ "xRatio": -0.081, "yRatio": 0.151, "zRatio": 0.40 },
-		{ "xRatio": -0.061, "yRatio": 0.147, "zRatio": 0.40 },
-		{ "xRatio":  0.061, "yRatio": 0.147, "zRatio": 0.40 },
-		{ "xRatio":  0.081, "yRatio": 0.151, "zRatio": 0.40 }
+		{
+			"xRatio": -0.081,
+			"yRatio": 0.151,
+			"zRatio": 0.4
+		},
+		{
+			"xRatio": -0.061,
+			"yRatio": 0.147,
+			"zRatio": 0.4
+		},
+		{
+			"xRatio": 0.061,
+			"yRatio": 0.147,
+			"zRatio": 0.4
+		},
+		{
+			"xRatio": 0.081,
+			"yRatio": 0.151,
+			"zRatio": 0.4
+		}
 	],
 	"hideNodes": [
 		"LGFront_3",
@@ -25,42 +49,206 @@
 		"mass": 170000,
 		"wingArea": 478,
 		"cdZero": 0.012,
-		"controlCoef": { "pitch": 4.0,    "roll": 18.0,  "yaw": 1.5    },
-		"inertia":      { "pitch": 1800000, "roll": 2700000, "yaw": 3000000 },
-		"dampingCoef":  { "pitch": 5900,   "roll": 8800,  "yaw": 9000   },
-		"controlAuthorityFloor": { "pitch": 300, "roll": 200, "yaw": 100 },
+		"controlCoef": {
+			"pitch": 4,
+			"roll": 18,
+			"yaw": 1.5
+		},
+		"inertia": {
+			"pitch": 1800000,
+			"roll": 2700000,
+			"yaw": 3000000
+		},
+		"dampingCoef": {
+			"pitch": 5900,
+			"roll": 8800,
+			"yaw": 9000
+		},
+		"controlAuthorityFloor": {
+			"pitch": 300,
+			"roll": 200,
+			"yaw": 100
+		},
 		"thrustDryMax": 460000,
-		"thrustABMax":  460000,
+		"thrustABMax": 460000,
 		"gSoftLimit": 1.8,
 		"gHardLimit": 2.5,
 		"pitchStabilityCoef": 0.04,
-		"yawStabilityCoef":   0.10,
+		"yawStabilityCoef": 0.1,
 		"alphaStallDeg": 14,
-		"clMaxStall": 1.30,
+		"clMaxStall": 1.3,
 		"postStallPlateau": 0.7,
 		"stallBlendDeg": 5,
 		"departureSusceptibility": 0.4
 	},
 	"hardpoints": [
-		{ "id": "bay-L-1", "label": "Bay L-1", "type": "internal", "accepts": ["GBU", "AGM"] },
-		{ "id": "bay-L-2", "label": "Bay L-2", "type": "internal", "accepts": ["GBU", "AGM"] },
-		{ "id": "bay-L-3", "label": "Bay L-3", "type": "internal", "accepts": ["GBU", "AGM"] },
-		{ "id": "bay-L-4", "label": "Bay L-4", "type": "internal", "accepts": ["GBU", "AGM"] },
-		{ "id": "bay-L-5", "label": "Bay L-5", "type": "internal", "accepts": ["GBU", "AGM"] },
-		{ "id": "bay-L-6", "label": "Bay L-6", "type": "internal", "accepts": ["GBU", "AGM"] },
-		{ "id": "bay-L-7", "label": "Bay L-7", "type": "internal", "accepts": ["GBU", "AGM"] },
-		{ "id": "bay-L-8", "label": "Bay L-8", "type": "internal", "accepts": ["GBU", "AGM"] },
-		{ "id": "bay-R-1", "label": "Bay R-1", "type": "internal", "accepts": ["GBU", "AGM"] },
-		{ "id": "bay-R-2", "label": "Bay R-2", "type": "internal", "accepts": ["GBU", "AGM"] },
-		{ "id": "bay-R-3", "label": "Bay R-3", "type": "internal", "accepts": ["GBU", "AGM"] },
-		{ "id": "bay-R-4", "label": "Bay R-4", "type": "internal", "accepts": ["GBU", "AGM"] },
-		{ "id": "bay-R-5", "label": "Bay R-5", "type": "internal", "accepts": ["GBU", "AGM"] },
-		{ "id": "bay-R-6", "label": "Bay R-6", "type": "internal", "accepts": ["GBU", "AGM"] },
-		{ "id": "bay-R-7", "label": "Bay R-7", "type": "internal", "accepts": ["GBU", "AGM"] },
-		{ "id": "bay-R-8", "label": "Bay R-8", "type": "internal", "accepts": ["GBU", "AGM"] }
+		{
+			"id": "bay-L-1",
+			"label": "Bay L-1",
+			"type": "internal",
+			"accepts": [
+				"GBU",
+				"AGM"
+			],
+			"capacity": 4
+		},
+		{
+			"id": "bay-L-2",
+			"label": "Bay L-2",
+			"type": "internal",
+			"accepts": [
+				"GBU",
+				"AGM"
+			],
+			"capacity": 4
+		},
+		{
+			"id": "bay-L-3",
+			"label": "Bay L-3",
+			"type": "internal",
+			"accepts": [
+				"GBU",
+				"AGM"
+			],
+			"capacity": 4
+		},
+		{
+			"id": "bay-L-4",
+			"label": "Bay L-4",
+			"type": "internal",
+			"accepts": [
+				"GBU",
+				"AGM"
+			],
+			"capacity": 4
+		},
+		{
+			"id": "bay-L-5",
+			"label": "Bay L-5",
+			"type": "internal",
+			"accepts": [
+				"GBU",
+				"AGM"
+			],
+			"capacity": 4
+		},
+		{
+			"id": "bay-L-6",
+			"label": "Bay L-6",
+			"type": "internal",
+			"accepts": [
+				"GBU",
+				"AGM"
+			],
+			"capacity": 4
+		},
+		{
+			"id": "bay-L-7",
+			"label": "Bay L-7",
+			"type": "internal",
+			"accepts": [
+				"GBU",
+				"AGM"
+			],
+			"capacity": 4
+		},
+		{
+			"id": "bay-L-8",
+			"label": "Bay L-8",
+			"type": "internal",
+			"accepts": [
+				"GBU",
+				"AGM"
+			],
+			"capacity": 4
+		},
+		{
+			"id": "bay-R-1",
+			"label": "Bay R-1",
+			"type": "internal",
+			"accepts": [
+				"GBU",
+				"AGM"
+			],
+			"capacity": 4
+		},
+		{
+			"id": "bay-R-2",
+			"label": "Bay R-2",
+			"type": "internal",
+			"accepts": [
+				"GBU",
+				"AGM"
+			],
+			"capacity": 4
+		},
+		{
+			"id": "bay-R-3",
+			"label": "Bay R-3",
+			"type": "internal",
+			"accepts": [
+				"GBU",
+				"AGM"
+			],
+			"capacity": 4
+		},
+		{
+			"id": "bay-R-4",
+			"label": "Bay R-4",
+			"type": "internal",
+			"accepts": [
+				"GBU",
+				"AGM"
+			],
+			"capacity": 4
+		},
+		{
+			"id": "bay-R-5",
+			"label": "Bay R-5",
+			"type": "internal",
+			"accepts": [
+				"GBU",
+				"AGM"
+			],
+			"capacity": 4
+		},
+		{
+			"id": "bay-R-6",
+			"label": "Bay R-6",
+			"type": "internal",
+			"accepts": [
+				"GBU",
+				"AGM"
+			],
+			"capacity": 4
+		},
+		{
+			"id": "bay-R-7",
+			"label": "Bay R-7",
+			"type": "internal",
+			"accepts": [
+				"GBU",
+				"AGM"
+			],
+			"capacity": 4
+		},
+		{
+			"id": "bay-R-8",
+			"label": "Bay R-8",
+			"type": "internal",
+			"accepts": [
+				"GBU",
+				"AGM"
+			],
+			"capacity": 4
+		}
 	],
-	"maxLoadoutKg": 18000,
-	"radarOverride": { "nominalRange": 200000, "fovH": 1.0472, "fovV": 0.5236 },
+	"maxLoadoutKg": 34000,
+	"radarOverride": {
+		"nominalRange": 200000,
+		"fovH": 1.0472,
+		"fovV": 0.5236
+	},
 	"specs": {
 		"role": "Strategic Stealth Bomber",
 		"topSpeed": "Mach 0.95",

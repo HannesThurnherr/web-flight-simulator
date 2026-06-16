@@ -16,6 +16,10 @@ import {
 	WaypointFollowBehavior,
 	StrikeBehavior,
 	EscortBehavior,
+	CapAreaBehavior,
+	GroundAttackBehavior,
+	SamAvoidBehavior,
+	InvestigateBehavior,
 } from './behaviors.js';
 import {
 	CountermeasureSubsystem,
@@ -47,9 +51,34 @@ export function createFighterPilot(unit, opts = {}) {
 	// inbound-missile defence.
 	p.addBehavior(new ForwardTerrainAvoidBehavior());
 	p.addBehavior(new MissileEvasionBehavior());
+	// Stay out of known SAM engagement bubbles — below missile evasion (a
+	// missile already in the air trumps a WEZ boundary) but above everything
+	// tactical, because flying into an SA-15 ring to chase a bandit is how
+	// the whole CAP dies one by one.
+	p.addBehavior(new SamAvoidBehavior());
 	p.addBehavior(new CrankBehavior());
 	p.addBehavior(new TerrainAvoidBehavior());
 	p.addBehavior(new EngageBehavior());
+	// Air-to-ground sits BELOW air-to-air: only prosecutes ground targets when
+	// no air threat is active, and only if the jet actually carries A/G
+	// ordnance (a clean A2A fighter leaves this inactive). This is what lets an
+	// ex-player clone that switched out of a strike/SEAD jet keep working its
+	// bombs/HARMs while still dropping everything to defend against fighters.
+	p.addBehavior(new GroundAttackBehavior());
+	// Below strike work: run down KNOWN air contacts beyond the engagement
+	// leash (EWR/AWACS datalink tracks, stale LKPs) instead of idling.
+	p.addBehavior(new InvestigateBehavior());
+	// Home anchor: with nothing to do, orbit the spawn point instead of
+	// flying the Cruise fallback's straight line to the edge of the map.
+	// Every chase/evasion eventually ends, and this is what brings the
+	// fighter BACK afterward.
+	const home = { lon: unit.lon, lat: unit.lat, altM: opts.cruiseAlt ?? 8000 };
+	p.addBehavior(new CapAreaBehavior({
+		getCenter: () => home,
+		altM:     home.altM,
+		radiusM:  opts.homeOrbitRadiusM ?? 15000,
+		speedMps: opts.cruiseSpeed ?? 300,
+	}));
 	p.addBehavior(new CruiseBehavior({
 		alt:   opts.cruiseAlt   ?? 8000,
 		speed: opts.cruiseSpeed ?? 300,
@@ -79,13 +108,26 @@ export function createPatrolPilot(unit, opts = {}) {
 	}));
 	p.addBehavior(new ForwardTerrainAvoidBehavior());
 	p.addBehavior(new MissileEvasionBehavior());
+	p.addBehavior(new SamAvoidBehavior());
 	p.addBehavior(new CrankBehavior());
 	p.addBehavior(new TerrainAvoidBehavior());
 	p.addBehavior(new EngageBehavior());
+	// Intercept known-but-out-of-leash contacts before falling back to the
+	// patrol route — a patrol that ignores an EWR track isn't patrolling.
+	p.addBehavior(new InvestigateBehavior());
 	p.addBehavior(new WaypointFollowBehavior({
 		waypoints: opts.waypoints || [],
 		loop:      opts.loop !== false,
 		captureRadiusM: opts.captureRadiusM,
+	}));
+	// Home anchor: orbit the spawn point if the route is empty/consumed
+	// rather than flying off in a straight line forever.
+	const home = { lon: unit.lon, lat: unit.lat, altM: opts.cruiseAlt ?? 8000 };
+	p.addBehavior(new CapAreaBehavior({
+		getCenter: () => home,
+		altM:     home.altM,
+		radiusM:  opts.homeOrbitRadiusM ?? 15000,
+		speedMps: opts.cruiseSpeed ?? 300,
 	}));
 	p.addBehavior(new CruiseBehavior({
 		alt:   opts.cruiseAlt   ?? 8000,
@@ -112,6 +154,7 @@ export function createStrikePilot(unit, opts = {}) {
 	}));
 	p.addBehavior(new ForwardTerrainAvoidBehavior());
 	p.addBehavior(new MissileEvasionBehavior());
+	p.addBehavior(new SamAvoidBehavior());
 	p.addBehavior(new CrankBehavior());
 	p.addBehavior(new TerrainAvoidBehavior());
 	p.addBehavior(new EngageBehavior());
@@ -122,7 +165,22 @@ export function createStrikePilot(unit, opts = {}) {
 		terminalRangeM:   opts.terminalRangeM,
 		captureRadiusM:   opts.captureRadiusM,
 		weaponCount:      opts.weaponCount,
-		getTarget:        opts.getTarget,
+		salvoPerTarget:   opts.salvoPerTarget,
+		getTargets:       opts.getTargets, // ordered multi-target list
+		getTarget:        opts.getTarget,  // legacy single-target fallback
+	}));
+	// Autonomous ground attack below the scripted strike: once the designated
+	// targets are serviced (or between them), use leftover ordnance — notably
+	// HARMs on radiating SAMs — to keep suppressing the defences.
+	p.addBehavior(new GroundAttackBehavior());
+	// Home anchor for the post-egress phase — orbit the spawn point
+	// instead of cruising off the map.
+	const home = { lon: unit.lon, lat: unit.lat, altM: opts.cruiseAlt ?? 8000 };
+	p.addBehavior(new CapAreaBehavior({
+		getCenter: () => home,
+		altM:     home.altM,
+		radiusM:  opts.homeOrbitRadiusM ?? 15000,
+		speedMps: opts.cruiseSpeed ?? 280,
 	}));
 	p.addBehavior(new CruiseBehavior({
 		alt:   opts.cruiseAlt   ?? 8000,
@@ -153,6 +211,7 @@ export function createEscortPilot(unit, opts = {}) {
 	}));
 	p.addBehavior(new ForwardTerrainAvoidBehavior());
 	p.addBehavior(new MissileEvasionBehavior());
+	p.addBehavior(new SamAvoidBehavior());
 	p.addBehavior(new CrankBehavior());
 	p.addBehavior(new TerrainAvoidBehavior());
 	p.addBehavior(new EngageBehavior());
@@ -161,10 +220,105 @@ export function createEscortPilot(unit, opts = {}) {
 		standoffM:         opts.standoffM,
 		standoffAltOffset: opts.standoffAltOffset,
 	}));
+	// Home anchor for when the escortee is gone — orbit the spawn point
+	// instead of cruising off the map.
+	const home = { lon: unit.lon, lat: unit.lat, altM: opts.cruiseAlt ?? 8000 };
+	p.addBehavior(new CapAreaBehavior({
+		getCenter: () => home,
+		altM:     home.altM,
+		radiusM:  opts.homeOrbitRadiusM ?? 15000,
+		speedMps: opts.cruiseSpeed ?? 240,
+	}));
 	p.addBehavior(new CruiseBehavior({
 		alt:   opts.cruiseAlt   ?? 8000,
 		speed: opts.cruiseSpeed ?? 240,
 	}));
+	return p;
+}
+
+// Air-superiority pilot: CAP a station over an AREA and clear the sky in it.
+// Orbits the zone center (CapAreaBehavior) and engages any hostile that comes
+// inside its engagement reach, then returns to station. The engagement reach
+// is LEASHED to the zone (radius + buffer) so the CAP doesn't bird-dog a
+// single bandit across the whole theater and abandon the area it's holding.
+export function createAirSuperiorityPilot(unit, opts = {}) {
+	const zone = opts.zone || {};
+	const p = new Pilot(unit);
+	p.addSubsystem('countermeasures', new CountermeasureSubsystem({
+		flares: opts.flares ?? 30, chaff: opts.chaff ?? 30,
+	}));
+	// Leash: only commit to bandits within the zone + a buffer.
+	const leash = (zone.radiusM ?? 40000) + (opts.engageBufferM ?? 30000);
+	p.addSubsystem('targetManager', new TargetManagerSubsystem({
+		maxEngagementRange: opts.maxEngagementRange ?? leash,
+	}));
+	p.addSubsystem('weapons', new WeaponSubsystem({ weapons: opts.weapons }));
+	p.addBehavior(new ForwardTerrainAvoidBehavior());
+	p.addBehavior(new MissileEvasionBehavior());
+	p.addBehavior(new SamAvoidBehavior());
+	p.addBehavior(new CrankBehavior());
+	p.addBehavior(new TerrainAvoidBehavior());
+	p.addBehavior(new EngageBehavior());
+	// Hunt inside (and slightly past) the leash on datalink knowledge —
+	// an air-superiority CAP that orbits while the EWR tracks a bandit
+	// crossing its zone isn't establishing superiority over anything.
+	p.addBehavior(new InvestigateBehavior({ maxRangeM: leash * 1.15 }));
+	p.addBehavior(new CapAreaBehavior({
+		getCenter: () => zone,
+		altM:    zone.altM    ?? opts.cruiseAlt   ?? 8000,
+		radiusM: zone.radiusM ?? 12000,
+		speedMps: opts.cruiseSpeed ?? 280,
+	}));
+	p.addBehavior(new CruiseBehavior({ alt: opts.cruiseAlt ?? 8000, speed: opts.cruiseSpeed ?? 280 }));
+	return p;
+}
+
+// Protect pilot: defend a specific asset — works for BOTH a flying unit (fly
+// an escort slot on it) and a ground installation (CAP-orbit over it). Which
+// one is active is decided live by the asset's nature, so a single pilot
+// adapts if the protected thing takes off / lands. EngageBehavior sits above
+// both, so any threat that comes into reach gets intercepted, then the pilot
+// drifts back to its escort slot / orbit.
+export function createProtectPilot(unit, opts = {}) {
+	const getProtected = opts.getProtected || (() => null);
+	const isAirborne = (e) => !!(e && (e.kind === 'airborne' ||
+		(typeof e.alt === 'number' && e.alt > 300 && (e.speed || 0) > 20)));
+	const p = new Pilot(unit);
+	p.addSubsystem('countermeasures', new CountermeasureSubsystem({
+		flares: opts.flares ?? 30, chaff: opts.chaff ?? 30,
+	}));
+	p.addSubsystem('targetManager', new TargetManagerSubsystem({
+		maxEngagementRange: opts.maxEngagementRange ?? 55000,
+	}));
+	p.addSubsystem('weapons', new WeaponSubsystem({ weapons: opts.weapons }));
+	p.addBehavior(new ForwardTerrainAvoidBehavior());
+	p.addBehavior(new MissileEvasionBehavior());
+	p.addBehavior(new SamAvoidBehavior());
+	p.addBehavior(new CrankBehavior());
+	p.addBehavior(new TerrainAvoidBehavior());
+	p.addBehavior(new EngageBehavior());
+	// Airborne asset → fly a standoff slot on it.
+	p.addBehavior(new EscortBehavior({
+		getEscort: () => { const e = getProtected(); return isAirborne(e) ? e : null; },
+		standoffM: opts.standoffM ?? 2500,
+		standoffAltOffset: opts.standoffAltOffset ?? 300,
+	}));
+	// Ground asset → CAP-orbit over it.
+	p.addBehavior(new CapAreaBehavior({
+		getCenter: () => { const e = getProtected(); return (e && !isAirborne(e)) ? e : null; },
+		altM:    opts.capAltM    ?? 6000,
+		radiusM: opts.capRadiusM ?? 9000,
+		speedMps: opts.cruiseSpeed ?? 260,
+	}));
+	// Asset gone → orbit the spawn point rather than cruising off the map.
+	const home = { lon: unit.lon, lat: unit.lat, altM: opts.cruiseAlt ?? 7000 };
+	p.addBehavior(new CapAreaBehavior({
+		getCenter: () => home,
+		altM:     home.altM,
+		radiusM:  opts.homeOrbitRadiusM ?? 15000,
+		speedMps: opts.cruiseSpeed ?? 280,
+	}));
+	p.addBehavior(new CruiseBehavior({ alt: opts.cruiseAlt ?? 7000, speed: opts.cruiseSpeed ?? 280 }));
 	return p;
 }
 

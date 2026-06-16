@@ -389,7 +389,11 @@ export function updateTgp(playerState, weaponSystem, mainViewer) {
 	// and don't need a forward-look pod, so we keep the TGP hidden
 	// for them to avoid implying it's the input surface.
 	const curData = cur && cur.type ? MUNITIONS[munitionIdForSimType(cur.type)] : null;
-	const want = !!(curData && curData.seekerType === 'laser');
+	// Requires an actual targeting pod (TGP) to be equipped. Legacy airframes
+	// without equipment slots set hasTgp=true so their behavior is unchanged;
+	// slot-equipped airframes must mount a TGP pod to slew/track/lase.
+	const hasTgp = !playerState || playerState.hasTgp !== false;
+	const want = hasTgp && !!(curData && curData.seekerType === 'laser');
 	if (want !== _visible) {
 		_visible = want;
 		if (_container) _container.style.display = want ? 'block' : 'none';

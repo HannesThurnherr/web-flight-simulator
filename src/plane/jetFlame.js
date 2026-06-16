@@ -1,7 +1,11 @@
 import * as THREE from 'three';
 
 export class JetFlame {
-    constructor() {
+    // opts.withLight (default true): attach a PointLight. Set false for the
+    // per-missile exhaust — dozens of flames each adding a dynamic light
+    // would blow the renderer's light budget for no visible gain.
+    constructor(opts = {}) {
+        const withLight = opts.withLight !== false;
         this.group = new THREE.Group();
 
         const vertexShader = `
@@ -107,9 +111,13 @@ export class JetFlame {
         this.flame = new THREE.Mesh(geometry, this.material);
         this.group.add(this.flame);
 
-        this.light = new THREE.PointLight(0xffaa44, 1, 5);
-        this.light.position.set(0, 0, 0);
-        this.group.add(this.light);
+        if (withLight) {
+            this.light = new THREE.PointLight(0xffaa44, 1, 5);
+            this.light.position.set(0, 0, 0);
+            this.group.add(this.light);
+        } else {
+            this.light = null;
+        }
 
         this.cNormal = new THREE.Color(0xff7722);
         this.cBoost = new THREE.Color(0x9999ff);
@@ -130,7 +138,9 @@ export class JetFlame {
         const widthScale = 1.1 + effectiveThrottle * 0.4;
         this.flame.scale.set(widthScale, widthScale, s);
         
-        this.light.intensity = (1.0 - this.boostFactor) * (1.0 + throttle * 2.5) + this.boostFactor * 7.5;
-        this.light.color.copy(this.cNormal).lerp(this.cBoost, this.boostFactor);
+        if (this.light) {
+            this.light.intensity = (1.0 - this.boostFactor) * (1.0 + throttle * 2.5) + this.boostFactor * 7.5;
+            this.light.color.copy(this.cNormal).lerp(this.cBoost, this.boostFactor);
+        }
     }
 }

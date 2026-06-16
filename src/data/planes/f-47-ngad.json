@@ -1,0 +1,155 @@
+{
+	"id": "f-47-ngad",
+	"name": "F-47 NGAD",
+	"description": "6th-gen air dominance. Adaptive-cycle engines true-supercruise past Mach 2 on dry thrust. Broadband all-aspect stealth makes it a radar non-entity; IRST is the only thing that finds it. Deep internal magazine, optionally crewed.",
+	"model": "/assets/models/f-47-ngad.glb",
+	"modelRotation": {
+		"x": 0,
+		"y": 180,
+		"z": 0
+	},
+	"realLengthM": 20.0,
+	"signature": "stealth_fighter_ngad",
+	"engineCount": 2,
+	"physicsOverrides": {
+		"mass": 28000,
+		"wingArea": 95.0,
+		"cdZero": 0.010,
+		"thrustDryMax": 290000,
+		"thrustABMax": 360000,
+		"controlCoef": {
+			"pitch": 9.5,
+			"roll": 11.0,
+			"yaw": 3.5
+		},
+		"dampingCoef": {
+			"pitch": 3000,
+			"roll": 750,
+			"yaw": 9500
+		},
+		"inertia": {
+			"pitch": 240000,
+			"roll": 42000,
+			"yaw": 260000
+		},
+		"controlAuthorityFloor": {
+			"pitch": 3000,
+			"roll": 1800,
+			"yaw": 1200
+		},
+		"gSoftLimit": 9.5,
+		"gHardLimit": 11.0,
+		"pitchStabilityCoef": 0.3,
+		"yawStabilityCoef": 1.4,
+		"alphaStallDeg": 26,
+		"clMaxStall": 2.0,
+		"postStallPlateau": 1.45,
+		"stallBlendDeg": 9,
+		"departureSusceptibility": 0.10,
+		"tv": {
+			"axes": "pitchYaw",
+			"authority": 2.4,
+			"vMax": 240,
+			"fadeBand": 90
+		}
+	},
+	"radarOverride": {
+		"nominalRange": 280000
+	},
+	"irOverride": {
+		"fov": 0,
+		"nominalRange": 45000
+	},
+	"hideNodes": [
+		{
+			"type": "regex",
+			"pattern": "landingOn(?:Light)?_",
+			"flags": "i"
+		}
+	],
+	"nozzle": {
+		"xRatio": 0.05,
+		"yRatio": -0.05,
+		"zRatio": 0.8
+	},
+	"hardpoints": [
+		{
+			"id": "main-bay-L-fwd",
+			"label": "Main Bay Left Fwd",
+			"type": "internal",
+			"accepts": ["AAM", "AGM", "GBU"]
+		},
+		{
+			"id": "main-bay-L-mid",
+			"label": "Main Bay Left Mid",
+			"type": "internal",
+			"accepts": ["AAM", "AGM", "GBU"]
+		},
+		{
+			"id": "main-bay-L-aft",
+			"label": "Main Bay Left Aft",
+			"type": "internal",
+			"accepts": ["AAM"]
+		},
+		{
+			"id": "main-bay-R-fwd",
+			"label": "Main Bay Right Fwd",
+			"type": "internal",
+			"accepts": ["AAM", "AGM", "GBU"]
+		},
+		{
+			"id": "main-bay-R-mid",
+			"label": "Main Bay Right Mid",
+			"type": "internal",
+			"accepts": ["AAM", "AGM", "GBU"]
+		},
+		{
+			"id": "main-bay-R-aft",
+			"label": "Main Bay Right Aft",
+			"type": "internal",
+			"accepts": ["AAM"]
+		},
+		{
+			"id": "side-bay-L",
+			"label": "Side Bay Left",
+			"type": "internal",
+			"accepts": ["AAM"]
+		},
+		{
+			"id": "side-bay-R",
+			"label": "Side Bay Right",
+			"type": "internal",
+			"accepts": ["AAM"]
+		},
+		{
+			"id": "wing-1-L",
+			"label": "Wing Station 1 L",
+			"type": "external",
+			"accepts": ["AAM", "TANK"],
+			"stealthBreak": true
+		},
+		{
+			"id": "wing-1-R",
+			"label": "Wing Station 1 R",
+			"type": "external",
+			"accepts": ["AAM", "TANK"],
+			"stealthBreak": true
+		}
+	],
+	"maxLoadoutKg": 10000,
+	"equipmentSlots": [
+		{ "id": "eq-bay-c", "label": "Center Systems Bay", "location": "internal", "accepts": ["jammer", "laser_pd", "irst"] },
+		{ "id": "eq-eots", "label": "Chin EOTS", "location": "chin", "accepts": ["tgp", "irst"] },
+		{ "id": "eq-conformal", "label": "Conformal Pod", "location": "conformal", "accepts": ["jammer", "laser_pd"] }
+	],
+	"specs": {
+		"role": "6th-Gen Air Dominance",
+		"topSpeed": "Mach 2.6+",
+		"combatRadius": "1850 km",
+		"rcs": "~0.0015 m²",
+		"irSig": "Low (plume-limited)",
+		"radarRange": "280 km (GaN AESA, LPI)",
+		"agility": 10,
+		"supercruise": true
+	}
+}

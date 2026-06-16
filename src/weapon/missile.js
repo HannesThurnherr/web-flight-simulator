@@ -8,12 +8,35 @@ import { getActiveFlares } from './flare.js';
 import { airDensity, GRAVITY } from '../plane/aeroModel.js';
 import { cloneAim9Template, cloneMissileTemplate } from './missileModels.js';
 import { pushKill } from '../systems/eventLog.js';
+import { mortallyWound } from '../systems/deathSequence.js';
+import { recordAdHit } from '../systems/adStats.js';
+import { JetFlame } from '../plane/jetFlame.js';
 import { validateMunitionSpec } from './munitionSpec.js';
 import { getDayFactor } from '../systems/dynamicLighting.js';
 
 // Shared signature reference (not per-missile copy) — all live AIM-9s have
 // the same sensor profile. Subclasses (AIM-120) overwrite this in their ctor.
 const MISSILE_IR_SIGNATURE = SIGNATURES.missile_ir;
+
+// ---- Launch-rack ejection --------------------------------------------------
+// Real air-launched stores are EJECTED off the rack — an ejector cartridge
+// pushes them a few m/s along the aircraft's belly-down axis — then the motor
+// lights. So a store separates by dropping away from the jet (and away
+// "upward" if the jet is inverted), NOT by a forward kick. We model this as a
+// short belly-relative push applied as a position delta that bleeds off over
+// the first ~second, leaving the scalar-speed flight model otherwise intact.
+const EJECT_DEFAULT_SPEED_MPS = 6;   // ejector-cartridge separation velocity
+const EJECT_TAU = 0.35;              // s — exponential bleed-off of the push
+const EJECT_DURATION = 0.9;          // s — stop applying after this
+
+// Terrain-collision grace at launch. A missile leaving the rail is, for a
+// moment, at launcher altitude — and if a ground launcher is clamped a few
+// metres under a coarse-LOD terrain tile, its missile is born below the
+// terrain the collision check reads and self-detonates on the rail. SAM
+// interceptors fire steeply up, so a brief immunity lets them climb clear
+// before terrain kill arms. Harmless for air-launched stores (nowhere near
+// the ground) and for cruise missiles (own terrain-following takes over).
+const LAUNCH_TERRAIN_GRACE_S = 0.7;
 
 // ============================================================================
 // AIM-9X Block II–ish short-range IR missile.
@@ -70,8 +93,17 @@ export class Missile {
 		this.heading = heading;
 		this.pitch = pitch;
 		this.roll = 0;
-		// Launch-rail ejection bump; motor does the real work during boost.
-		this.speed = speed + d.flight.launchSpeedOffset;
+		// Start at the launch aircraft's velocity (carried as `speed` along
+		// heading/pitch) with NO forward kick — real stores are ejected DOWN
+		// off the rack, not thrown forward. The downward separation is applied
+		// by applyLaunchEjection() right after construction (it needs the
+		// launcher's roll). `launchSpeedOffset` (per-munition JSON) is kept for
+		// schema compatibility but no longer added to forward speed.
+		this.speed = speed;
+		// Belly-relative ejection velocity (ENU m/s) + remaining time. Set by
+		// applyLaunchEjection; decays over EJECT_TAU during the first moments.
+		this._ejectE = 0; this._ejectN = 0; this._ejectU = 0;
+		this._ejectTimeLeft = 0;
 
 		this.maxLife = d.flight.maxLifeS;
 		this.life = this.maxLife;
@@ -111,6 +143,41 @@ export class Missile {
 		this.distanceSinceLastTrail = 0;
 
 		this.initMesh();
+	}
+
+	// Apply the launch-rack ejection: a brief push along the launch
+	// aircraft's belly-down (−body-up) axis so the store drops away from the
+	// jet before its motor dominates — and pushes UP if the jet was inverted.
+	// `rollDeg` is the launcher's roll at release; `speedMps` overrides the
+	// per-munition (or default) ejection speed. Call once, right after
+	// construction, from whichever fire path spawned the store.
+	applyLaunchEjection(rollDeg = 0, speedMps = null) {
+		const spd = (speedMps != null)
+			? speedMps
+			: (this.data.flight.ejectionSpeedMps != null
+				? this.data.flight.ejectionSpeedMps
+				: EJECT_DEFAULT_SPEED_MPS);
+		if (!(spd > 0)) return;
+		const H = this.heading * Math.PI / 180;
+		const P = this.pitch   * Math.PI / 180;
+		const R = (rollDeg || 0) * Math.PI / 180;
+		const sH = Math.sin(H), cH = Math.cos(H);
+		const sP = Math.sin(P), cP = Math.cos(P);
+		const sR = Math.sin(R), cR = Math.cos(R);
+		// Zero-roll body axes in ENU:
+		//   right0 = (cosH, −sinH, 0)
+		//   up0    = right0 × forward = (−sinH·sinP, −cosH·sinP, cosP)
+		// Roll about the forward axis: bodyUp = up0·cosR + right0·sinR.
+		const up0E = -sH * sP, up0N = -cH * sP, up0U = cP;
+		const r0E = cH, r0N = -sH, r0U = 0;
+		const buE = up0E * cR + r0E * sR;
+		const buN = up0N * cR + r0N * sR;
+		const buU = up0U * cR + r0U * sR;
+		// Eject down the belly (−bodyUp).
+		this._ejectE = -buE * spd;
+		this._ejectN = -buN * spd;
+		this._ejectU = -buU * spd;
+		this._ejectTimeLeft = EJECT_DURATION;
 	}
 
 	initMesh() {
@@ -206,60 +273,20 @@ export class Missile {
 	// this.flameMesh / this.flameCore / this.flameGlow so update() can
 	// pulse and fade them.
 	_buildFlameEffects(bodyLen, radius, flameLen = 1.0, glowScale = 2.2) {
-		const flameColor = new THREE.Color(1.0, 0.6, 0.2);
-		const flameGeom = new THREE.ConeGeometry(radius * 0.9, flameLen, 16, 1, true);
-		flameGeom.rotateX(Math.PI);
-		flameGeom.translate(0, -flameLen / 2, 0);
-		const flameMat = new THREE.MeshBasicMaterial({
-			color: flameColor, transparent: true, opacity: 0.8, side: THREE.DoubleSide,
-			depthWrite: false, blending: THREE.AdditiveBlending,
-		});
-		this.flameMesh = new THREE.Mesh(flameGeom, flameMat);
-		this.flameMesh.position.y = -bodyLen / 2;
-		this.mesh.add(this.flameMesh);
-
-		const coreLen = flameLen * 0.6;
-		const coreGeom = new THREE.ConeGeometry(radius * 0.5, coreLen, 16, 1, true);
-		coreGeom.rotateX(Math.PI);
-		coreGeom.translate(0, -coreLen / 2, 0);
-		const coreMat = new THREE.MeshBasicMaterial({
-			color: 0xffffff, transparent: true, opacity: 0.9, side: THREE.DoubleSide,
-			depthWrite: false, blending: THREE.AdditiveBlending,
-		});
-		this.flameCore = new THREE.Mesh(coreGeom, coreMat);
-		this.flameMesh.add(this.flameCore);
-
-		// Exhaust glow sprite — radial-gradient canvas texture, additive-
-		// blended. Always-on-top (depthTest: false) so it punches through
-		// fog / cloud without weird sorting artefacts.
-		const canvSize = 128;
-		const canv = (typeof document !== 'undefined') ? document.createElement('canvas') : null;
-		let glowTexture = null;
-		if (canv) {
-			canv.width = canv.height = canvSize;
-			const ctx = canv.getContext('2d');
-			const cx = canvSize / 2;
-			const grad = ctx.createRadialGradient(cx, cx, 0, cx, cx, cx);
-			grad.addColorStop(0.00, 'rgba(255,255,255,1)');
-			grad.addColorStop(0.18, 'rgba(255,245,200,1)');
-			grad.addColorStop(0.38, 'rgba(255,160,30,0.95)');
-			grad.addColorStop(0.62, 'rgba(220,60,10,0.6)');
-			grad.addColorStop(1.00, 'rgba(0,0,0,0)');
-			ctx.fillStyle = grad;
-			ctx.fillRect(0, 0, canvSize, canvSize);
-			glowTexture = new THREE.CanvasTexture(canv);
-			glowTexture.minFilter = THREE.LinearFilter;
-			glowTexture.magFilter = THREE.LinearFilter;
-		}
-		const spriteMat = new THREE.SpriteMaterial({
-			map: glowTexture, color: new THREE.Color(1.0, 0.95, 0.9),
-			transparent: true, opacity: 0.98, blending: THREE.AdditiveBlending,
-			depthTest: false, depthWrite: false,
-		});
-		this.flameGlow = new THREE.Sprite(spriteMat);
-		this.flameGlow.scale.set(glowScale, glowScale, 1.0);
-		this.flameGlow.position.y = -bodyLen / 2 - 0.08;
-		this.mesh.add(this.flameGlow);
+		void flameLen; void glowScale;
+		// Rocket-motor exhaust is a small version of the aircraft jet plume
+		// (shader-based shock diamonds + hot core + blue-fringed glow),
+		// instead of the old cone + glowing-orb sprite. No PointLight — a
+		// dynamic light per in-flight missile would blow the light budget.
+		this.jetFlame = new JetFlame({ withLight: false });
+		// JetFlame emits along +Z; rotate so the plume trails the missile's
+		// −Y tail. Scale the whole group down to missile proportions.
+		this.jetFlame.group.rotation.x = Math.PI / 2;
+		const scale = Math.max(0.12, radius * 4.0);
+		this.jetFlame.group.scale.setScalar(scale);
+		this.jetFlame.group.position.y = -bodyLen / 2;
+		this.mesh.add(this.jetFlame.group);
+		this._flameTime = 0;
 	}
 
 	update(dt, npcs) {
@@ -268,18 +295,15 @@ export class Missile {
 			return;
 		}
 
-		// Flame flicker during motor burn, decays after burnout.
-		if (this.flameMesh) {
+		// Rocket plume burns during motor burn, then cuts out at burnout
+		// (solid motors don't trail flame while coasting).
+		if (this.jetFlame) {
+			this._flameTime += dt;
 			if (this.boostRemaining > 0) {
-				const f  = 0.8 + Math.random() * 0.4;
-				const fl = 0.9 + Math.random() * 0.2;
-				this.flameMesh.scale.set(f, fl, f);
-				this.flameMesh.material.opacity = 0.7 + Math.random() * 0.3;
-				if (this.flameCore) this.flameCore.scale.set(f, fl, f);
+				this.jetFlame.group.visible = true;
+				this.jetFlame.update(1.0, 0, this._flameTime, dt);
 			} else {
-				// Post-burnout: fade the glow away over a couple seconds.
-				this.flameMesh.material.opacity *= Math.pow(0.5, dt / 0.8);
-				if (this.flameCore) this.flameCore.material.opacity *= Math.pow(0.5, dt / 0.8);
+				this.jetFlame.group.visible = false;
 			}
 		}
 
@@ -353,6 +377,19 @@ export class Missile {
 		this.lat = newPos.lat;
 		this.alt = newPos.alt;
 
+		// Launch-rack ejection: belly-relative separation push that bleeds
+		// off over the first moments (see applyLaunchEjection). Applied as a
+		// position delta so the scalar-along-nose speed model is untouched.
+		if (this._ejectTimeLeft > 0) {
+			const cosLat = Math.cos(this.lat * Math.PI / 180) || 1e-6;
+			this.alt += this._ejectU * dt;
+			this.lat += (this._ejectN * dt) / 111320;
+			this.lon += (this._ejectE * dt) / (111320 * cosLat);
+			const decay = Math.exp(-dt / EJECT_TAU);
+			this._ejectE *= decay; this._ejectN *= decay; this._ejectU *= decay;
+			this._ejectTimeLeft -= dt;
+		}
+
 		this.updateTrail(dt);
 		this.updateThreeMatrix();
 
@@ -364,7 +401,7 @@ export class Missile {
 
 		if (npcs) {
 			for (const npc of npcs) {
-				if (!npc || npc === this.launcher) continue;
+				if (!npc || npc === this.launcher || npc === this) continue;
 				if (npc.destroyed) continue;
 				if (npc.team && this.team && npc.team === this.team) continue;
 				const missSq = this._segmentMissDistSq(prevLon, prevLat, prevAlt, this.lon, this.lat, this.alt, npc);
@@ -549,7 +586,11 @@ export class Missile {
 			const spawnInterval = 20.0;
 			while (this.distanceSinceLastTrail >= spawnInterval) {
 				const backDist = this.distanceSinceLastTrail - spawnInterval;
-				const tailOffset = (this.bodyLengthM || 3.0) * 0.5;
+				// Clear the tail by a margin larger than a fresh puff's
+				// radius — otherwise the newest puff overlaps the airframe
+				// and (from a front view) appears to sit on / ahead of the
+				// nose. Half the body to reach the tail, +2 m of clearance.
+				const tailOffset = (this.bodyLengthM || 3.0) * 0.5 + 2.0;
 				const spawnPos = movePosition(this.lon, this.lat, this.alt, this.heading, this.pitch, -(backDist + tailOffset));
 
 				this.distanceSinceLastTrail -= spawnInterval;
@@ -595,7 +636,10 @@ export class Missile {
 
 			if (!t.randomScale) t.randomScale = 0.8 + Math.random() * 0.5;
 			const launchScale = t.launchScale || 1.0;
-			const scale = launchScale * t.randomScale * (1.0 + (1.0 - t.life / t.maxLife) * 15.0);
+			// Start small at emission (0.45) and billow downstream — a fresh
+			// puff stays well inside its tail-clearance instead of bulging
+			// over the airframe.
+			const scale = launchScale * t.randomScale * (0.45 + (1.0 - t.life / t.maxLife) * 15.0);
 			t.scale.set(scale, scale, scale);
 
 			const opacity = (t.life / t.maxLife) * 0.5;
@@ -668,17 +712,6 @@ export class Missile {
 
 		this.mesh.matrix.copy(this._scratchThreeMatrix);
 		this.mesh.updateMatrixWorld(true);
-
-		if (this.flameGlow && this.viewer && this.viewer.camera && this.viewer.camera.position) {
-			try {
-				const camPos = this.viewer.camera.position;
-				const dist = Cesium.Cartesian3.distance(pos, camPos) || 1.0;
-				const s = THREE.MathUtils.clamp(dist * 0.0016, 1.0, 80.0);
-				this.flameGlow.scale.set(s, s, 1.0);
-				this.flameGlow.renderOrder = 9999;
-				if (this.flameGlow.material) this.flameGlow.material.opacity = Math.max(0.25, Math.min(1.0, 80.0 / s));
-			} catch (e) { }
-		}
 	}
 
 	calculateDistSqToNPC(npc) {
@@ -845,6 +878,21 @@ export class Missile {
 	}
 
 	hitNPC(npc) {
+		// AD hit-rate diagnostic: this interceptor was stamped at launch if it
+		// came from a SAM/AAA battery. Credit the hit against the intended
+		// target column it was fired at.
+		if (this._adStats) { try { recordAdHit(this._adStats.type, this._adStats.column); } catch (e) {} }
+		// Aircraft go through the burning-spiral death sequence instead of an
+		// instant fireball: mortallyWound logs the kill, spawns a hit flash,
+		// and arms the tumble. The missile still detonates (below) but the
+		// airframe trails smoke and breaks up a couple seconds later.
+		if (mortallyWound(npc, { shooter: this.launcher, weapon: this.type || 'AIM-9', reason: 'kill' })) {
+			if (this.onKill) this.onKill(npc);
+			try { soundManager.play('explosion-random'); } catch (e) { /* no-op */ }
+			this.destroy();
+			return;
+		}
+		// Non-aircraft (cruise missiles, decoys, ground units): instant kill.
 		// Log the kill before mutating state — captures shooter / target
 		// names while they're still well-formed. The post-merge
 		// `npc.destroyed = true` is what flips the unit out of every
@@ -874,6 +922,9 @@ export class Missile {
 	}
 
 	checkTerrainCollision(npcs) {
+		// Launch grace: don't let a missile self-detonate on the rail just
+		// because its launcher sits a hair under a coarse terrain tile.
+		if ((this.maxLife - this.life) < LAUNCH_TERRAIN_GRACE_S) return;
 		const cartographic = Cesium.Cartographic.fromDegrees(this.lon, this.lat);
 		const terrainHeight = this.viewer.scene.globe.getHeight(cartographic);
 		if (terrainHeight !== undefined && this.alt < terrainHeight) {
@@ -909,8 +960,11 @@ export class Missile {
 						if (!anyKill) {
 							this.hitNPC(npc);
 							anyKill = true;
+						} else if (mortallyWound(npc, { shooter: this.launcher, weapon: this.type || (this.data && this.data.simType) || 'BOMB', reason: 'splash' })) {
+							// Aircraft chain-kill → burning spiral.
+							if (this.onKill) this.onKill(npc);
 						} else {
-							// Log the chain kill but skip the
+							// Non-aircraft chain kill: log + instant, skip the
 							// duplicate explosion + self-destroy.
 							pushKill({
 								shooter: this.launcher,

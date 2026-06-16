@@ -8,6 +8,8 @@ import { SIGNATURES } from '../systems/signatures';
 import { detectRadar } from '../systems/sensorSystem';
 import { rollJamBreakLock } from '../systems/ew/jammerSubsystem.js';
 import { pushKill } from '../systems/eventLog.js';
+import { mortallyWound } from '../systems/deathSequence.js';
+import { recordAdHit } from '../systems/adStats.js';
 import { airDensity, GRAVITY } from '../plane/aeroModel.js';
 import { getTeamDatalink } from '../systems/teamDatalink.js';
 import { cloneAim120Template, cloneMissileTemplate } from './missileModels.js';
@@ -273,18 +275,14 @@ export class AIM120 extends Missile {
 			return;
 		}
 
-		// Flame flicker — shrink to a faint coast flame once the motor cuts.
-		if (this.flameMesh) {
+		// Rocket plume — burns during the motor burn, cuts out at burnout.
+		if (this.jetFlame) {
+			this._flameTime = (this._flameTime || 0) + dt;
 			if (this.boostRemaining > 0) {
-				const f = 0.8 + Math.random() * 0.4;
-				this.flameMesh.scale.set(f, 0.9 + Math.random() * 0.2, f);
-				this.flameMesh.material.opacity = 0.7 + Math.random() * 0.3;
-				if (this.flameCore) this.flameCore.scale.set(f, 0.9 + Math.random() * 0.2, f);
+				this.jetFlame.group.visible = true;
+				this.jetFlame.update(1.0, 0, this._flameTime, dt);
 			} else {
-				const k = Math.max(0, 1 - (this.data.flight.boostDurationS - this.boostRemaining + dt) / 2.0);
-				this.flameMesh.scale.set(0.4, 0.4, 0.4);
-				this.flameMesh.material.opacity = 0.2 * k;
-				if (this.flameCore) this.flameCore.material.opacity = 0.3 * k;
+				this.jetFlame.group.visible = false;
 			}
 		}
 
@@ -393,7 +391,7 @@ export class AIM120 extends Missile {
 
 		if (npcs) {
 			for (const npc of npcs) {
-				if (!npc || npc === this.launcher) continue;
+				if (!npc || npc === this.launcher || npc === this) continue;
 				if (npc.destroyed) continue;
 				if (npc.team && this.team && npc.team === this.team) continue;
 				const missSq = this._segmentMissDistSq(prevLon, prevLat, prevAlt, this.lon, this.lat, this.alt, npc);
@@ -530,7 +528,6 @@ export class AIM120 extends Missile {
 	_firePitbull(allTargets) {
 		this.pitbullFired = true;
 		this.seekerActive = true;
-		try { soundManager.play('rwr-lock'); } catch (e) {}
 
 		const picked = this._scanForLock(allTargets);
 		if (picked) {
@@ -538,6 +535,19 @@ export class AIM120 extends Missile {
 			this.maddog = false;
 		} else {
 			this.maddog = true;
+		}
+
+		// RWR pitbull warble. The player's RWR only screams when an active-
+		// radar missile's OWN seeker just went live on THEM — i.e. this
+		// missile actually locked the player. Scoping to the locked target
+		// fixes the bug where every AMRAAM/Meteor/R-77 in the theater going
+		// active made the whole battlespace beep at once, regardless of who
+		// it was tracking. A maddog shot (no lock) paints nobody → silent;
+		// a missile that locked a wingman instead of the player → silent for
+		// the player. The 2D listener is the player, so this is the right
+		// (and only) place the cue should sound.
+		if (this.target && this.target.isPlayer) {
+			try { soundManager.play('rwr-lock'); } catch (e) {}
 		}
 	}
 
@@ -556,6 +566,13 @@ export class AIM120 extends Missile {
 		if (!allTargets || allTargets.length === 0) return null;
 		const mLat  = Cesium.Math.toRadians(this.lat);
 		const observer = this._seekerObserver();
+		// A surface-launched interceptor (SAM, from a static battery) is a
+		// point-defence weapon — its whole job is killing incoming missiles /
+		// cruise missiles, so it MUST be allowed to lock munition-class
+		// returns. The reject-missiles rule below is only there to stop an
+		// air-to-air AMRAAM from locking a passing missile instead of its
+		// bandit, so it applies to air-launched shots only.
+		const interceptsMunitions = !!(this.launcher && this.launcher.isStatic);
 
 		// DL track gives a sanity reference so the seeker prefers the
 		// thing closest to where it expected the target to be, rather
@@ -570,10 +587,10 @@ export class AIM120 extends Missile {
 			if (t.team && this.team && t.team === this.team) continue;
 			const sig = t.signature;
 			if (!sig) continue;
-			// The seeker is trained to reject missile-class returns; we do
-			// it here at the filter layer rather than in detectRadar so
-			// the unified radar function stays target-agnostic.
-			if (sig.unitClass === 'missile' || sig.unitClass === 'cruise_missile') continue;
+			// The seeker is trained to reject missile-class returns (so an
+			// air-to-air AMRAAM doesn't lock a passing missile) — UNLESS this
+			// is a surface interceptor, whose target IS a munition.
+			if (!interceptsMunitions && (sig.unitClass === 'missile' || sig.unitClass === 'cruise_missile')) continue;
 
 			// Run the same radar pipeline a fighter would — FOV, RCS
 			// aspect, range-equation with RCS^0.25 scaling, terrain LOS,
@@ -810,6 +827,20 @@ export class AIM120 extends Missile {
 	}
 
 	hitNPC(npc) {
+		// AD hit-rate diagnostic: AIM120-class interceptors (TOR-MSL, NASAMS-MSL,
+		// …) fired by a SAM battery are stamped at launch — credit the hit here,
+		// because this override (not the base Missile.hitNPC) is what runs for
+		// them.
+		if (this._adStats) { try { recordAdHit(this._adStats.type, this._adStats.column); } catch (e) {} }
+		// Aircraft → burning-spiral death sequence (engine out, tumble, black
+		// smoke, then break-up) instead of an instant fireball. mortallyWound
+		// logs the kill + spawns the hit flash; the airframe detonates later.
+		if (mortallyWound(npc, { shooter: this.launcher, weapon: this.type || 'AIM-120', reason: 'kill' })) {
+			if (this.onKill) this.onKill(npc);
+			try { soundManager.play('explosion-random'); } catch (e) { /* no-op */ }
+			this.destroy();
+			return;
+		}
 		pushKill({
 			shooter: this.launcher,
 			target:  npc,

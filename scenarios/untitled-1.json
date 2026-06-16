@@ -1,0 +1,380 @@
+{
+	"schemaVersion": 2,
+	"id": "untitled-1",
+	"name": "GOLDEN RIDGE STORM",
+	"description": "",
+	"anchor": {
+		"mode": "player-relative"
+	},
+	"autoSpawn": false,
+	"spawns": [
+		{
+			"type": "fighter",
+			"team": "hostile-red",
+			"origin": {
+				"lon": 8.213109482226487,
+				"lat": 48.26836885255667,
+				"alt": 8000
+			},
+			"fighterModel": "f-15",
+			"speedMps": 250,
+			"loadout": {
+				"hardpoints": {
+					"wing-outer-L": "storm-shadow",
+					"wing-outer-R": "storm-shadow",
+					"centerline": "agm-88-harm",
+					"amber-L-1": "agm-88-harm",
+					"amber-L-2": "gbu-39-sdb",
+					"amber-L-3": "gbu-39-sdb",
+					"amber-R-1": "gbu-39-sdb",
+					"wing-inner-R": "aim-120d",
+					"wing-inner-L": "aim-120d",
+					"wing-tip-R": "aim-9x"
+				}
+			},
+			"count": 10,
+			"pilot": {
+				"type": "strike",
+				"params": {
+					"ingressWaypoints": [],
+					"egressWaypoints": [],
+					"weaponType": "AUTO",
+					"waypoints": [
+						{
+							"lon": 8.205310543038898,
+							"lat": 48.591554428955504,
+							"altM": 8000,
+							"speedMps": 250
+						}
+					],
+					"loop": true,
+					"targets": [
+						{
+							"tag": "command-post-1"
+						},
+						{
+							"tag": "nasams-sam-1"
+						},
+						{
+							"tag": "sa-15-tor-1"
+						},
+						{
+							"tag": "sa-15-tor-2"
+						},
+						{
+							"tag": "zsu-23-shilka-1"
+						},
+						{
+							"tag": "zsu-23-shilka-2"
+						},
+						{
+							"tag": "zsu-23-shilka-3"
+						},
+						{
+							"tag": "zsu-23-shilka-4"
+						},
+						{
+							"tag": "nasams-sam-2"
+						}
+					]
+				}
+			}
+		},
+		{
+			"type": "platform",
+			"team": "hostile-blue",
+			"origin": {
+				"lon": 8.192872990547613,
+				"lat": 48.67085980515608,
+				"alt": 379.77330126380116
+			},
+			"platformId": "command-post",
+			"tag": "command-post-1"
+		},
+		{
+			"type": "platform",
+			"team": "hostile-blue",
+			"origin": {
+				"lon": 8.164100422385184,
+				"lat": 48.84792442029832,
+				"alt": 167.90874668864743
+			},
+			"platformId": "nasams-sam",
+			"tag": "nasams-sam-1"
+		},
+		{
+			"type": "platform",
+			"team": "hostile-blue",
+			"origin": {
+				"lon": 7.930162600479652,
+				"lat": 48.72890415140282,
+				"alt": 169.77453821571368
+			},
+			"platformId": "nasams-sam"
+		},
+		{
+			"type": "platform",
+			"team": "hostile-blue",
+			"origin": {
+				"lon": 8.035831302230587,
+				"lat": 48.480353021964184,
+				"alt": 464.9066629882236
+			},
+			"platformId": "nasams-sam",
+			"tag": "nasams-sam-4"
+		},
+		{
+			"type": "platform",
+			"team": "hostile-blue",
+			"origin": {
+				"lon": 8.65551090592019,
+				"lat": 48.48700791392775,
+				"alt": 583.3115500240314
+			},
+			"platformId": "nasams-sam",
+			"tag": "nasams-sam-3"
+		},
+		{
+			"type": "platform",
+			"team": "hostile-blue",
+			"origin": {
+				"lon": 8.645157267956249,
+				"lat": 48.72794343007616,
+				"alt": 650.7673916188512
+			},
+			"platformId": "nasams-sam",
+			"tag": "nasams-sam-2"
+		},
+		{
+			"type": "platform",
+			"team": "hostile-blue",
+			"origin": {
+				"lon": 8.173445463442961,
+				"lat": 48.69642246657022,
+				"alt": 265.23437124806685
+			},
+			"platformId": "sa-15-tor",
+			"tag": "sa-15-tor-1"
+		},
+		{
+			"type": "platform",
+			"team": "hostile-blue",
+			"origin": {
+				"lon": 8.142466562909027,
+				"lat": 48.68524033598751,
+				"alt": 229.6615220533074
+			},
+			"platformId": "sa-15-tor",
+			"tag": "sa-15-tor-5"
+		},
+		{
+			"type": "platform",
+			"team": "hostile-blue",
+			"origin": {
+				"lon": 8.147115298908304,
+				"lat": 48.6530425726306,
+				"alt": 312.8655730681525
+			},
+			"platformId": "sa-15-tor",
+			"tag": "sa-15-tor-4"
+		},
+		{
+			"type": "platform",
+			"team": "hostile-blue",
+			"origin": {
+				"lon": 8.232971191726433,
+				"lat": 48.644707059592754,
+				"alt": 999.8080529567577
+			},
+			"platformId": "sa-15-tor",
+			"tag": "sa-15-tor-3"
+		},
+		{
+			"type": "platform",
+			"team": "hostile-blue",
+			"origin": {
+				"lon": 8.255226419664218,
+				"lat": 48.679074445964865,
+				"alt": 719.366486909065
+			},
+			"platformId": "sa-15-tor",
+			"tag": "sa-15-tor-2"
+		},
+		{
+			"type": "platform",
+			"team": "hostile-blue",
+			"origin": {
+				"lon": 8.18178557008734,
+				"lat": 48.67703048643526,
+				"alt": 439.7018656355725
+			},
+			"platformId": "zsu-23-shilka",
+			"tag": "zsu-23-shilka-4"
+		},
+		{
+			"type": "platform",
+			"team": "hostile-blue",
+			"origin": {
+				"lon": 8.206464383854845,
+				"lat": 48.66375043025252,
+				"alt": 607.4680282886039
+			},
+			"platformId": "zsu-23-shilka",
+			"tag": "zsu-23-shilka-2"
+		},
+		{
+			"type": "platform",
+			"team": "hostile-blue",
+			"origin": {
+				"lon": 8.18145843102013,
+				"lat": 48.66438847308789,
+				"alt": 542.9423625731146
+			},
+			"platformId": "zsu-23-shilka",
+			"tag": "zsu-23-shilka-3"
+		},
+		{
+			"type": "platform",
+			"team": "hostile-blue",
+			"origin": {
+				"lon": 8.201128728704578,
+				"lat": 48.67601538469887,
+				"alt": 447.45256018511486
+			},
+			"platformId": "zsu-23-shilka",
+			"tag": "zsu-23-shilka-1"
+		},
+		{
+			"type": "fighter",
+			"team": "hostile-red",
+			"origin": {
+				"lon": 8.393024425091559,
+				"lat": 48.321171029121246,
+				"alt": 8000
+			},
+			"fighterModel": "b-2",
+			"speedMps": 250,
+			"loadout": {
+				"hardpoints": {
+					"bay-L-1": "gbu-12-paveway",
+					"bay-L-2": "storm-shadow",
+					"bay-L-3": "storm-shadow",
+					"bay-L-4": "gbu-39-sdb",
+					"bay-L-5": "gbu-12-paveway",
+					"bay-L-6": "gbu-39-sdb",
+					"bay-L-7": "gbu-39-sdb",
+					"bay-L-8": "gbu-39-sdb",
+					"bay-R-1": "gbu-39-sdb",
+					"bay-R-8": "gbu-39-sdb",
+					"bay-R-7": "gbu-39-sdb",
+					"bay-R-6": "gbu-39-sdb",
+					"bay-R-5": "agm-88-harm",
+					"bay-R-4": "agm-88-harm",
+					"bay-R-3": "agm-88-harm",
+					"bay-R-2": "agm-88-harm"
+				}
+			},
+			"pilot": {
+				"type": "strike",
+				"params": {
+					"ingressWaypoints": [],
+					"egressWaypoints": [],
+					"weaponType": "AUTO",
+					"targets": [
+						{
+							"tag": "nasams-sam-3"
+						},
+						{
+							"tag": "nasams-sam-4"
+						},
+						{
+							"tag": "sa-15-tor-3"
+						},
+						{
+							"tag": "sa-15-tor-4"
+						},
+						{
+							"tag": "sa-15-tor-5"
+						},
+						{
+							"tag": "sa-15-tor-1"
+						},
+						{
+							"tag": "sa-15-tor-2"
+						}
+					]
+				}
+			},
+			"count": 3
+		},
+		{
+			"type": "fighter",
+			"team": "hostile-red",
+			"origin": {
+				"lon": 7.48297591408196,
+				"lat": 48.53456092587155,
+				"alt": 8000
+			},
+			"fighterModel": "f-35",
+			"speedMps": 250,
+			"count": 5,
+			"loadout": {
+				"hardpoints": {
+					"bay-L-main": "gbu-39-sdb",
+					"bay-L-side": "aim-120d",
+					"bay-R-main": "gbu-39-sdb",
+					"bay-R-side": "aim-120d",
+					"wing-1-L": "agm-88-harm",
+					"wing-1-R": "agm-88-harm",
+					"wing-2-L": "storm-shadow",
+					"wing-2-R": "storm-shadow"
+				}
+			}
+		},
+		{
+			"type": "fighter",
+			"team": "hostile-red",
+			"origin": {
+				"lon": -0.3025784817706105,
+				"lat": 42.073407078521434,
+				"alt": 8000
+			},
+			"fighterModel": "sr-72-darkstar",
+			"speedMps": 250,
+			"pilot": {
+				"type": "strike",
+				"params": {
+					"ingressWaypoints": [],
+					"egressWaypoints": [],
+					"weaponType": "AUTO",
+					"targets": [
+						{
+							"tag": "sa-15-tor-3"
+						},
+						{
+							"tag": "command-post-1"
+						},
+						{
+							"tag": "sa-15-tor-4"
+						},
+						{
+							"tag": "sa-15-tor-5"
+						}
+					]
+				}
+			},
+			"loadout": {
+				"hardpoints": {
+					"bay-fwd-L": "gbu-12-paveway",
+					"bay-fwd-R": "gbu-12-paveway",
+					"bay-aft-L": "gbu-39-sdb",
+					"bay-aft-R": "gbu-39-sdb"
+				}
+			}
+		}
+	],
+	"objectives": [],
+	"triggers": [],
+	"createdAt": "2026-06-15T09:07:53.263Z",
+	"modifiedAt": "2026-06-15T22:45:23.718Z"
+}
