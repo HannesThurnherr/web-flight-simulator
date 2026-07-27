@@ -79,6 +79,12 @@ const SEEKER_FIELDS_BY_TYPE = {
 	'gps': [
 		'seeker.maxG',
 	],
+	'anti_ship': [
+		'seeker.maxG',
+		'seeker.terminalRangeM',  // CRUISE→TERMINAL switch (horizontal range)
+		'seeker.skimAltM',        // sea-skim altitude above the sea surface
+		'seeker.acquireRangeM',   // reserved for re-acquisition (future)
+	],
 	'cruise': [
 		'seeker.maxG',
 		// cruise-specific flight fields. Living under flight.* (not

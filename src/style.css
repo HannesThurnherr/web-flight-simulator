@@ -3088,3 +3088,23 @@ input[type="range"]::-webkit-slider-thumb {
 	font-weight: bold;
 	font-size: 11px;
 }
+/* ============================================================================
+   First-person cockpit mode (C keybind — src/systems/cockpit/).
+   The 3D pit draws its own HUD symbology on the combiner glass and its own
+   gauges/MFDs on the panel, so the 2D overlay's CENTER flight symbology is
+   hidden to avoid double-drawing. Tactical overlays (minimap, RWR, radar
+   scope, weapon list, NPC markers, toasts, dialogue) stay — they read as
+   helmet-mounted / sensor-fused cues and remain clickable.
+   ============================================================================ */
+body.cockpit-mode #compass-container,
+body.cockpit-mode #heading-display,
+body.cockpit-mode #hud-speed-box,
+body.cockpit-mode #hud-alt-box,
+body.cockpit-mode #horizon-container,
+body.cockpit-mode #normal-crosshair,
+body.cockpit-mode #pitch-lines,
+body.cockpit-mode #flight-path-marker,
+body.cockpit-mode #flight-info-strip,
+body.cockpit-mode #hud-thrust-bar {
+	display: none !important;
+}

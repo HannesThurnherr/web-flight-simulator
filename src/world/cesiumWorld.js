@@ -8,7 +8,10 @@ let pauseMiniViewer;
 
 export function initCesium() {
 	viewer = new Cesium.Viewer("cesiumContainer", {
-		terrain: Cesium.Terrain.fromWorldTerrain(),
+		// requestWaterMask pulls Cesium World Terrain's ocean mask so the globe
+		// can render the animated specular water effect — gives surface ships a
+		// real sea to sit on and move across (see globe.showWaterEffect below).
+		terrain: Cesium.Terrain.fromWorldTerrain({ requestWaterMask: true }),
 		timeline: false,
 		animation: false,
 		baseLayerPicker: false,
@@ -106,6 +109,10 @@ export function initCesium() {
 	});
 
 	viewer.scene.globe.enableLighting = true;
+	// Animated ocean. With the water mask requested on the terrain (above),
+	// this renders moving specular water on sea tiles — the environment a
+	// surface ship sails through. Harmless on land tiles (no mask → no effect).
+	viewer.scene.globe.showWaterEffect = true;
 	viewer.scene.highDynamicRange = false;
 	viewer.scene.postProcessStages.fxaa.enabled = true;
 	viewer.scene.skyAtmosphere = new Cesium.SkyAtmosphere();
@@ -177,10 +184,15 @@ export function setCameraToPlane(lon, lat, alt, heading, pitch, roll) {
 export function setCameraBehindUnit(unit, orbitYaw = 0, orbitPitch = 0, zoom = 1) {
 	if (!viewer || !unit) return;
 
-	// Baseline trailing offset: 40 m behind, 12 m above. Scaled by zoom so
-	// the mouse-wheel zoom control keeps working while spectating.
-	const BASE_DIST = 40;
-	const BASE_UP   = 12;
+	// Baseline trailing offset, scaled to the unit's physical size so the
+	// chase cam frames a 155 m destroyer as well as a 19 m fighter. The
+	// 40 m / 12 m baseline is tuned for a fighter (visualSize ≈ 19 m); a
+	// bigger hull pushes the camera proportionally further back and up.
+	// Scaled by zoom too, so the mouse-wheel control keeps working.
+	const sizeM = (unit.signature && unit.signature.visualSize) || 19;
+	const sizeFactor = Math.max(1, sizeM / 19);
+	const BASE_DIST = 40 * sizeFactor;
+	const BASE_UP   = 12 * sizeFactor;
 	const dist = BASE_DIST * Math.max(0.25, zoom);
 
 	// Effective look direction: unit's current heading/pitch plus the

@@ -35,7 +35,9 @@ import {
 	setCameraToPlane, setCameraBehindUnit, getViewer,
 } from '../world/cesiumWorld';
 import { updateSensors, setSensorScene } from './sensorSystem';
-import { updateLighting } from './dynamicLighting';
+import { updateLighting, getDayFactor } from './dynamicLighting';
+import { updateOcean } from './ocean.js';
+import { updateCockpit, isCockpitEnabled } from './cockpit/cockpit.js';
 import { collectJamStrobes } from './ew/jammerSubsystem.js';
 import { Contrail } from '../plane/contrail.js';
 import { getTeamDatalink } from './teamDatalink';
@@ -43,9 +45,17 @@ import { getActiveScenario } from './scenarios';
 import { CommanderView } from './commanderView';
 import { StrikePlannerView } from './strikePlanner';
 import { soundManager } from '../utils/soundManager';
-import { checkCrash, checkGPWS } from './crashDetection';
+import { checkCrash, checkGPWS, doCrashTransition } from './crashDetection';
+import { tickPlayerDeath } from './deathSequence';
 import { updateTgp } from '../ui/tgp.js';
 import { updateNpcSpectatorHud } from '../ui/npcSpectatorHud.js';
+import { updateCarrierOps } from './carrierOps.js';
+import { applyNpcLoadout } from './scenarios/scenarioRunner.js';
+
+// How long the spectator camera holds on a unit after it dies, before
+// releasing back to the map. Long enough to actually watch the kill land and
+// the wreck go down.
+const SPECTATOR_DEATH_LINGER_S = 6;
 
 const GEOCODE_INTERVAL = 10000;
 const GEOCODE_MIN_DIST = 1000;
@@ -91,6 +101,37 @@ export function update(dt, ctx) {
 	let prevSpeed = 0;
 	if (isFlying) {
 		prevSpeed = state.speed;
+
+		// Player death throe. A lethal hit armed state.dying (via
+		// mortallyWound); fly the burning wreck with the same over-driven
+		// chaotic stick the AI uses, into the same PlanePhysics — engine out,
+		// FCS gone, tumbling and trailing smoke/fire as it falls. We override
+		// the stick here (ignoring the player's own input) and safe the
+		// weapons. On break-up tickPlayerDeath returns done → raise the crash
+		// menu. The plane FALLS instead of freezing in mid-air.
+		if (state.dying) {
+			const death = tickPlayerDeath(state, dt);
+			// Safe everything the moment we're dying — no firing, no loadout
+			// changes, no throttle (this also covers the break-up frame, where
+			// the weapons block downstream still sees the captured isFlying).
+			input.throttle = 0;
+			input.boost = false;
+			input.fire = false;
+			input.fireFlare = false;
+			input.toggleWeapon = false;
+			input.weaponIndex = -1;
+			input.cycleTargetFwd = false;
+			input.cycleTargetBack = false;
+			input.mouseSteering = false;
+			if (death.done) {
+				doCrashTransition(ctx);
+			} else {
+				input.pitch = death.pitch;
+				input.roll  = death.roll;
+				input.yaw   = death.yaw;
+			}
+		}
+
 		// Both the commander view (god-eye map) and the spectator
 		// mode (chase-cam on another unit) suspend pilot control. The
 		// plane holds current throttle and flies on trim — neutral
@@ -473,7 +514,22 @@ export function update(dt, ctx) {
 		const gone = ctx.spectatorTarget.destroyed ||
 			ctx.spectatorTarget.active === false ||
 			(typeof ctx.spectatorTarget.lon !== 'number');
-		if (gone) {
+		// Death linger. Cutting straight back to the map the instant the
+		// spectated unit died meant you never saw the thing you were watching
+		// FOR — the hit, the fireball, the hull going over. Hold the camera on
+		// the wreck for a few seconds and let the death play out, then release.
+		//
+		// The unit keeps its last pose after death (npcUpdate stops advancing
+		// it but doesn't clear lon/lat), so the chase cam has something valid
+		// to frame the whole time; a sinking ship even keeps animating under it.
+		if (gone && ctx._spectatorLingerLeft == null) {
+			ctx._spectatorLingerLeft = SPECTATOR_DEATH_LINGER_S;
+		}
+		if (ctx._spectatorLingerLeft != null) {
+			ctx._spectatorLingerLeft -= dt;
+		}
+		if (gone && ctx._spectatorLingerLeft <= 0) {
+			ctx._spectatorLingerLeft = null;
 			ctx.setSpectatorTarget(null);
 			// If we were spectating while dead, both the crash menu
 			// (hidden on entry) and the THREE canvas (unhidden on
@@ -486,6 +542,10 @@ export function update(dt, ctx) {
 				if (threeContainer) threeContainer.classList.add('hidden');
 			}
 		}
+	} else if (ctx._spectatorLingerLeft != null) {
+		// Left spectate by hand (or switched units) mid-linger — drop the timer
+		// so it can't fire against whatever we're watching next.
+		ctx._spectatorLingerLeft = null;
 	}
 
 	// NPCs, HUD, commander: always tick so the world keeps running
@@ -504,6 +564,12 @@ export function update(dt, ctx) {
 	// every THREE mesh on top of it.
 	if (npcSystem) {
 		npcSystem.update(dt, state, simTime);
+		// Carrier deck cycle — launches, RTB calls, traps. Runs AFTER the NPC
+		// tick so it sees this frame's positions (a jet's trap gate is a
+		// range test against the ship, and both moved this frame).
+		try {
+			updateCarrierOps(dt, { npcSystem, applyNpcLoadout });
+		} catch (e) { /* never break the frame on deck ops */ }
 	}
 
 	// Camera priority each frame:
@@ -561,11 +627,31 @@ export function update(dt, ctx) {
 	if (weaponSystem && weaponSystem.syncMeshMatrices) weaponSystem.syncMeshMatrices();
 	if (npcSystem    && npcSystem.syncMeshMatrices)    npcSystem.syncMeshMatrices();
 
+	// 3D ocean — recenter + bake against the same just-set camera. Internally
+	// gated to low-altitude-over-water, so it's a no-op (hidden) at altitude.
+	try { updateOcean(simTime, getDayFactor()); } catch (e) { /* optional */ }
+
+	// First-person cockpit — ticked after the camera block so the look-
+	// around counter-rotation uses THIS frame's orbit values. Shown only
+	// while FLYING with the pilot camera in charge; stays up through the
+	// death tumble (spinning horizon + fire lights from inside the pit).
+	{
+		const pilotOwns = !(ctx.commanderView && ctx.commanderView.active)
+			&& !(ctx.strikePlannerView && ctx.strikePlannerView.active)
+			&& !ctx.spectatorTarget;
+		try {
+			updateCockpit(dt, state, isFlying ? input : null, isFlying && pilotOwns);
+		} catch (e) { /* cockpit is optional eye candy — never kill the loop */ }
+	}
+
 	// Player directed-energy self-defense (equipped SHiELD laser pod).
 	// Ticked after the camera is placed so the beam bakes against the
 	// frame's view matrix. Scans NPC/SAM-fired projectiles for inbound
 	// threats it can burn down. The player state is the emitter "unit".
-	if (state.equipment && state.equipment.laserPD) {
+	// Dead men fire no lasers: gate on !destroyed so a shot-down (tumbling /
+	// dying) player's DEW pod goes dark instead of keeping up a self-protect
+	// beam from the wreck.
+	if (!state.destroyed && state.equipment && state.equipment.laserPD) {
 		const inbound = npcSystem ? npcSystem.projectiles : [];
 		state.equipment.laserPD.update(state, inbound, dt);
 	}
@@ -615,7 +701,10 @@ export function update(dt, ctx) {
 		// spectator chase-cam each take over the camera and hide them.
 		const pilotCamOwns = !cmdActive && !planActive && !ctx.spectatorTarget;
 		const planeModel = ctx.planeModel;
-		if (planeModel) planeModel.visible = pilotCamOwns && isFlying;
+		// In first-person cockpit view the chase-space exterior model is
+		// hidden — you're inside it. The model keeps updating its pose
+		// (weaponSystem reads it for muzzle/rail positions), just unseen.
+		if (planeModel) planeModel.visible = pilotCamOwns && isFlying && !isCockpitEnabled();
 		const uiContainer = document.getElementById('uiContainer');
 		if (uiContainer) {
 			uiContainer.style.opacity = pilotCamOwns ? '' : '0';

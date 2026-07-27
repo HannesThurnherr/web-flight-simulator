@@ -1,0 +1,41 @@
+{
+	"id": "harpoon",
+	"name": "RGM-84 Harpoon",
+	"shortName": "HARPOON",
+	"category": "AGM",
+	"tags": ["anti-ship", "sea-skimmer", "active-radar", "stand-off"],
+	"massKg": 690,
+	"rcsContributionM2": 0.05,
+	"description": "Ship-launched anti-ship cruise missile. Turbojet-subsonic, drops to a sea-skim after launch and stays under the horizon until terminal, when its active-radar seeker pops up and homes on the largest return — a moving ship, re-aimed every frame (not a frozen coord). ~120 km range, 220 kg penetrating-blast warhead.",
+	"simType": "HARPOON",
+	"signature": "cruise_missile",
+	"seekerType": "anti_ship",
+	"modelTemplate": "harpoon",
+	"realLengthM": 4.6,
+	"flight": {
+		"launchSpeedOffset": 20,
+		"boostDurationS": 600,
+		"boostAccel": 150,
+		"peakSpeed": 250,
+		"minSpeed": 170,
+		"maxLifeS": 600,
+		"maxTurnDegPerSec": 14,
+		"pnGain": 3.5,
+		"dragRef": 0.6,
+		"dragRefSpeed": 240,
+		"dragRefAltitude": 50,
+		"vManeuverRef": 240,
+		"gAvailFloor": 0.3
+	},
+	"warhead": {
+		"killRadiusM": 30,
+		"fuzeSenseRadiusM": 42,
+		"missAbortRadiusMul": 2
+	},
+	"seeker": {
+		"maxG": 6,
+		"terminalRangeM": 8000,
+		"skimAltM": 20,
+		"acquireRangeM": 30000
+	}
+}

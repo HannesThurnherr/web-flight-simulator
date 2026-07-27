@@ -1,0 +1,24 @@
+{
+	"id": "96l6e-radar",
+	"name": "96L6E Acquisition Radar",
+	"kind": "ground",
+	"model": "/assets/models/96l6e-mobile-radar.glb",
+	"modelRotation": { "x": 0, "y": 0, "z": 0 },
+	"modelScale": 0.0094,
+	"signature": "ewr",
+	"groundOffsetM": 0,
+	"sensors": {
+		"radar": {
+			"enabled": true,
+			"active": true,
+			"mode": "search",
+			"nominalRange": 300000,
+			"referenceRcs": 5,
+			"fovHalfHDeg": 180,
+			"fovHalfVDeg": 75,
+			"notchThreshold": 45
+		}
+	},
+	"pilot": { "type": "ewr" },
+	"physicsOverrides": { "mass": 40000, "wingArea": 1 }
+}

@@ -1,0 +1,70 @@
+{
+	"schemaVersion": 2,
+	"id": "untitled-2",
+	"name": "WOUNDED RIDGE STORM",
+	"description": "",
+	"anchor": {
+		"mode": "player-relative"
+	},
+	"autoSpawn": false,
+	"spawns": [
+		{
+			"type": "platform",
+			"team": "hostile-red",
+			"origin": {
+				"lon": -95.91505163820507,
+				"lat": 69.30649003113864,
+				"alt": 0
+			},
+			"platformId": "arleigh-burke"
+		},
+		{
+			"type": "platform",
+			"team": "hostile-red",
+			"origin": {
+				"lon": -95.88541713196427,
+				"lat": 69.2612845095711,
+				"alt": 0
+			},
+			"platformId": "arleigh-burke"
+		},
+		{
+			"type": "platform",
+			"team": "hostile-red",
+			"origin": {
+				"lon": -96.00148550405926,
+				"lat": 69.27913133054055,
+				"alt": 0
+			},
+			"platformId": "arleigh-burke"
+		},
+		{
+			"type": "platform",
+			"team": "hostile-blue",
+			"origin": {
+				"lon": -95.07533900896959,
+				"lat": 69.03379167611729,
+				"alt": 0
+			},
+			"platformId": "arleigh-burke",
+			"count": 3
+		}
+	],
+	"objectives": [
+		{
+			"id": "obj-1",
+			"kind": "reach-zone",
+			"label": "Objective 1",
+			"required": true,
+			"zone": {
+				"radiusM": 5000,
+				"relTo": "player",
+				"lon": -22444209.655236837,
+				"lat": 8398643.311199406
+			}
+		}
+	],
+	"triggers": [],
+	"createdAt": "2026-06-17T23:22:01.487Z",
+	"modifiedAt": "2026-06-18T10:05:02.784Z"
+}

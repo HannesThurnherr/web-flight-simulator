@@ -2,6 +2,8 @@ import * as THREE from 'three';
 import * as Cesium from 'cesium';
 import { PlanePhysics } from '../plane/planePhysics.js';
 import { SIGNATURES } from './signatures.js';
+import { initShipHealth } from './shipDamage.js';
+import { createCarrierAirWing } from './carrierOps.js';
 import f15Plane from '../data/planes/f-15.json';
 
 // All plane JSONs, keyed by id. Eagerly-imported (Vite glob), used
@@ -630,10 +632,13 @@ export class NPCSystem {
 		// base touches terrain, npc.alt sits at the body's centre of
 		// mass — both correct.
 		//
-		// Only applied to ground platforms — airborne fighters use a
-		// physics-driven altitude and don't terrain-clamp at all.
+		// Applied to ground platforms AND surface ships — both sit ON a
+		// surface (terrain / sea) and need their keel/base anchored to it
+		// rather than hovering by whatever offset the artist's local origin
+		// happens to imply. Airborne fighters use a physics-driven altitude
+		// and don't clamp at all.
 		let centerAltOffsetM = 0;
-		if (platform.kind === 'ground') {
+		if (platform.kind === 'ground' || platform.kind === 'surface') {
 			model.updateMatrixWorld(true);
 			const bbox = new THREE.Box3().setFromObject(model);
 			if (isFinite(bbox.min.z)) {
@@ -717,19 +722,20 @@ export class NPCSystem {
 		// loop skips physics integration and terrain-collision for them.
 		// Sensors, pilot ticks, and mesh transform updates still run, so
 		// the unit still detects targets, decides whether to fire, and
-		// appears in the world; it just stays put.
+		// appears in the world; it just stays put. Surface ships are NOT
+		// static — they move via the kinematic integrator — so isStatic
+		// stays ground-only.
 		const isStatic = (platform.kind === 'ground');
+		const isSurface = (platform.kind === 'surface');
 
-		// Fire an async authoritative terrain sample for ground platforms.
-		// globe.getHeight() only returns a value for already-loaded tiles,
-		// so a SAM spawned 30 km from the player's current camera target
-		// would never clamp (tile never loaded) and would stay at the
-		// scenario-provided altM, potentially buried under a plateau.
-		// sampleTerrainMostDetailed loads the tile on demand and resolves
-		// with the true surface height; we stash it on the NPC so the
-		// update loop picks it up the first tick after the promise
-		// resolves.
-		if (isStatic && Cesium.sampleTerrainMostDetailed && this.viewer.terrainProvider) {
+		// Fire an async authoritative terrain sample for ground platforms AND
+		// surface ships. globe.getHeight() only returns a value for already-
+		// loaded tiles, so a unit spawned 30 km from the player's current
+		// camera target would never clamp (tile never loaded) and would stay
+		// at the scenario-provided altM. For ships this is the initial sea-
+		// surface reference; the kinematic integrator re-samples each tick
+		// once tiles stream, but this floors the first frames.
+		if ((isStatic || isSurface) && Cesium.sampleTerrainMostDetailed && this.viewer.terrainProvider) {
 			const carto = Cesium.Cartographic.fromDegrees(lon, lat);
 			Cesium.sampleTerrainMostDetailed(this.viewer.terrainProvider, [carto])
 				.then(([p]) => {
@@ -746,10 +752,20 @@ export class NPCSystem {
 			mesh: group, mixer, name,
 			lon, lat, alt,
 			heading: 0, pitch: 0, roll: 0,
-			speed: isStatic ? 0 : 180,
-			throttle: isStatic ? 0 : 0.6,
+			// Ships start dead in the water and spool up to commanded speed
+			// via the kinematic integrator (180 m/s would be ~350 kt — wrong
+			// for a hull). Statics never move.
+			speed: isStatic ? 0 : (isSurface ? 0 : 180),
+			throttle: isStatic ? 0 : (isSurface ? 1 : 0.6),
 			isBoosting: false,
 			targetHeading: 0, targetPitch: 0,
+			// Surface units command a SPEED (knots-ish, m/s) rather than a
+			// pitch; the integrator lags toward targetSpeed. Harmless on
+			// airborne/static NPCs that never read it.
+			targetSpeed: 0,
+			// Cached rendered sea-surface height for clamping + relative land
+			// detection; seeded by the async sample, refreshed each tick.
+			_seaRefH: isSurface ? null : undefined,
 			physics,
 			behaviorTimer: 0, terrainCheckTimer: 0, time: 0,
 			team,
@@ -780,6 +796,19 @@ export class NPCSystem {
 		const pilotCfg = platform.pilot || { type: 'orbit' };
 		const params   = { ...(pilotCfg.defaultParams || {}), ...pilotOverrides };
 		npc.pilot = this._makePilot(pilotCfg.type, lon, lat, alt, params);
+
+		// Surface ships use the layered HP / subsystem / sinking damage model
+		// instead of one-hit-kill (see shipDamage.js).
+		if (platform.kind === 'surface') initShipHealth(npc, platform);
+
+		// A platform carrying an `airWing` block is an airbase, not just a hull:
+		// stand up its deck cycle so it starts generating sorties.
+		if (platform.airWing) {
+			createCarrierAirWing(npc, {
+				...platform.airWing,
+				...(pilotOverrides && pilotOverrides.airWing ? pilotOverrides.airWing : {}),
+			});
+		}
 
 		this.npcs.push(npc);
 		console.log('[spawnPlatform]', platformId, 'spawned at',
@@ -839,7 +868,7 @@ export class NPCSystem {
 	// NPC missile fire.
 	// Bullet + missile spawn delegates to src/systems/npcRendering.js.
 	_spawnNpcBullet(npc, aim = null)       { return spawnNpcBullet(this, npc, aim); }
-	_spawnNpcMissile(npc, weaponType, tgt) { return spawnNpcMissile(this, npc, weaponType, tgt); }
+	_spawnNpcMissile(npc, weaponType, tgt, aim = null) { return spawnNpcMissile(this, npc, weaponType, tgt, aim); }
 
 	clear() {
 		this.npcs.forEach(npc => {

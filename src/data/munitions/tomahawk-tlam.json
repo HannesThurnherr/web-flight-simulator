@@ -1,0 +1,52 @@
+{
+	"id": "tomahawk-tlam",
+	"name": "BGM-109 Tomahawk (TLAM)",
+	"shortName": "TLAM",
+	"category": "AGM",
+	"tags": [
+		"cruise",
+		"land-attack",
+		"gps-guided",
+		"stand-off",
+		"vls"
+	],
+	"massKg": 1600,
+	"maxPerStation": 1,
+	"rcsContributionM2": 0.05,
+	"description": "Ship-launched land-attack cruise missile — the fleet's deep-strike arm. Turbofan-subsonic, GPS/INS + TERCOM, sea-skims off the launch then terrain-follows ~50 m AGL inland before popping up and diving on the GPS coord. Real range ~1600 km; capped at strike-package scale here. Fire-and-forget, no terminal seeker — defeated only by GPS jamming or a leaker getting shot down. Visual stand-in: AGM-86 ALCM body.",
+	"simType": "TOMAHAWK",
+	"signature": "cruise_missile",
+	"seekerType": "cruise",
+	"modelTemplate": "tomahawk",
+	"realLengthM": 6.25,
+	"flight": {
+		"launchSpeedOffset": 15,
+		"boostDurationS": 1800,
+		"boostAccel": 80,
+		"peakSpeed": 240,
+		"minSpeed": 200,
+		"maxLifeS": 1800,
+		"maxTurnDegPerSec": 7,
+		"pnGain": 3,
+		"dragRef": 0.6,
+		"dragRefSpeed": 230,
+		"dragRefAltitude": 100,
+		"vManeuverRef": 230,
+		"gAvailFloor": 0.3,
+		"cruiseAltM": 50,
+		"cruiseAltMode": "agl",
+		"cruiseTurnG": 1.5,
+		"climbAngleDeg": 6,
+		"terminalRangeM": 600,
+		"popUpAltAGL": 700,
+		"diveAngleDeg": -50
+	},
+	"warhead": {
+		"killRadiusM": 80,
+		"fuzeSenseRadiusM": 100,
+		"missAbortRadiusMul": 2
+	},
+	"seeker": {
+		"maxG": 5
+	}
+}

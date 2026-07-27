@@ -550,6 +550,12 @@ export class EscortBehavior extends Behavior {
 const GROUND_TARGET_CLASSES = new Set(['sam_site', 'ewr', 'building', 'ground']);
 const A2G_COORD_SIMTYPES = new Set(['GBU-39', 'GBU-38', 'GBU-31', 'STORM-SHADOW', 'AGM-86']);
 const A2G_ARM_SIMTYPES   = new Set(['AGM-88']);
+// Air-launched ANTI-SHIP weapons. Kept as their own set rather than folded
+// into the coord types because the distinction is load-bearing in both
+// directions: a ship is only a valid target for a jet carrying one of these
+// (a GPS bomb aimed at a moving hull just splashes astern), and conversely
+// these must never be spent on a static land target a cheap bomb would kill.
+const A2G_ANTISHIP_SIMTYPES = new Set(['HARPOON', 'P-800']);
 
 // Active-radar AAM types — shared by Engage's WEZ gate, the loft logic and
 // the STT pre-fire flash.
@@ -614,7 +620,13 @@ export class GroundAttackBehavior extends Behavior {
 	_hasAnyAG() {
 		const ws = this._ws();
 		return !!(ws && ws.weapons.some(w => w.ammo > 0 &&
-			(A2G_COORD_SIMTYPES.has(w.type) || A2G_ARM_SIMTYPES.has(w.type))));
+			(A2G_COORD_SIMTYPES.has(w.type) || A2G_ARM_SIMTYPES.has(w.type) ||
+			 A2G_ANTISHIP_SIMTYPES.has(w.type))));
+	}
+	// Does this jet still have a shot that can actually kill a moving hull?
+	_hasAntiShip() {
+		const ws = this._ws();
+		return !!(ws && ws.weapons.some(w => w.ammo > 0 && A2G_ANTISHIP_SIMTYPES.has(w.type)));
 	}
 	// True when the weapon is off cooldown and under its in-flight cap —
 	// mirrors WeaponSubsystem.pickWeaponFor's gates so we never "commit" to
@@ -647,14 +659,23 @@ export class GroundAttackBehavior extends Behavior {
 		const dN = (t.lat - unit.lat) * 111320;
 		const horiz = Math.sqrt(dE * dE + dN * dN);
 		const wantSteep = !!(t.signature && t.signature.unitClass === 'building');
+		const isShip = !!(t.signature && t.signature.unitClass === 'ship');
 		let best = null, bestScore = -Infinity;
 		for (const w of ws.weapons) {
 			if (w.ammo <= 0) continue;
 			const isCoord = A2G_COORD_SIMTYPES.has(w.type);
 			const isArm = A2G_ARM_SIMTYPES.has(w.type);
-			if (!isCoord && !(isArm && radiating)) continue;
+			const isShipKiller = A2G_ANTISHIP_SIMTYPES.has(w.type);
+			// A hull only ever gets the anti-ship weapon — a coordinate bomb
+			// aimed at a 16 m/s target lands in its wake. And the anti-ship
+			// round is never spent on dirt, which a bomb kills for free.
+			if (isShip !== isShipKiller) continue;
+			if (!isShipKiller && !isCoord && !(isArm && radiating)) continue;
 			if (range < w.minRange || range > w.maxRange) continue;
 			if (!this._readyToFire(w, now, ctx.projectiles, unit)) continue;
+			// A sea-skimmer flies its own profile out to the horizon; it has no
+			// ballistic feasibility problem the way a tossed glide bomb does.
+			if (isShipKiller) return { weapon: w, est: { feasible: true, etaS: range / 240, impactAngleDeg: 10 } };
 			const est = estimateA2GShot(w.type, agl, horiz, unit.speed);
 			if (!est.feasible) continue;
 			if (isArm && radiating) return { weapon: w, est }; // HARM trumps on emitters
@@ -689,7 +710,10 @@ export class GroundAttackBehavior extends Behavior {
 			if (!t || seen.has(t) || t.destroyed || t.active === false) return;
 			if (t.team && unit.team && t.team === unit.team) return;
 			const sig = t.signature;
-			if (!sig || !GROUND_TARGET_CLASSES.has(sig.unitClass)) return;
+			// Hulls join the target list only for a jet still carrying a
+			// weapon that can hit one — see A2G_ANTISHIP_SIMTYPES.
+			const shipOk = sig && sig.unitClass === 'ship' && this._hasAntiShip();
+			if (!sig || !(GROUND_TARGET_CLASSES.has(sig.unitClass) || shipOk)) return;
 			seen.add(t); out.push(t);
 		};
 		if (unit.contacts) for (const [t] of unit.contacts) consider(t);
@@ -2290,5 +2314,143 @@ export class PatrolCapBehavior extends Behavior {
 		cmd.targetPitch = Math.max(-8, Math.min(8, altErr * 0.01));
 		cmd.targetSpeed = 260;
 		cmd.throttle    = 0.65;
+	}
+}
+
+// ----------------------------------------------------------------------------
+// RecoverToCarrierBehavior — fly the aircraft home to its ship and trap.
+//
+// Activated by the carrier's air-wing manager setting `unit._recoverTo` to the
+// carrier NPC (see carrierOps.js). Sits high in the stack — an aircraft that
+// has been told to recover is out of the fight and should not be pulled back
+// into it by Engage — but stays BELOW missile evasion and terrain avoidance,
+// because dying on the way home helps nobody.
+//
+// Three phases, which is the minimum that reads as a recovery rather than a
+// teleport:
+//
+//   MARSHAL   far out — fly directly at the ship, descending toward pattern
+//             altitude. Nothing subtle; this is just the transit.
+//   APPROACH  inside the approach gate — line up on the ship's BASE COURSE
+//             (a carrier lands aircraft along its deck, so the jet has to
+//             match the ship's heading, not just point at the ship) and
+//             descend along a 3.5° glideslope.
+//   TRAP      at the ramp — the manager sees `_recoverState === 'trap'` and
+//             recovers the airframe into the roster.
+//
+// The approach is flown to a POINT ASTERN of the carrier rather than to the
+// carrier itself: aiming at the ship means arriving at 90° across the deck.
+// Offsetting the aim point back down the base course is what turns it into a
+// straight-in, and it's why the jet flies a recognisable groove.
+// ----------------------------------------------------------------------------
+export class RecoverToCarrierBehavior extends Behavior {
+	constructor(opts = {}) {
+		super('RecoverToCarrier');
+		this.patternAltM   = opts.patternAltM   ?? 600;   // marshal / downwind height
+		this.approachGateM = opts.approachGateM ?? 14000; // switch to the groove here
+		this.trapRangeM    = opts.trapRangeM    ?? 350;   // close enough to call it a trap
+		this.glideslopeDeg = opts.glideslopeDeg ?? 3.5;
+	}
+
+	isActive(ctx) {
+		const c = ctx.unit && ctx.unit._recoverTo;
+		return !!(c && !c.destroyed && c.active !== false && typeof c.lon === 'number');
+	}
+
+	apply(ctx, cmd, _dt) {
+		const u = ctx.unit;
+		const c = u._recoverTo;
+		const cosLat = Math.cos((u.lat || 0) * Math.PI / 180) || 1;
+
+		// Deck height — the carrier's own altitude is its hull centre, and the
+		// flight deck sits above that. Close enough for a trap gate.
+		const deckAlt = (c.alt || 0) + 8;
+
+		const dE = (c.lon - u.lon) * 111320 * cosLat;
+		const dN = (c.lat - u.lat) * 111320;
+		const rangeToShip = Math.hypot(dE, dN);
+
+		// TRAP gate. Range alone is not enough — a jet still turning onto
+		// centreline clips a pure range gate while crossing the deck at 75°,
+		// which "recovers" an aircraft that in reality just flew over the ship.
+		// Require it to be low AND lined up with the deck; anything else keeps
+		// flying and gets sent astern for another go by the approach logic.
+		let lineupErr = (u.heading || 0) - (c.heading || 0);
+		while (lineupErr < -180) lineupErr += 360;
+		while (lineupErr >  180) lineupErr -= 360;
+		if (rangeToShip <= this.trapRangeM &&
+			(u.alt - deckAlt) < 60 &&
+			Math.abs(lineupErr) < 35) {
+			u._recoverState = 'trap';
+			cmd.throttle = 0.2;
+			cmd.targetSpeed = 65;
+			cmd.targetHeading = c.heading || 0;
+			cmd.targetPitch = -2;
+			return;
+		}
+
+		if (rangeToShip > this.approachGateM) {
+			// ---- MARSHAL ----------------------------------------------------
+			u._recoverState = 'marshal';
+			cmd.targetHeading = (Math.atan2(dE, dN) * 180 / Math.PI + 360) % 360;
+			const altErr = this.patternAltM - (u.alt - deckAlt);
+			cmd.targetPitch = Math.max(-12, Math.min(10, altErr * 0.004));
+			cmd.throttle = 0.75;
+			cmd.boost = false;
+			this.debug = { detail: 'marshalling', rangeKm: rangeToShip / 1000 };
+			return;
+		}
+
+		// ---- APPROACH -------------------------------------------------------
+		// Fly the extended CENTRELINE astern of the ship, chasing a carrot that
+		// slides up the line ahead of us. Working in the deck's own frame is
+		// what makes this converge.
+		//
+		// The obvious version — aim at a point astern, then blend the heading
+		// toward the ship's base course as you close — does not work, and it's
+		// worth recording why: blending to the raw base course removes all
+		// cross-track correction, so a jet offset from the centreline ends up
+		// flying exactly PARALLEL to the deck. It never converges, sails past
+		// the ship, gets swung around by the aim logic, and settles into a
+		// permanent orbit about 4 km out. Measured, it circled forever.
+		//
+		// Chasing a point ON the line instead means any cross-track error
+		// produces a heading that closes it, which is what an approach is.
+		u._recoverState = 'approach';
+		const base = (c.heading || 0) * Math.PI / 180;
+
+		// Jet position in the deck frame: `along` positive ahead of the ship,
+		// `cross` positive to the right of centreline.
+		const rE = (u.lon - c.lon) * 111320 * cosLat;
+		const rN = (u.lat - c.lat) * 111320;
+		const along = rE * Math.sin(base) + rN * Math.cos(base);
+
+		// The carrot: a point on the centreline, one lead-length further up the
+		// approach than we are. Clamped so it never sits ahead of the ramp. A
+		// jet that has ended up AHEAD of the ship is sent well astern first —
+		// that's the go-around.
+		const LEAD = 1800;
+		const alongTarget = (along > 0)
+			? -Math.max(6000, rangeToShip)          // overshot: reposition astern
+			: Math.min(0, along + LEAD);
+		const aimLon = c.lon + (Math.sin(base) * alongTarget) / (111320 * cosLat);
+		const aimLat = c.lat + (Math.cos(base) * alongTarget) / 111320;
+		const adE = (aimLon - u.lon) * 111320 * cosLat;
+		const adN = (aimLat - u.lat) * 111320;
+		cmd.targetHeading = (Math.atan2(adE, adN) * 180 / Math.PI + 360) % 360;
+
+		// Glideslope: hold the 3.5° line down to the ramp.
+		const wantAlt = deckAlt + Math.tan(this.glideslopeDeg * Math.PI / 180) * rangeToShip;
+		const altErr = wantAlt - u.alt;
+		// Gain of 0.02 was too soft to actually get down the slope — the jet
+		// arrived at the ramp ~120 m high and only squeaked through the old
+		// altitude gate. 0.06 tracks the glideslope instead of trailing it.
+		cmd.targetPitch = Math.max(-10, Math.min(8, altErr * 0.06));
+		// On speed — slow, but not so slow the airframe falls out of the sky.
+		cmd.targetSpeed = 75;
+		cmd.throttle = 0.45;
+		cmd.boost = false;
+		cmd.fireWeapon = false;
+		this.debug = { detail: 'in the groove', rangeM: rangeToShip, altAboveDeck: u.alt - deckAlt };
 	}
 }

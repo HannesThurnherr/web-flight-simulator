@@ -1,0 +1,110 @@
+{
+	"id": "zumwalt-ddg",
+	"name": "DDG-1000 Zumwalt",
+	"kind": "surface",
+	"model": "/assets/models/zumwalt-ddg.glb",
+	"modelRotation": {
+		"x": 0,
+		"y": 180,
+		"z": 0
+	},
+	"modelScale": 7.02,
+	"signature": "frigate",
+	"hp": 130,
+	"groundOffsetM": -8,
+	"sensors": {
+		"radar": {
+			"enabled": true,
+			"active": true,
+			"mode": "search",
+			"nominalRange": 170000,
+			"referenceRcs": 5,
+			"fovHalfHDeg": 180,
+			"fovHalfVDeg": 90,
+			"notchThreshold": 60
+		}
+	},
+	"pilot": {
+		"type": "ship-combatant",
+		"defaultParams": {
+			"cruiseSpeedMps": 10,
+			"maxSpeedMps": 17,
+			"turnRateMaxDegPerS": 2.6,
+			"accelTauS": 28,
+			"patrolRadiusM": 0,
+			"evadeRangeM": 16000,
+			"flareRangeM": 7000,
+			"flares": 80,
+			"chaff": 80,
+			"weapons": [
+				{
+					"type": "gun",
+					"role": "ciws",
+					"ammo": 3000,
+					"fireRate": 0.05,
+					"maxInFlight": 0,
+					"minRange": 0,
+					"maxRange": 2500,
+					"muzzleVelMps": 1500
+				},
+				{
+					"type": "RAM",
+					"role": "ram",
+					"ammo": 21,
+					"fireRate": 1.0,
+					"maxInFlight": 4,
+					"minRange": 500,
+					"maxRange": 9000
+				},
+				{
+					"type": "SM-6",
+					"role": "sam",
+					"ammo": 20,
+					"fireRate": 1.5,
+					"maxInFlight": 6,
+					"minRange": 2000,
+					"maxRange": 120000,
+					"salvoSize": 2,
+					"reengageS": 14,
+					"reserveForBallisticN": 5
+				},
+				{
+					"type": "HARPOON",
+					"role": "antiship",
+					"ammo": 8,
+					"fireRate": 1.2,
+					"maxInFlight": 8,
+					"minRange": 5000,
+					"maxRange": 110000,
+					"salvoSize": 4,
+					"reengageS": 10
+				},
+				{
+					"type": "MK45",
+					"role": "navalgun",
+					"ammo": 600,
+					"fireRate": 1.4,
+					"maxInFlight": 10,
+					"minRange": 2000,
+					"maxRange": 38000,
+					"muzzleVelMps": 900,
+					"reengageS": 2
+				},
+				{
+					"type": "TOMAHAWK",
+					"role": "landattack",
+					"ammo": 12,
+					"fireRate": 6.0,
+					"maxInFlight": 4,
+					"minRange": 15000,
+					"maxRange": 400000,
+					"reengageS": 12
+				}
+			]
+		}
+	},
+	"physicsOverrides": {
+		"mass": 15900000,
+		"wingArea": 1
+	}
+}

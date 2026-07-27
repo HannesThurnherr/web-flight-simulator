@@ -35,6 +35,9 @@ const _templates = {
 	'jdam-31': null, 'jdam-38': null,
 	'agm-86': null, 'storm-shadow': null,
 	'gbu-39': null,
+	harpoon: null,
+	tomahawk: null,
+	tochka: null,
 };
 
 // Some Sketchfab GLBs ship with junk meshes far from the body
@@ -385,6 +388,50 @@ _loader.load('/assets/models/storm-shadow.glb', (gltf) => {
 	});
 }, undefined, (err) => {
 	console.warn('[missileModels] storm-shadow model failed to load', err);
+});
+
+// UGM-84 Harpoon — 4.6 m ship-launched anti-ship missile. Replaces the
+// Storm Shadow stand-in the munition JSON used to point at, so a Harpoon
+// salvo now reads as a Harpoon salvo.
+_loader.load('/assets/models/ugm-84-harpoon.glb', (gltf) => {
+	_templates.harpoon = _normalizeMissileModel(gltf.scene, 4.60);
+	_templates.harpoon.traverse((child) => {
+		if (child.isMesh) {
+			child.castShadow = true;
+			child.receiveShadow = true;
+		}
+	});
+}, undefined, (err) => {
+	console.warn('[missileModels] harpoon model failed to load', err);
+});
+
+// BGM-109 Tomahawk — 6.25 m land-attack cruise missile. Was borrowing the
+// AGM-86 body; it now has its own.
+_loader.load('/assets/models/tomahawk.glb', (gltf) => {
+	_templates.tomahawk = _normalizeMissileModel(gltf.scene, 6.25);
+	_templates.tomahawk.traverse((child) => {
+		if (child.isMesh) {
+			child.castShadow = true;
+			child.receiveShadow = true;
+		}
+	});
+}, undefined, (err) => {
+	console.warn('[missileModels] tomahawk model failed to load', err);
+});
+
+// 9M79K Tochka-U — 6.4 m tactical ballistic missile. Stands in for the DF-21D
+// ASBM, which until now was an AMRAAM body scaled up: a ballistic round that
+// looked like an air-to-air missile.
+_loader.load('/assets/models/tochka-u.glb', (gltf) => {
+	_templates.tochka = _normalizeMissileModel(gltf.scene, 6.40);
+	_templates.tochka.traverse((child) => {
+		if (child.isMesh) {
+			child.castShadow = true;
+			child.receiveShadow = true;
+		}
+	});
+}, undefined, (err) => {
+	console.warn('[missileModels] tochka model failed to load', err);
 });
 
 // Return a fresh clone of the aim-9 template, or null if the GLB hasn't

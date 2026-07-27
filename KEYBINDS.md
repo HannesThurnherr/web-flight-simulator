@@ -33,6 +33,7 @@ modifiers list them inline (e.g. `Shift+Tab`).
 | `'` (apostrophe) | Toggle radar scope map background (Cesium terrain on/off) | menus.js |
 | `;` (semicolon) | Toggle radar scope size (compact ↔ expanded) | menus.js |
 | `Z` | Skip dialogue | menus.js |
+| `C` | Toggle first-person cockpit ↔ chase view | menus.js |
 | `B` | Open / close strike planner | strikePlanner.js |
 | `M` | Open / close commander god-eye view | commanderView.js |
 | `Esc` / `P` | Pause menu (also closes open modals) | menus.js |
@@ -64,6 +65,8 @@ Mouse:
 | `T` | Toggle telemetry overlay |
 | `R` | Toggle radar-cone debug overlay |
 | `D` | Toggle datalink-edges overlay |
+| `.` | Time scale up (1x → 2x → 4x → 8x) |
+| `,` | Time scale down |
 | `Space` | Pause / resume world |
 | `Esc` | Close commander view |
 
@@ -90,8 +93,8 @@ These are conventionally avoided so the UX stays predictable:
 
 ## Free keys (cockpit, currently unbound)
 
-`G`, `H`, `I`, `J`, `K`, `N`, `O`, `U`, `X`, `Y`,
-`,`, `.`, `/`, `\`, `[`, `]`, `=`, `-`, `0`, `7`, `8`, `9`,
+`G`, `H`, `I`, `K`, `N`, `O`, `U`, `X`, `Y`,
+`/`, `\`, `[`, `]`, `=`, `-`, `0`, `7`, `8`, `9`,
 function keys `F1`–`F12`, `Insert`, `Delete`, `Home`, `End`,
 `PgUp`, `PgDn`.
 

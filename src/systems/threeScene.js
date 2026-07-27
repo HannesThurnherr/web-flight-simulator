@@ -18,6 +18,8 @@ import * as THREE from 'three';
 import { getViewer } from '../world/cesiumWorld';
 import { particles } from '../utils/particles';
 import { initLaserPD } from './laserPD.js';
+import { initOcean } from './ocean.js';
+import { initCockpit } from './cockpit/cockpit.js';
 import { initSounds } from '../utils/gameplaySounds';
 import { loadingStatus, updateLoadingUI } from '../ui/loadingUI';
 import { loadPlayerPlane } from '../plane/loadPlayerPlane';
@@ -40,6 +42,12 @@ export function initThree(ctx) {
 	renderer.setSize(window.innerWidth, window.innerHeight);
 	renderer.setPixelRatio(window.devicePixelRatio);
 	renderer.setClearColor(0x000000, 0);
+	// Enable per-material clipping planes. The Three.js layer composites OVER
+	// the Cesium canvas with no shared depth buffer, so the ocean can't depth-
+	// occlude a surface ship's submerged hull. Instead we slice ships at the
+	// waterline with a clip plane (see npcRendering.js) so the Cesium water
+	// shows through below the cut and the hull reads as sitting IN the sea.
+	renderer.localClippingEnabled = true;
 
 	const threeContainer = document.getElementById('threeContainer');
 	threeContainer.appendChild(renderer.domElement);
@@ -113,6 +121,13 @@ export function initThree(ctx) {
 	// Directed-energy point defense (NFAC.4) renders its beam in the same
 	// camera-space scene; hand it the same scene + viewer refs.
 	try { initLaserPD(scene, getViewer()); } catch (e) { }
+	// 3D ocean patch — lives in the same camera-space world layer. Hidden
+	// until updateOcean() decides we're low + over water. Needs the renderer
+	// for its GPU FFT passes.
+	try { initOcean(scene, getViewer(), renderer); } catch (e) { console.warn('[threeScene] ocean init skipped:', e); }
+	// First-person 3D cockpit — camera-space group toggled with C in
+	// flight. Built once here; simLoop drives visibility + per-frame state.
+	try { initCockpit(scene); } catch (e) { console.warn('[threeScene] cockpit init skipped:', e); }
 
 	// Hand the refs back to main.js so it can populate its own module-
 	// scope bindings before we call the sound + plane loaders — those

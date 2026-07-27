@@ -1,5 +1,8 @@
 import * as Cesium from 'cesium';
 import { allDatalinks } from './teamDatalink.js';
+import { targetLabel } from './eventLog.js';
+import { describeAirWing } from './carrierOps.js';
+import { TIME_SCALES, getTimeScale, setTimeScale, stepTimeScale, resetTimeScale } from './timeScale.js';
 import { isRadiating, explainRadarRejection } from './sensorSystem.js';
 import {
 	MAP_COLORS, teamColor, categoryForUnit, categoryForMissile,
@@ -361,11 +364,16 @@ export class CommanderView {
 				<span style="width:8px; height:8px; border-radius:2px; background:${MAP_COLORS.player}; box-shadow:0 0 8px ${MAP_COLORS.player};"></span>MAP CONTROLS
 			</div>
 			<div id="cmdr-ctrl-toggles" style="display:flex; flex-direction:column; gap:5px;"></div>
+				<div style="margin-top:10px; padding-top:7px; border-top:1px solid rgba(120,170,210,0.16);">
+					<div style="letter-spacing:1.6px; color:#7fa8c4; font-size:9.5px; margin-bottom:5px;">TIME SCALE</div>
+					<div id="cmdr-timescale" style="display:flex; gap:4px;"></div>
+				</div>
 			<div style="margin-top:10px; padding-top:7px; border-top:1px solid rgba(120,170,210,0.16); font-size:9.5px; color:#90a8bc;">
 				<div style="letter-spacing:1.6px; color:#7fa8c4; margin-bottom:5px;">HOTKEYS</div>
 				<div style="display:flex; flex-direction:column; gap:3px;">
 					<div>${kbd('M')}toggle map</div>
 					<div>${kbd('␣')}pause / resume</div>
+					<div>${kbd(',')}${kbd('.')}time scale</div>
 					<div>${kbd('T')}trails</div>
 					<div>${kbd('R')}radar debug</div>
 					<div>${kbd('D')}datalink debug</div>
@@ -442,6 +450,30 @@ export class CommanderView {
 			host.appendChild(row);
 			this._controlRows.set(def.id, row);
 		}
+
+		// Time-scale selector. Sub-stepped in the animate loop, so 8x is eight
+		// full sim passes per frame with an unchanged dt — see timeScale.js.
+		const tsHost = p.querySelector('#cmdr-timescale');
+		this._timeScaleBtns = new Map();
+		for (const n of TIME_SCALES) {
+			const b = document.createElement('button');
+			b.type = 'button';
+			b.className = 'clickable-ui';
+			b.textContent = `${n}x`;
+			b.style.cssText = `
+				flex: 1; padding: 4px 0;
+				background: rgba(255,255,255,0.02);
+				border: 1px solid rgba(120, 170, 210, 0.18);
+				border-radius: 5px;
+				color: #c8d6e2;
+				font-family: inherit; font-size: 10.5px; letter-spacing: 0.8px;
+				cursor: pointer;
+				transition: background 0.15s, border-color 0.15s, color 0.15s;
+			`;
+			b.onclick = () => { setTimeScale(n); this._refreshControlRows(); };
+			tsHost.appendChild(b);
+			this._timeScaleBtns.set(n, b);
+		}
 		this._refreshControlRows();
 	}
 
@@ -470,9 +502,25 @@ export class CommanderView {
 				">${on ? 'ON' : 'OFF'}</span>`;
 			row.style.borderColor = on ? 'rgba(39,227,255,0.45)' : 'rgba(120,170,210,0.18)';
 		}
+		if (this._timeScaleBtns) {
+			const cur = getTimeScale();
+			const accent = MAP_COLORS.player;
+			for (const [n, b] of this._timeScaleBtns) {
+				const on = (n === cur);
+				b.style.background  = on ? accent : 'rgba(255,255,255,0.02)';
+				b.style.color       = on ? '#04121a' : '#8aa6ba';
+				b.style.borderColor = on ? 'rgba(39,227,255,0.45)' : 'rgba(120,170,210,0.18)';
+				b.style.fontWeight  = on ? '700' : '400';
+				b.style.boxShadow   = on ? `0 0 8px ${accent}66` : 'none';
+			}
+		}
 	}
 
 	// ---- Public API ---------------------------------------------------------
+
+	// Let the keybind handler push a hotkey-driven change back into the panel
+	// without importing the internals.
+	refreshControls() { this._refreshControlRows(); }
 
 	setActive(active, initialCenter = null) {
 		if (active === this.active) return;
@@ -483,6 +531,11 @@ export class CommanderView {
 			this._closeStrikePlanner();
 		}
 		this.active = active;
+
+		// Time acceleration is a map-mode tool. Closing the map always drops
+		// back to real time — handing the player back a jet that's flying 8x
+		// faster than they left it would be an unpleasant surprise.
+		if (!active) resetTimeScale();
 
 		if (active) {
 			// Only re-center on the supplied initialCenter (typically the
@@ -1152,7 +1205,14 @@ export class CommanderView {
 			else mode = '—';
 			const rng     = typeof dbg.rangeToTarget === 'number'
 				? `${(dbg.rangeToTarget / 1000).toFixed(2)} km` : '—';
-			const tgt     = dbg.targetName || (ref.target && ref.target.name) || '—';
+			// Read the LIVE target, not the debug snapshot. `debug` is only
+			// refreshed while guidance is actually running, so a round that went
+			// maddog or lost lock kept displaying whatever it USED to chase —
+			// and an unnamed target (any munition) collapsed to the literal
+			// string 'TGT', which was indistinguishable from "no data" in
+			// exactly the case worth watching: an interceptor homing on another
+			// interceptor.
+			const tgt     = ref.target ? targetLabel(ref.target) : (dbg.targetName || '—');
 			return (
 				header(typeTag, phase) +
 				row('TGT',  tgt) + row('RNG', rng) +
@@ -1186,7 +1246,85 @@ export class CommanderView {
 			const cm = ref.pilot.subsystems && ref.pilot.subsystems.countermeasures;
 			if (cm) html += row('CM',  `${cm.flareCount}F / ${cm.chaffCount}C`);
 		}
+		if (kind === 'npc') html += this._damageAndMagazineHtml(ref);
 		return html;
+	}
+
+	// Condition + magazine block for a clicked unit.
+	//
+	// Without this the map could tell you what a ship was DOING but nothing
+	// about whether it was winning: no hull state, no idea whether a quiet
+	// destroyer was holding fire or simply out of missiles. Both are the
+	// questions you actually have while watching a surface action, and both are
+	// already tracked — the HP/subsystem model in shipDamage and the per-weapon
+	// ammo in the WeaponSubsystem — they just weren't surfaced anywhere.
+	_damageAndMagazineHtml(ref) {
+		let html = '';
+
+		// ---- Air wing (carriers) ---------------------------------------------
+		// A carrier's readiness IS its deck state, not its magazine — how many
+		// airframes are spotted, how many are up, and whether the deck is
+		// currently committed to a launch or a recovery.
+		const wing = describeAirWing(ref);
+		if (wing) {
+			html += this._row('DECK', wing.state.toUpperCase());
+			html += this._row('READY', `${wing.readyOnDeck}/${wing.total} on deck`);
+			html += this._row('AIRBORNE', `${wing.airborne}/${wing.cap}`);
+			html += this._row('SORTIES', `${wing.launched} flown, ${wing.recovered} trapped, ${wing.lost} lost`);
+		}
+
+		// ---- Hull / condition ------------------------------------------------
+		if (typeof ref.hp === 'number' && typeof ref.maxHp === 'number' && ref.maxHp > 0) {
+			const frac = Math.max(0, ref.hp) / ref.maxHp;
+			const col = frac > 0.6 ? '#5fe08a' : frac > 0.3 ? '#ffcc00' : '#ff5a5a';
+			html +=
+				`<div style="display:flex; align-items:center; gap:6px; margin-top:3px;">` +
+					`<span style="opacity:0.7; min-width:34px;">HULL</span>` +
+					`<span style="flex:1; height:6px; background:rgba(255,255,255,0.08); border-radius:3px; overflow:hidden;">` +
+						`<span style="display:block; height:100%; width:${(frac * 100).toFixed(0)}%; background:${col};"></span>` +
+					`</span>` +
+					`<span style="color:${col}; min-width:52px; text-align:right;">${Math.max(0, Math.round(ref.hp))}/${ref.maxHp}</span>` +
+				`</div>`;
+			if (ref.sinking) html += this._row('STATE', 'SINKING');
+		}
+
+		// Knocked-out subsystems — the reason a ship stops moving or shooting.
+		const dead = [];
+		if (ref._mobilityHit) dead.push('PROPULSION');
+		if (ref._sensorsHit)  dead.push('RADAR');
+		if (ref._disabledWeapons && ref._disabledWeapons.size) {
+			for (const t of ref._disabledWeapons) dead.push(t);
+		}
+		if (dead.length) html += this._row('DAMAGE', dead.join(', '));
+
+		// ---- Magazine --------------------------------------------------------
+		const ws = ref.pilot && ref.pilot.subsystems && ref.pilot.subsystems.weapons;
+		if (ws && Array.isArray(ws.weapons)) {
+			const rows = [];
+			for (const w of ws.weapons) {
+				if (!w || !w.type || w.ammo === Infinity) continue;
+				const max = w.maxAmmo || w.ammo || 0;
+				if (!max) continue;
+				const f = Math.max(0, w.ammo) / max;
+				const col = w.ammo <= 0 ? '#ff5a5a' : f < 0.34 ? '#ffcc00' : '#c8d6e2';
+				rows.push(
+					`<div style="display:flex; justify-content:space-between; gap:10px;">` +
+						`<span style="opacity:0.8">${w.type}${w.role ? ` <span style="opacity:0.5">${w.role}</span>` : ''}</span>` +
+						`<span style="color:${col}">${Math.max(0, w.ammo)}/${max}</span>` +
+					`</div>`);
+			}
+			if (rows.length) {
+				html += `<div style="margin-top:6px; padding-top:5px; border-top:1px solid rgba(120,170,210,0.16);">` +
+					`<div style="letter-spacing:1.4px; font-size:9px; color:#7fa8c4; margin-bottom:3px;">MAGAZINE</div>` +
+					rows.join('') + `</div>`;
+			}
+		}
+		return html;
+	}
+
+	_row(k, v) {
+		return `<div style="display:flex; justify-content:space-between; gap:10px;">` +
+			`<span style="opacity:0.7">${k}</span><span>${v}</span></div>`;
 	}
 
 	// Cheap terrain-occlusion test for a world-space point: cast a ray from

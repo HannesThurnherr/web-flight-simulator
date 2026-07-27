@@ -7,8 +7,12 @@ import { SIGNATURES, irAspectFactor, aspectAngleFromVectors } from '../systems/s
 import { getActiveFlares } from './flare.js';
 import { airDensity, GRAVITY } from '../plane/aeroModel.js';
 import { cloneAim9Template, cloneMissileTemplate } from './missileModels.js';
-import { pushKill } from '../systems/eventLog.js';
+import { pushKill, targetLabel } from '../systems/eventLog.js';
+import { navalLog, isAntiShipRound } from '../systems/navalDebug.js';
+import { interceptSucceeds } from '../systems/interceptPk.js';
+import { seaSurfaceHeightAt } from '../world/terrain.js';
 import { mortallyWound } from '../systems/deathSequence.js';
+import { applyShipDamage } from '../systems/shipDamage.js';
 import { recordAdHit } from '../systems/adStats.js';
 import { JetFlame } from '../plane/jetFlame.js';
 import { validateMunitionSpec } from './munitionSpec.js';
@@ -37,6 +41,11 @@ const EJECT_DURATION = 0.9;          // s — stop applying after this
 // before terrain kill arms. Harmless for air-launched stores (nowhere near
 // the ground) and for cruise missiles (own terrain-following takes over).
 const LAUNCH_TERRAIN_GRACE_S = 0.7;
+
+// Seekers that are anti-AIR and must never strike a surface hull. Everything
+// NOT in this set — naval gun shells, bombs, cruise and anti-ship weapons —
+// is a surface-attack weapon and may.
+const AIR_TO_AIR_SEEKERS = new Set(['ir', 'iir', 'active_radar']);
 
 // ============================================================================
 // AIM-9X Block II–ish short-range IR missile.
@@ -98,8 +107,13 @@ export class Missile {
 		// off the rack, not thrown forward. The downward separation is applied
 		// by applyLaunchEjection() right after construction (it needs the
 		// launcher's roll). `launchSpeedOffset` (per-munition JSON) is kept for
-		// schema compatibility but no longer added to forward speed.
-		this.speed = speed;
+		// schema compatibility but no longer added to forward speed —
+		// EXCEPT for `flight.muzzleLaunch` rounds (naval gun shells), which
+		// have no rocket motor and get ALL their velocity from the gun: their
+		// launchSpeedOffset IS the muzzle velocity and must be the initial
+		// speed, or the round leaves at the (slow) launcher speed and plunges
+		// straight into the sea off the bow.
+		this.speed = speed + (d.flight.muzzleLaunch ? (d.flight.launchSpeedOffset || 0) : 0);
 		// Belly-relative ejection velocity (ENU m/s) + remaining time. Set by
 		// applyLaunchEjection; decays over EJECT_TAU during the first moments.
 		this._ejectE = 0; this._ejectN = 0; this._ejectU = 0;
@@ -291,6 +305,17 @@ export class Missile {
 
 	update(dt, npcs) {
 		if (!this.active) {
+			// An interceptor / CIWS round kills a munition by flipping `active`
+			// from the outside — destroy() never runs, so this is the only place
+			// that death is observable. Distinguishes "shot down" from "flew
+			// into the sea", which look identical from the cockpit.
+			if (!this._deathLogged && isAntiShipRound(this)) {
+				this._deathLogged = true;
+				navalLog('DEATH', {
+					type: this.type, reason: this._deathReason || 'killed-as-target (intercepted)',
+					ageS: this.maxLife - this.life, alt: this.alt, pitch: this.pitch,
+				});
+			}
 			if (this.trail.length > 0) this.updateTrail(dt);
 			return;
 		}
@@ -308,7 +333,7 @@ export class Missile {
 		}
 
 		this.life -= dt;
-		if (this.life <= 0) { this.destroy(); return; }
+		if (this.life <= 0) { this._deathReason = 'life-expired'; this.destroy(); return; }
 
 		// ---- Speed profile: boost → coast ---------------------------------
 		// Drag scales with ρ·v² using the data's reference operating
@@ -404,6 +429,30 @@ export class Missile {
 				if (!npc || npc === this.launcher || npc === this) continue;
 				if (npc.destroyed) continue;
 				if (npc.team && this.team && npc.team === this.team) continue;
+				// Don't detonate just from flying PAST another in-flight munition.
+				// A sea-skimming Harpoon shouldn't blow up on an enemy interceptor
+				// crossing its path, and two opposing missile streams shouldn't
+				// annihilate each other mid-ocean. We only "hit" a munition if
+				// it's specifically OUR target — i.e. we're an interceptor sent
+				// to kill it (that's how RAM/SM-6/CIWS still down cruise missiles).
+				const ncls = npc.signature && npc.signature.unitClass;
+				if ((ncls === 'missile' || ncls === 'cruise_missile' || ncls === 'bomb') &&
+					npc !== this.target) continue;
+				// An anti-AIR missile must never detonate on a SHIP — an AMRAAM
+				// or a RAM flying over a hull is not attacking it.
+				//
+				// This used to be spelled "anything that isn't an anti_ship
+				// seeker", which quietly excluded every SURFACE-ATTACK weapon
+				// too. The Mk 45 naval gun shell is seekerType 'null', so a
+				// round whose entire purpose is hitting ships could not hit a
+				// ship: it flew through the target and splashed beyond, which
+				// is what "the guns fire into the sea" actually was. NullSeeker
+				// also nulls its target, so the proximity fuze never ran either
+				// — the shell had no way at all to hurt a hull.
+				//
+				// Correct rule: only the AIR-TO-AIR seekers refuse a surface
+				// target. Guns, bombs and cruise weapons may all strike one.
+				if (npc.kind === 'surface' && AIR_TO_AIR_SEEKERS.has(this.data.seekerType)) continue;
 				const missSq = this._segmentMissDistSq(prevLon, prevLat, prevAlt, this.lon, this.lat, this.alt, npc);
 				if (missSq < killRadiusSq) {
 					this.hitNPC(npc);
@@ -461,11 +510,57 @@ export class Missile {
 		return cx * cx + cy * cy + cz * cz;
 	}
 
+	// Per-shot endgame outcome for an interceptor engaging a MUNITION,
+	// expressed as an AIM-POINT BIAS rather than a damage roll.
+	//
+	// This distinction is the whole point. A RIM-116 that reaches a Harpoon
+	// destroys it — warheads are not probabilistic at these scales. What
+	// actually varies is whether the endgame works at all: whether the seeker
+	// resolves a small, fast target against clutter, whether the fire-control
+	// solution is good enough, whether the round can pull the lead it needs.
+	// Modelling that as "detonates on the target but the target flies on" is
+	// nonsense; modelling it as "guides to a point beside the target and sails
+	// past" is what a real miss looks like, and the existing swept-segment and
+	// proximity-fuze checks then correctly decline to trigger.
+	//
+	// Decided ONCE per shot, on first guidance, so a round that is going to
+	// miss diverges early and visibly instead of snapping aside at the merge.
+	// Returns the true target for anything that isn't a munition — see
+	// interceptPk, which yields probability 1 there.
+	_aimPoint() {
+		const t = this.target;
+		if (!t || typeof t.lon !== 'number') return t;
+		if (this._aimBias === undefined) {
+			this._aimBias = null;
+			if (!interceptSucceeds(this.type, t)) {
+				// Offset comfortably outside the fuze envelope, so the round
+				// passes without detonating rather than scoring a dud hit.
+				const fuze = (this.data && this.data.warhead && this.data.warhead.fuzeSenseRadiusM) || 30;
+				const r = fuze * (1.8 + Math.random() * 1.6);
+				const a = Math.random() * Math.PI * 2;
+				this._aimBias = {
+					e: Math.cos(a) * r,
+					n: Math.sin(a) * r,
+					u: (Math.random() - 0.5) * r,
+				};
+			}
+		}
+		if (!this._aimBias) return t;
+		const cosLat = Math.cos((t.lat || 0) * Math.PI / 180) || 1e-6;
+		return {
+			lon: t.lon + this._aimBias.e / (111320 * cosLat),
+			lat: t.lat + this._aimBias.n / 111320,
+			alt: (t.alt || 0) + this._aimBias.u,
+			speed: t.speed, heading: t.heading, pitch: t.pitch,
+		};
+	}
+
 	// Proportional navigation with lead pursuit and G-limited turn cap.
 	// Mirrors the AIM-120's guidance with tighter terminal behavior.
 	_guide(dt) {
+		const aim       = this._aimPoint() || this.target;
 		const myPos     = Cesium.Cartesian3.fromDegrees(this.lon, this.lat, this.alt);
-		const targetPos = Cesium.Cartesian3.fromDegrees(this.target.lon, this.target.lat, this.target.alt);
+		const targetPos = Cesium.Cartesian3.fromDegrees(aim.lon, aim.lat, aim.alt);
 
 		// LOS in ECEF → local ENU (in meters, so we can add target velocity
 		// × time-to-go in the same units).
@@ -556,7 +651,7 @@ export class Missile {
 			headingError: dH, pitchError: dP,
 			tgo, cosAngleToNose: cosAng,
 			turnCapDegPerS: Cesium.Math.toDegrees(maxTurnRadPerS),
-			targetName: this.target.name || 'TGT',
+			targetName: targetLabel(this.target),
 		};
 	}
 
@@ -861,6 +956,7 @@ export class Missile {
 				if (!u.signature) continue;
 				if (u.signature.unitClass === 'missile') continue;
 				if (u.signature.unitClass === 'flare') continue;
+				if (u.kind === 'surface') continue;   // IR AAM never re-acquires a ship
 				const s = this._irScore(u, coneHalfRad, trackRange, aspectEnabled);
 				if (s > bestUScore) {
 					bestUScore = s;
@@ -882,6 +978,19 @@ export class Missile {
 		// came from a SAM/AAA battery. Credit the hit against the intended
 		// target column it was fired at.
 		if (this._adStats) { try { recordAdHit(this._adStats.type, this._adStats.column); } catch (e) {} }
+		// Surface ships absorb hits through the layered damage model (HP +
+		// subsystem knockouts + sinking) rather than a one-shot kill. The
+		// warhead's kill radius doubles as the damage magnitude (bigger
+		// warhead → more damage). onKill (player scoring) only fires on the
+		// blow that actually starts her sinking.
+		if (npc && npc.kind === 'surface') {
+			this._deathReason = 'HIT SHIP ' + (npc.name || '?');
+			const dmg = (this.data && this.data.warhead && this.data.warhead.killRadiusM) || 12;
+			applyShipDamage(npc, dmg, { lon: this.lon, lat: this.lat, alt: this.alt }, this.type, this.launcher);
+			if (npc.sinking && this.onKill) this.onKill(npc);
+			this.destroy();
+			return;
+		}
 		// Aircraft go through the burning-spiral death sequence instead of an
 		// instant fireball: mortallyWound logs the kill, spawns a hit flash,
 		// and arms the tumble. The missile still detonates (below) but the
@@ -892,6 +1001,11 @@ export class Missile {
 			this.destroy();
 			return;
 		}
+		// NOTE: there is deliberately no lethality roll here. If an interceptor's
+		// warhead resolves onto a munition, the munition dies — that is what
+		// warheads do. Whether the intercept works at all is decided upstream,
+		// in _aimPoint, as a guidance miss.
+		//
 		// Non-aircraft (cruise missiles, decoys, ground units): instant kill.
 		// Log the kill before mutating state — captures shooter / target
 		// names while they're still well-formed. The post-merge
@@ -922,12 +1036,50 @@ export class Missile {
 	}
 
 	checkTerrainCollision(npcs) {
-		// Launch grace: don't let a missile self-detonate on the rail just
-		// because its launcher sits a hair under a coarse terrain tile.
-		if ((this.maxLife - this.life) < LAUNCH_TERRAIN_GRACE_S) return;
 		const cartographic = Cesium.Cartographic.fromDegrees(this.lon, this.lat);
-		const terrainHeight = this.viewer.scene.globe.getHeight(cartographic);
-		if (terrainHeight !== undefined && this.alt < terrainHeight) {
+		const rawHeight = this.viewer.scene.globe.getHeight(cartographic);
+		if (rawHeight === undefined || rawHeight === null) return;
+
+		// Floor the collision surface at the STABLE sea reference. Raw
+		// getHeight over open ocean swings by 100+ m as tile LOD streams in
+		// (measured: -137 → -19 → +25 for one spot over a few seconds), and a
+		// sea-skimmer holding a perfect 20 m skim gets detonated the instant
+		// that value steps up past it. Nothing in this world sits below sea
+		// level, so taking the higher of the two discards the garbage-low ocean
+		// readings while land — which is above sea level by definition — still
+		// collides exactly as before.
+		const seaRef = seaSurfaceHeightAt(this.viewer, this.lon, this.lat);
+		const terrainHeight = (seaRef != null) ? Math.max(rawHeight, seaRef) : rawHeight;
+
+		// Launch grace. A round that is BELOW the surface in its first moments
+		// isn't flying into anything — it was BORN there, because its launcher's
+		// idea of the surface disagreed with the globe's. Lift it clear instead
+		// of detonating it. Skipping the check (the old behaviour) wasn't
+		// enough: the round stayed underwater, the grace expired, and the whole
+		// salvo went up together — the "Harpoons splash on launch" failure, and
+		// the screen white-out from a dozen simultaneous explosions.
+		//
+		// This makes the failure mode structurally impossible rather than
+		// merely unlikely, which matters because the disagreement can come from
+		// tile LOD flips that no amount of reference-unification fully removes.
+		// Terrain stays lethal the moment the grace ends, so a round that
+		// genuinely flies into a hillside still dies.
+		if ((this.maxLife - this.life) < LAUNCH_TERRAIN_GRACE_S) {
+			if (this.alt < terrainHeight + 2) {
+				if (isAntiShipRound(this)) {
+					navalLog('GRACE-LIFT', {
+						type: this.type, ageS: this.maxLife - this.life,
+						wasAlt: this.alt, surface: terrainHeight, under: terrainHeight - this.alt,
+						pitch: this.pitch,
+					});
+				}
+				this.alt = terrainHeight + 2;
+				if (this.pitch < 0) this.pitch = 0;   // stop it driving straight back under
+			}
+			return;
+		}
+		if (this.alt < terrainHeight) {
+			this._deathReason = 'terrain/sea impact';
 			// Splash damage: every NPC within the warhead's kill radius
 			// dies. Without this, a near-miss where the bomb plows
 			// into terrain a few metres from the target leaves the
@@ -990,6 +1142,24 @@ export class Missile {
 	}
 
 	destroy() {
+		// Trace what actually ends an anti-ship round. Callers stamp
+		// `_deathReason` before destroying; anything unstamped is a path we
+		// haven't accounted for, which is itself the useful signal.
+		if (this.active && isAntiShipRound(this)) {
+			const sea = seaSurfaceHeightAt(this.viewer, this.lon, this.lat);
+			navalLog('DEATH', {
+				type: this.type,
+				reason: this._deathReason || 'UNSTAMPED',
+				ageS: this.maxLife - this.life,
+				alt: this.alt,
+				sea: sea == null ? 'null' : sea,
+				aboveSea: sea == null ? '?' : (this.alt - sea),
+				pitch: this.pitch,
+				speed: this.speed,
+				lostLock: !!this.lostLock,
+				tgt: (this.target && this.target.name) || (this.target ? 'unnamed' : 'none'),
+			});
+		}
 		this.active = false;
 		if (this.mesh) {
 			this.scene.remove(this.mesh);

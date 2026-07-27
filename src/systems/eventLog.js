@@ -82,6 +82,20 @@ export function nameOf(u) {
 	return 'UNKNOWN';
 }
 
+// Like nameOf, but for "what is this weapon guiding on" readouts. When the
+// target is itself a munition, append WHOSE it is — an interceptor homing on
+// another interceptor is the single most confusing thing to see on the
+// tactical map, and "SM-6" alone doesn't say whether it's the one you just
+// launched or the one coming back at you. Reads e.g. `SM-6 ←RED-DDG`.
+export function targetLabel(u) {
+	const base = nameOf(u);
+	if (u && typeof u === 'object' && (u.data || u.type) && !u.name) {
+		const owner = u.launcher ? nameOf(u.launcher) : null;
+		if (owner && owner !== 'UNKNOWN') return `${base} ←${owner}`;
+	}
+	return base;
+}
+
 export function teamOf(u) {
 	if (u == null || typeof u === 'string') return null;
 	return u.team || null;

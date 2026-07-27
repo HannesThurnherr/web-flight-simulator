@@ -5,6 +5,7 @@ import { particles } from '../utils/particles';
 import { soundManager } from '../utils/soundManager';
 import { pushKill } from '../systems/eventLog.js';
 import { mortallyWound } from '../systems/deathSequence.js';
+import { applyShipDamage } from '../systems/shipDamage.js';
 import { recordAdHit } from '../systems/adStats.js';
 
 export class Bullet {
@@ -124,6 +125,15 @@ export class Bullet {
 			return;
 		}
 
+		// Pre-move position: the hit test below sweeps the whole segment
+		// flown this frame rather than sampling only the endpoint. A CIWS
+		// round at 1500 m/s covers ~25 m per frame, but the hit radius
+		// against a cruise missile clamps to 3 m — endpoint sampling let
+		// most well-aimed rounds tunnel clean through the target between
+		// two frames, which is why the inner gun layer almost never
+		// scored. Mirrors Missile._segmentMissDistSq.
+		const prevLon = this.lon, prevLat = this.lat, prevAlt = this.alt;
+
 		const newPos = movePosition(this.lon, this.lat, this.alt, this.heading, this.pitch, this.speed * dt);
 		this.lon = newPos.lon;
 		this.lat = newPos.lat;
@@ -134,9 +144,15 @@ export class Bullet {
 		if (npcs) {
 			for (const npc of npcs) {
 				if (!npc || npc.destroyed) continue;
+				// Munition targets retire by clearing `.active` rather than
+				// `.destroyed`; without this a round "kills" a missile that
+				// already detonated, logging a phantom kill and a second
+				// fireball. Aircraft don't define `.active`, so they're
+				// unaffected.
+				if (npc.active === false) continue;
 				if (npc === this.launcher) continue;
 				if (npc.team && this.team && npc.team === this.team) continue;
-				const distSq = this.calculateDistSqToNPC(npc);
+				const distSq = this._segmentMissDistSq(prevLon, prevLat, prevAlt, npc);
 				// Hit radius scales with the target's physical size.
 				// A 20 m radius is right for a fighter (≈19 m
 				// visualSize) but 7× oversized for a cruise missile
@@ -213,9 +229,40 @@ export class Bullet {
 		return dLon * dLon + dLat * dLat + dAlt * dAlt;
 	}
 
+	// Closest-approach distance² between the segment flown this frame
+	// (lon0,lat0,alt0 → this.lon,this.lat,this.alt) and the target's
+	// position. Flat-Earth metric frame is plenty at a <40 m segment
+	// length. The target is treated as fixed within the frame: it moves
+	// at most ~7 m while the round moves 25, and the perpendicular miss
+	// distance — the quantity actually compared against the hit radius —
+	// is barely sensitive to that.
+	_segmentMissDistSq(lon0, lat0, alt0, target) {
+		const mPerDegLon = 111320 * Math.cos(Cesium.Math.toRadians(lat0));
+		const ax = (target.lon - lon0) * mPerDegLon;
+		const ay = (target.lat - lat0) * 111320;
+		const az = (target.alt - alt0);
+		const bx = (this.lon - lon0) * mPerDegLon;
+		const by = (this.lat - lat0) * 111320;
+		const bz = (this.alt - alt0);
+		const segLenSq = bx * bx + by * by + bz * bz;
+		if (segLenSq < 1e-6) return ax * ax + ay * ay + az * az;
+		let t = (ax * bx + ay * by + az * bz) / segLenSq;
+		t = Math.max(0, Math.min(1, t));
+		const cx = ax - bx * t, cy = ay - by * t, cz = az - bz * t;
+		return cx * cx + cy * cy + cz * cz;
+	}
+
 	hitTarget(target) {
 		// AD hit-rate diagnostic (AAA rounds stamped at the muzzle).
 		if (this._adStats) { try { recordAdHit(this._adStats.type, this._adStats.column); } catch (e) {} }
+		// Surface ships: a gun/CIWS round does little to a warship — chip a
+		// couple of HP and move on through the damage model, never a one-shot.
+		if (target && target.kind === 'surface') {
+			applyShipDamage(target, 2, { lon: this.lon, lat: this.lat, alt: this.alt }, 'GUN', this.launcher);
+			if (target.sinking && this.onKill) this.onKill(target);
+			this.destroy();
+			return;
+		}
 		// Aircraft → burning-spiral death sequence (logs kill, hit flash,
 		// tumble). The bullet is consumed either way.
 		if (mortallyWound(target, { shooter: this.launcher, weapon: 'GUN', reason: 'kill' })) {
@@ -223,6 +270,11 @@ export class Bullet {
 			this.destroy();
 			return;
 		}
+		// No lethality roll here either: a 20 mm round that connects with a
+		// missile airframe kills it. A CIWS misses because its rounds go past,
+		// not because they bounce off — that's modelled as barrel dispersion in
+		// the gun's fire solution (see gunLead in npcPilots.js), so most of the
+		// burst physically misses and the ones that connect count.
 		pushKill({
 			shooter: this.launcher,
 			target,

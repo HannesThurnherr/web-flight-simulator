@@ -12,8 +12,10 @@
 // dependency, so moving out of the class is a straight function move.
 // ============================================================================
 
-import { WeaponSubsystem } from './ai/subsystems.js';
+import { WeaponSubsystem, CountermeasureSubsystem } from './ai/subsystems.js';
 import { LaserPDSubsystem } from './laserPD.js';
+import { airDensity } from '../plane/aeroModel.js';
+import { carrierFlightOpsActive } from './carrierOps.js';
 
 // Is `target` (an in-flight missile / PGM) closing on `unit`? Point-defence
 // batteries use this to engage the HARM / cruise / SAM-shot diving on THEM,
@@ -43,7 +45,8 @@ function isInboundThreat(unit, target, maxRangeM) {
 export function makePilot(type, lon, lat, alt, params) {
 	switch (type) {
 		case 'orbit':
-			return makeOrbitPilot(lon, lat, params.altitudeM ?? alt, params.radiusM ?? 40000);
+			return makeOrbitPilot(lon, lat, params.altitudeM ?? alt, params.radiusM ?? 40000,
+				params.speedMps);
 		case 'static-sam':
 			return makeStaticSamPilot(params);
 		case 'static-aaa':
@@ -54,6 +57,11 @@ export function makePilot(type, lon, lat, alt, params) {
 			return makeEwrPilot();
 		case 'static-target':
 			return makeStaticTargetPilot();
+		case 'ship-combatant':
+		case 'ship':
+			return makeShipPilot(lon, lat, alt, params);
+		case 'coastal-battery':
+			return makeCoastalBatteryPilot(params);
 		// Future:
 		//   case 'patrol':   return makePatrolPilot(params.waypoints);
 		//   case 'fighter':  return createFighterPilot(/* unit filled by caller */);
@@ -65,12 +73,16 @@ export function makePilot(type, lon, lat, alt, params) {
 
 // Orbit pilot — holds a circle at a given altitude + radius around a
 // centre point. Used by AWACS / tanker platforms. No weapons.
-export function makeOrbitPilot(centerLon, centerLat, altitude, radiusM) {
+// `speedMps` matters more than it looks: this pilot is no longer only for
+// AWACS. A shipborne helo picket flies the same orbit-a-point pattern at a
+// fifth of the speed, and at the hardcoded 180 m/s it would circle its parent
+// ship like a jet, which reads wrong and makes its 9 km orbit meaningless.
+export function makeOrbitPilot(centerLon, centerLat, altitude, radiusM, speedMps) {
 	const command = {
 		targetHeading: 0,
 		targetPitch:   0,
 		throttle:      0.6,
-		targetSpeed:   180,   // AWACS cruise
+		targetSpeed:   (typeof speedMps === 'number') ? speedMps : 180,   // default: AWACS cruise
 		boost:         false,
 		fireFlare:     false,
 		fireWeapon:    false,
@@ -998,6 +1010,865 @@ export function makeStaticAaaPilot(params = {}) {
 			command.weaponTarget = pick.target;
 			command.gunHeading  = lead.heading + dh;
 			command.gunPitch    = lead.pitch   + dp;
+		},
+	};
+}
+
+// ============================================================================
+// Ship pilot — surface combatant (Arleigh Burke-class destroyer).
+//
+// A ship is a mobile SAM site + strike platform + point-defence emplacement
+// rolled into one moving hull, so this pilot composes the patterns proven by
+// the static pilots above:
+//   - MOVEMENT: writes targetHeading/targetSpeed (NOT pitch) for the surface
+//     kinematic integrator (see surfaceMovement.js). Follows a waypoint
+//     route, orbits a patrol station, or holds a slow box near its spawn;
+//     the coastline lookahead (npc._landAhead/_landAheadBearing, filled by
+//     npcUpdate) hard-overrides the course to keep the hull off the rocks.
+//   - LAYERED AIR DEFENCE: one WeaponSubsystem entry per layer (SM-6 area
+//     SAM, RAM point SAM, CIWS gun), each with its own envelope + cooldown.
+//     The scheduler fires the single most-urgent ready shot each frame;
+//     per-weapon fireRate serialises the layers across frames so a
+//     saturation raid gets engaged outer-to-inner. Reuses isInboundThreat()
+//     (the "is this Harpoon actually coming at us" gate) from this file.
+//   - OFFENCE: Harpoon (anti-ship, homes the moving ship), Tomahawk (land-
+//     attack cruise), Mk 45 gun (ballistic shell with a solved lead+loft).
+//     Fired opportunistically when no higher-priority defensive shot is due.
+//   - EVASION: an inbound missile inside the evade ring turns the hull to
+//     beam the threat at flank speed and pumps flares.
+//
+// The command object it writes is the SAME shape an AI fighter or a future
+// player ShipController produces, so nothing downstream cares who filled it.
+// ============================================================================
+export function makeShipPilot(lon, lat, alt, params = {}) {
+	const DEG = Math.PI / 180;
+
+	// ---- Movement config -------------------------------------------------
+	const cruiseSpeed = params.cruiseSpeedMps ?? 9;    // ~17 kt economical
+	const maxSpeed    = params.maxSpeedMps    ?? 16;   // ~31 kt flank
+	const turnRate    = params.turnRateMaxDegPerS ?? 2.5;
+	const accelTau    = params.accelTauS ?? 30;
+	const waypoints   = Array.isArray(params.waypoints) && params.waypoints.length ? params.waypoints : null;
+	const patrolRadius = params.patrolRadiusM ?? 0;
+	const homeLon = (params.stationLon ?? lon), homeLat = (params.stationLat ?? lat);
+
+	// ---- Weapon layers ---------------------------------------------------
+	// Each weapon JSON entry: { type(simType), role, ammo, fireRate,
+	// maxInFlight, minRange, maxRange, salvoSize?, reengageS?, muzzleVelMps? }
+	const layerCfg = (params.weapons || []).map(w => ({
+		type: w.type,
+		role: w.role || 'sam',
+		ammo: w.ammo ?? 8, maxAmmo: w.ammo ?? 8,
+		fireRate: w.fireRate ?? 2.0,
+		maxInFlight: w.maxInFlight ?? 4,
+		lastFire: -Infinity,
+		minRange: w.minRange ?? 0,
+		maxRange: w.maxRange ?? 20000,
+		reengageS: w.reengageS ?? 6,
+		salvoSize: w.salvoSize ?? 1,    // missiles committed per engagement (sam / antiship)
+		// Cells held back for threats only this layer can stop (see the SAM
+		// branch of scheduleShot). 0 = spend the magazine freely.
+		reserveForBallisticN: w.reserveForBallisticN ?? 0,
+		dispersionDeg: w.dispersionDeg,   // gun cone; undefined → gunLead default
+		muzzleVelMps: w.muzzleVelMps ?? 1000,
+	}));
+	const weapons = new WeaponSubsystem({ weapons: layerCfg });
+	const weaponByRole = (role) => layerCfg.find(w => w.role === role);
+	const countermeasures = new CountermeasureSubsystem({
+		flares: params.flares ?? 80, chaff: params.chaff ?? 80, minFlareInterval: 0.5,
+	});
+
+	// ---- Engageable-class sets per layer ---------------------------------
+	// THREAT vs INTERCEPTOR discrimination. The whole "missile soup" problem is
+	// telling an incoming threat apart from a friendly/transiting interceptor.
+	// Two signals do it cleanly:
+	//   1. CLASS. Anti-ship/cruise missiles and bombs/shells are their own
+	//      classes ('cruise_missile', 'bomb'). Air-to-air & surface-to-air
+	//      INTERCEPTORS (AAMs, SAMs, ARMs) are all unitClass 'missile'. So we
+	//      simply NEVER engage 'missile' — that alone stops two ships trading
+	//      SAMs at each other's SAMs.
+	//   2. INBOUND. A munition is only worth an interceptor if it's actually
+	//      closing on us (isInboundThreat, applied in pickAirTarget). A shell
+	//      arcing toward a different ship, or our own outbound store, is
+	//      ignored even though it's the "right" class.
+	//
+	// Long-range area SAM (SM-6): aircraft anywhere in envelope + INBOUND
+	// anti-ship/cruise missiles (it's a real ASM-defence weapon). Not bombs —
+	// a 5" shell is too small/fast for an area SAM to bother with.
+	const SAM_AIR = new Set([
+		'fighter', 'stealth_fighter', 'stealth_bomber', 'awacs', 'cargo', 'drone_isr',
+		'cruise_missile',
+	]);
+	// Inner point-defence (RAM / CIWS): the close-in hard-kill layer — INBOUND
+	// anti-ship/cruise missiles AND inbound gun shells (yes, CIWS swats Mk45
+	// rounds), plus a last-ditch shot at a close aircraft. Never 'missile'.
+	const POINT_DEFENCE = new Set(['cruise_missile', 'bomb', 'fighter', 'drone_isr']);
+	// Classes still engageable once the SAM magazine is down to its ballistic
+	// reserve. A ballistic round is `cruise_missile` class like everything else
+	// (it's the SPEED that makes it a different problem), so the class set is
+	// only half the gate — isBallisticThreat below does the rest.
+	const BALLISTIC_ONLY = new Set(['cruise_missile']);
+	const SHIP_ONLY = new Set(['ship']);
+	const SHORE_AND_SHIP = new Set(['ship', 'building', 'sam_site', 'ewr', 'ground']);
+	const LAND_TARGETS = new Set(['building', 'sam_site', 'ewr', 'ground']);
+
+	const EVADE_RANGE_M = params.evadeRangeM ?? 16000;  // inbound ring → maneuver
+	const FLARE_RANGE_M = params.flareRangeM ?? 7000;   // inbound ring → CM dump
+	// Surface pursuit: how far out we're willing to run a hostile hull down
+	// once we can no longer reach it from here. Set 0 to disable pursuit for a
+	// ship that must hold its station / route regardless.
+	const PURSUE_RANGE_M = params.pursueRangeM ?? 150000;
+	// Close to this fraction of the weapon's max range before switching from
+	// "run him down" to "hold contact". The margin keeps the target comfortably
+	// inside the envelope instead of parked on its edge, where a few minutes of
+	// relative drift would break the engagement.
+	const PURSUE_CLOSE_FRAC = params.pursueCloseFrac ?? 0.75;
+	// Cooperative air-defence: ships within this radius of each other share a
+	// fire-control picture (CEC-style) and won't double-engage the same track.
+	const COORD_RADIUS_M = params.coordRangeM ?? 150000;
+
+	const command = {
+		targetHeading: 0, targetPitch: 0, throttle: 1, targetSpeed: cruiseSpeed,
+		boost: false, fireFlare: false, fireWeapon: false,
+		weaponType: null, weaponTarget: null, gunHeading: null, gunPitch: null,
+		// Muzzle speed the ballistic solution was computed with, so the round is
+		// actually launched at it (see spawnNpcMissile).
+		gunLaunchSpeedMps: null,
+		// kinematic limits read by the surface integrator
+		turnRateMaxDegPerS: turnRate, accelTauS: accelTau,
+		activeBehaviorName: 'Transit',
+	};
+
+	const pilotState = {
+		wpIndex: 0,
+		engageCooldown: new Map(),   // target → sim-time of last engagement (navalgun/landattack)
+		salvos: {},                  // role → { target, remaining } committed salvo in progress
+		boxAngle: (params.initialHeading ?? 0),
+		boxTurnDir: 1,
+	};
+
+	// ---- Geo helpers -----------------------------------------------------
+	function enu(from, to) {
+		const cosLat = Math.cos((from.lat || 0) * DEG);
+		return {
+			e: (to.lon - from.lon) * 111320 * cosLat,
+			n: (to.lat - from.lat) * 111320,
+			u: (to.alt || 0) - (from.alt || 0),
+		};
+	}
+	function bearing(from, to) { const d = enu(from, to); return (Math.atan2(d.e, d.n) / DEG + 360) % 360; }
+	function horizRange(from, to) { const d = enu(from, to); return Math.hypot(d.e, d.n); }
+
+	// ---- Inbound-missile scan (evade + defend cueing) --------------------
+	function nearestInbound(unit) {
+		if (!unit.contacts) return null;
+		let best = null, bestR = Infinity;
+		for (const [target, c] of unit.contacts) {
+			if (!target || target.destroyed || target.active === false) continue;
+			if (target.team && unit.team && target.team === unit.team) continue;
+			const cls = target.signature && target.signature.unitClass;
+			// Evade/flare only for the threats that home on the ship — sea-
+			// skimming anti-ship/cruise missiles and bombs. (Don't react to
+			// passing 'missile'-class interceptors; that caused ships to flee
+			// their own outbound SAMs.)
+			if (cls !== 'cruise_missile' && cls !== 'bomb') continue;
+			if (!isInboundThreat(unit, target, EVADE_RANGE_M)) continue;
+			const r = c.radar ? c.radar.range : horizRange(unit, target);
+			if (r < bestR) { bestR = r; best = { target, range: r }; }
+		}
+		return best;
+	}
+
+	// ---- Air / PGM target picker (SAM, RAM, CIWS layers) -----------------
+	// allowed: Set of engageable unitClass. useCooldown gates re-engagement
+	// (area SAM); point-defence layers pass false so they hammer the leaker.
+	// opts.skipEngaged  hold fire while the team already has a shot on this
+	//                   track (area SAM salvo doctrine).
+	// opts.coordinate   consult the task group's engagement picture at all.
+	//                   FALSE for the inner layers — see below.
+	// A ballistic threat is one the inner layers realistically cannot stop:
+	// it arrives fast and steep. Identified from the munition's own tags where
+	// they exist, with a closure-speed fallback so any future fast mover is
+	// covered without touching this list.
+	function isBallisticThreat(t) {
+		const tags = t && t.data && t.data.tags;
+		if (Array.isArray(tags) && tags.includes('ballistic')) return true;
+		return (t && t.speed || 0) > 900;
+	}
+
+	function pickAirTarget(unit, weapon, now, allowed, useCooldown, dl, opts = {}) {
+		const skipEngaged = !!opts.skipEngaged;
+		const coordinate  = opts.coordinate !== false;
+		const requireBallistic = !!opts.requireBallistic;
+		if (!unit.contacts) return null;
+		let best = null, bestScore = Infinity;
+		for (const [target, c] of unit.contacts) {
+			if (!target || target.destroyed || target.active === false) continue;
+			if (target.team && unit.team && target.team === unit.team) continue;
+			// Salvo doctrine (area SAM): leave a threat alone while ANYONE on the
+			// team still has a shot that might yet kill it — so a fresh salvo
+			// only goes once the previous one has demonstrably failed, and ships
+			// divide the raid instead of all dumping on the same bandit.
+			//
+			// hasUnresolvedShot, not isEngaged: "an interceptor is alive" is not
+			// the same question as "the shot might still work". A SAM that has
+			// already flown past coasts for many seconds looking engaged, while
+			// a fresh miss frees the target instantly. Gating on whether the
+			// round is still CLOSING is what turns SM-6 fire from a timer into
+			// shoot-look-shoot.
+			if (coordinate && skipEngaged && dl && dl.hasUnresolvedShot(target)) continue;
+			// Cooperative deconfliction: a sister ship in the task group already
+			// has a live interceptor on this track → leave it to them and look
+			// for an unengaged threat, so a saturation raid gets spread across
+			// the group instead of three ships all shooting the same leaker.
+			//
+			// This is an AREA-SAM doctrine only. The inner layers (RAM, CIWS)
+			// pass coordinate:false: a sea-skimmer that has leaked to inside
+			// 9 km of THIS hull gets engaged no matter who else has a missile
+			// chasing it. Deconflicting the last-ditch layers meant one
+			// teammate's in-flight SM-6 anywhere within 150 km silenced this
+			// ship's own RAM and CIWS against the round about to hit her.
+			if (coordinate && dl && dl.engagedByOther(target, unit, COORD_RADIUS_M)) continue;
+			const sig = target.signature; if (!sig) continue;
+			const cls = sig.unitClass;
+			// Never engage 'missile'-class targets (AAMs / SAMs / ARMs). Those
+			// are interceptors themselves — shooting them spawns a missile-vs-
+			// missile cascade where two ships endlessly trade SAMs at each
+			// other's SAMs. A ship defends against the threats that actually
+			// hurt it: sea-skimming anti-ship / cruise missiles ('cruise_
+			// missile') and bombs — plus aircraft for the area-SAM layer.
+			if (!allowed.has(cls)) continue;
+			// Cruise missiles / bombs only warrant an interceptor when they're
+			// genuinely closing on us; aircraft are fair game anywhere in range.
+			if ((cls === 'cruise_missile' || cls === 'bomb') &&
+				!isInboundThreat(unit, target, weapon.maxRange)) continue;
+			if (requireBallistic && !isBallisticThreat(target)) continue;
+			if (!c.radar) continue;             // need a radar firing solution
+			const range = c.radar.range;
+			if (range < weapon.minRange || range > weapon.maxRange) continue;
+			if (useCooldown) {
+				const last = pilotState.engageCooldown.get(target);
+				if (last != null && now - last < weapon.reengageS) continue;
+			}
+			let classMul = 1.0;
+			if (cls === 'cruise_missile') classMul = 0.4;     // inbound ASM = top priority
+			else if (cls === 'bomb') classMul = 0.7;
+			const score = range * classMul;
+			if (score < bestScore) { bestScore = score; best = { target, range }; }
+		}
+		return best;
+	}
+
+	// ---- Surface / shore target picker (Harpoon, Mk45, Tomahawk) ---------
+	function pickSurfaceTarget(unit, weapon, now, allowed, dl, skipEngaged = false) {
+		let best = null, bestR = Infinity;
+		const seen = new Set();
+		const consider = (target) => {
+			if (!target || target.destroyed || target.active === false || seen.has(target)) return;
+			seen.add(target);
+			if (target.team && unit.team && target.team === unit.team) return;
+			const sig = target.signature; if (!sig || !allowed.has(sig.unitClass)) return;
+			// Saturation-salvo doctrine: don't open a NEW salvo on a hull that
+			// already has anti-ship missiles inbound (team-wide). The committed
+			// salvo runs to completion via the salvo state; this only gates the
+			// pick of a fresh target, so the team spreads across enemy ships and
+			// re-attacks a survivor only after its salvo has played out.
+			if (skipEngaged && dl && dl.isEngaged(target)) return;
+			// Geometric range to the cued position. A ship can't see another
+			// ship past the radar horizon (~30 km), but an anti-ship missile
+			// reaches 100 km+ — so we target from the OTH-T cue, not just our own
+			// radar return.
+			const range = horizRange(unit, target);
+			if (range < weapon.minRange || range > weapon.maxRange) return;
+			const last = pilotState.engageCooldown.get(target);
+			if (last != null && now - last < weapon.reengageS) return;
+			if (range < bestR) { bestR = range; best = { target, range }; }
+		};
+		// Own sensors first, then the shared team datalink picture: a scout
+		// aircraft / helo / sister ship beyond our horizon can cue the target
+		// (cooperative engagement), which is the whole point of a 100 km AShM.
+		if (unit.contacts) for (const [t] of unit.contacts) consider(t);
+		if (dl) for (const [t] of dl.allContacts()) consider(t);
+		return best;
+	}
+
+	// ---- Fire-control solvers --------------------------------------------
+	function gunLead(unit, target, muzzleVel, dispersionDeg) {
+		const d = enu(unit, target);
+		const tH = (target.heading || 0) * DEG, tP = (target.pitch || 0) * DEG, tS = target.speed || 0;
+		const tvE = Math.sin(tH) * Math.cos(tP) * tS, tvN = Math.cos(tH) * Math.cos(tP) * tS, tvU = Math.sin(tP) * tS;
+		let tof = Math.hypot(d.e, d.n, d.u) / muzzleVel;
+		for (let i = 0; i < 2; i++) {
+			const le = d.e + tvE * tof, ln = d.n + tvN * tof, lu = d.u + tvU * tof;
+			tof = Math.hypot(le, ln, lu) / muzzleVel;
+		}
+		const le = d.e + tvE * tof, ln = d.n + tvN * tof, lu = d.u + tvU * tof;
+		// Barrel dispersion — the reason a CIWS misses. Every round was
+		// previously laid on the PERFECT lead solution, so once bullets got a
+		// swept-segment hit test the gun connected with essentially everything
+		// it fired at and no inbound round survived. Real gun fire is a cone.
+		//
+		// The cone is what produces the hit rate, and it produces the right
+		// SHAPE of hit rate for free: spread grows with range, so the burst is
+		// scattered at 2.5 km and tightening fast as the target closes, which
+		// is exactly how a close-in weapon behaves. Tuned so a subsonic
+		// sea-skimmer crossing the envelope eats a couple of rounds — a kill
+		// about half the time — while a Mach-3 round crossing it in a fifth of
+		// the time gets a fifth of the exposure.
+		// 3.0° solved numerically for a ~55% kill on a subsonic sea-skimmer
+		// crossing the envelope, which is about where a real Phalanx sits. It
+		// reads wide (~52 m of spread at 1 km) because the target is modelled
+		// as a 3 m sphere and the burst gets ~190 rounds on a slow crosser —
+		// a tight cone killed 100% of everything, including a Mach-3 ballistic
+		// round, which is the behaviour that made ships untouchable.
+		const sigma = (dispersionDeg == null ? 3.0 : dispersionDeg);
+		const g1 = Math.sqrt(-2 * Math.log(1 - Math.random())) * Math.cos(2 * Math.PI * Math.random());
+		const g2 = Math.sqrt(-2 * Math.log(1 - Math.random())) * Math.sin(2 * Math.PI * Math.random());
+		return {
+			valid: true,
+			heading: (Math.atan2(le, ln) / DEG + g1 * sigma + 360) % 360,
+			pitch: Math.atan2(lu, Math.max(1, Math.hypot(le, ln))) / DEG + g2 * sigma,
+		};
+	}
+
+	// Ballistic fire solution for the naval gun. A drag-free closed form sailed
+	// the round overhead because it ignored both the real drag and the TRUE
+	// muzzle speed (launchSpeedOffset + ship speed, not the bare value). So we
+	// instead SIMULATE the actual shell trajectory — same coast drag + gravity
+	// the Missile integrator uses — and bisect launch elevation until the arc
+	// lands on the target's range+height.
+	// Drag constants mirror mk45-shell.json (the only ballistic gun round).
+	//
+	// The density term matters and used to be dropped on the assumption that
+	// ρ≈ρref for a low-flying round. Measured, that assumption cost 300-440 m
+	// of overshoot at 8-20 km: even a 10° arc peaks high enough for thinner air
+	// to stretch the trajectory. That was invisible while shells couldn't hit
+	// ships at all; now that they can, it's the difference between a hit and a
+	// splash 300 m past the target with a 22 m kill radius. Step is also
+	// tightened to the integrator's own frame time — at dt=0.1 the coarse
+	// Euler step was worth tens of metres on its own.
+	const SHELL_DRAG_REF = 4, SHELL_DRAG_REF_SPEED = 800, SHELL_DRAG_REF_ALT = 100;
+	function _simShellRange(v0, thetaDeg, dy, launchAltM = 0) {
+		const g = 9.81, dt = 1 / 60;
+		const rhoRef = airDensity(SHELL_DRAG_REF_ALT);
+		let speed = v0, pitch = thetaDeg * DEG, x = 0, y = 0;
+		for (let t = 0; t < 120; t += dt) {
+			const rho = airDensity(launchAltM + y);
+			const dragAcc = SHELL_DRAG_REF * (rho / Math.max(1e-6, rhoRef)) *
+				(speed * speed) / (SHELL_DRAG_REF_SPEED * SHELL_DRAG_REF_SPEED);
+			speed = Math.max(20, speed - dragAcc * dt);
+			const vH = speed * Math.cos(pitch);
+			const vV = speed * Math.sin(pitch) - g * dt;
+			speed = Math.hypot(vH, vV);
+			pitch = Math.atan2(vV, vH);
+			const px = x, py = y;
+			x += vH * dt; y += vV * dt;
+			if (vV < 0 && y <= dy) {                 // descending through target height
+				const denom = py - y;
+				const fr = denom > 1e-6 ? (py - dy) / denom : 0;
+				return px + (x - px) * Math.max(0, Math.min(1, fr));
+			}
+		}
+		return x;
+	}
+	function ballisticSolve(unit, target, muzzleVel) {
+		// True muzzle speed = the round's launchSpeedOffset (≈ muzzleVel) plus
+		// the firing ship's own speed.
+		const v0 = muzzleVel + (unit.speed || 0);
+		// Lead the (slow) target over a rough time-of-flight.
+		const d0 = enu(unit, target);
+		const tH = (target.heading || 0) * DEG, tP = (target.pitch || 0) * DEG, tS = target.speed || 0;
+		const tvE = Math.sin(tH) * Math.cos(tP) * tS, tvN = Math.cos(tH) * Math.cos(tP) * tS;
+		// Lead over time of flight. `v0 * 0.75` as an average ground speed is a
+		// ~20% overestimate of the flight time (measured: 33 s assumed vs 27 s
+		// real at 20 km), which leads the aim point too far along the target's
+		// track. 0.92 matches the simulated arc closely across the envelope.
+		const launchAlt = unit.alt || 0;
+		let le = d0.e, ln = d0.n;
+		for (let i = 0; i < 2; i++) {
+			const tof = Math.hypot(le, ln) / Math.max(50, v0 * 0.92);
+			le = d0.e + tvE * tof; ln = d0.n + tvN * tof;
+		}
+		const R = Math.hypot(le, ln), dy = d0.u;
+		// Bisect launch elevation on the LOW (increasing-range) arc. 35° brackets
+		// every range inside the gun's envelope; if even that falls short the
+		// target is genuinely out of reach.
+		if (_simShellRange(v0, 35, dy, launchAlt) < R) return { valid: false };
+		let lo = 0.5, hi = 35;
+		for (let it = 0; it < 20; it++) {
+			const mid = (lo + hi) / 2;
+			if (_simShellRange(v0, mid, dy, launchAlt) < R) lo = mid; else hi = mid;
+		}
+		const theta = (lo + hi) / 2;
+		// Per-shot dispersion (~0.3°): realistic scatter, and it desynchronises
+		// two ships lobbing shells on mirrored trajectories so the rounds don't
+		// meet at the exact midpoint.
+		const disp = 0.3;
+		const jh = (Math.random() - 0.5) * disp;
+		const jp = (Math.random() - 0.5) * disp;
+		// Hand the muzzle speed we SOLVED WITH to the spawner, so the round is
+		// actually launched at it. Without this the two diverge silently: the
+		// Zumwalt's 155 mm AGS is configured at 900 m/s, but every shell is a
+		// mk45-shell whose launchSpeedOffset is 800, so fire control aimed for
+		// a 910 m/s round and fired an 810 m/s one — landing 19% short at every
+		// range, which is precisely the reported symptom. Every other ship
+		// happened to be configured at 800 and so looked fine.
+		return {
+			valid: true,
+			heading: (Math.atan2(le, ln) / DEG + jh + 360) % 360,
+			pitch: theta + jp,
+			launchSpeedMps: v0,
+		};
+	}
+
+	function liveInFlight(ctx, unit, type) {
+		let n = 0; const pool = ctx.projectiles || [];
+		for (const p of pool) {
+			if (!p || !p.active || p.launcher !== unit || p.type !== type) continue;
+			if (p.lostLock || p.maddog) continue;
+			n++;
+		}
+		return n;
+	}
+
+	// ---- Per-frame weapon scheduler: ONE shot, highest priority first ----
+	// Defensive layers (ciws→ram→sam) preempt offensive (antiship→navalgun→
+	// landattack); per-weapon fireRate cooldowns let the lower layers fire on
+	// the frames the higher ones are reloading, so everything gets serviced.
+	const LAYER_ORDER = ['ciws', 'ram', 'sam', 'antiship', 'navalgun', 'landattack'];
+
+	// Salvo doctrine for the area-SAM and anti-ship layers. Continues an
+	// in-progress salvo on a still-valid target; otherwise commits a FRESH salvo
+	// (salvoSize rounds) on the best target `pickFresh` returns. `pickFresh`
+	// already skips targets the team has a live interceptor on, so threats get
+	// divided and a target is only re-attacked once its previous salvo has
+	// resolved without killing it.
+	function pickSalvo(role, w, pickFresh, stillValid) {
+		const sv = pilotState.salvos[role];
+		if (sv && sv.remaining > 0 && sv.target &&
+			!sv.target.destroyed && sv.target.active !== false && stillValid(sv.target)) {
+			return { target: sv.target, salvo: sv };
+		}
+		pilotState.salvos[role] = null;
+		const fresh = pickFresh();
+		if (fresh && fresh.target) {
+			const nsv = { target: fresh.target, remaining: Math.max(1, w.salvoSize || 1) };
+			pilotState.salvos[role] = nsv;
+			return { target: fresh.target, salvo: nsv };
+		}
+		return null;
+	}
+
+	function scheduleShot(unit, now, ctx) {
+		const dl = ctx && ctx.teamDatalink;
+		for (const role of LAYER_ORDER) {
+			const w = weaponByRole(role);
+			if (!w || w.ammo <= 0) continue;
+			if (unit._disabledWeapons && unit._disabledWeapons.has(w.type)) continue; // mount knocked out
+			if (now - w.lastFire < w.fireRate) continue;
+			if (w.maxInFlight && liveInFlight(ctx, unit, w.type) >= w.maxInFlight) continue;
+
+			let pick = null, aim = null;
+			if (role === 'ciws') {
+				pick = pickAirTarget(unit, w, now, POINT_DEFENCE, false, dl, { coordinate: false });
+				if (pick) aim = gunLead(unit, pick.target, w.muzzleVelMps, w.dispersionDeg);
+			} else if (role === 'ram') {
+				pick = pickAirTarget(unit, w, now, POINT_DEFENCE, false, dl, { coordinate: false });
+			} else if (role === 'sam') {
+				// Magazine reserve. The area SAM is the ONLY thing aboard that can
+				// touch a ballistic round — RAM and CIWS get a handful of chances
+				// against something arriving at Mach 3 in a terminal dive and take
+				// essentially none of them. So the last few cells are held back for
+				// that threat rather than spent on the aircraft and sea-skimmers the
+				// inner layers can also handle. Without this a ship burns its whole
+				// SM-6 load on the cruise-missile raid that PRECEDES the ballistic
+				// shot, which is exactly the sequencing an attacker wants.
+				const ballisticOnly = w.ammo <= (w.reserveForBallisticN ?? 0);
+				const sres = pickSalvo('sam', w,
+					() => pickAirTarget(unit, w, now,
+						ballisticOnly ? BALLISTIC_ONLY : SAM_AIR, false, dl,
+						{ skipEngaged: true, requireBallistic: ballisticOnly }),
+					(t) => {
+						const c = unit.contacts && unit.contacts.get(t);
+						const range = c && c.radar ? c.radar.range : horizRange(unit, t);
+						if (range < w.minRange || range > w.maxRange) return false;
+						// Mirror pickAirTarget's rule: the inbound gate applies to
+						// MUNITIONS only (an ASM that stopped closing is somebody
+						// else's problem). Applying it to aircraft as well tore up a
+						// committed salvo the moment the bandit crossed the beam, and
+						// since a fresh pick then skips him for being engaged, the
+						// second round of a salvoSize:2 engagement was simply never
+						// fired.
+						const cls = t.signature && t.signature.unitClass;
+						if (cls === 'cruise_missile' || cls === 'bomb') {
+							return isInboundThreat(unit, t, w.maxRange);
+						}
+						return true;
+					});
+				if (sres) pick = { target: sres.target, _salvo: sres.salvo };
+			} else if (role === 'antiship') {
+				const sres = pickSalvo('antiship', w,
+					() => pickSurfaceTarget(unit, w, now, SHIP_ONLY, dl, true),
+					(t) => { const r = horizRange(unit, t); return r >= w.minRange && r <= w.maxRange; });
+				if (sres) pick = { target: sres.target, _salvo: sres.salvo };
+			} else if (role === 'navalgun') {
+				pick = pickSurfaceTarget(unit, w, now, SHORE_AND_SHIP, dl);
+				if (pick) { aim = ballisticSolve(unit, pick.target, w.muzzleVelMps); if (!aim.valid) pick = null; }
+			} else if (role === 'landattack') {
+				pick = pickSurfaceTarget(unit, w, now, LAND_TARGETS, dl);
+			}
+			if (pick) {
+				// Salvo layers (sam/antiship) burn down their committed round
+				// count; naval gun / land attack keep the simple per-target
+				// re-engage cooldown; point defence (ciws/ram) gates on neither —
+				// it hammers every leaker.
+				if (pick._salvo) pick._salvo.remaining -= 1;
+				else if (role === 'navalgun' || role === 'landattack') pilotState.engageCooldown.set(pick.target, now);
+				return { weapon: w, target: pick.target, aim, role };
+			}
+		}
+		return null;
+	}
+
+	// ---- Surface pursuit -------------------------------------------------
+	// "I can still hurt him, but only if I get closer."
+	//
+	// The movement layer used to be completely decoupled from the weapon
+	// layer: a ship steered by waypoints / patrol / station-keeping and
+	// nothing else. So once two destroyers traded anti-ship salvos and shot
+	// each other's down, both sat outside the other's remaining envelope
+	// forever — Harpoons dry at 8 rounds, the 20 km Mk 45 unable to reach,
+	// and no code path anywhere that closed the range. The naval gun was
+	// effectively never used ship-to-ship.
+	//
+	// Returns { target, range, bearing, closeTo } when a hostile hull is
+	// known, is outside the reach of EVERY surface-capable weapon we still
+	// have rounds for, and is close enough to be worth running down. Null
+	// otherwise — including when we can already shoot, so the ship reverts to
+	// its normal station/route behaviour the moment it's in envelope.
+	function pickPursuit(unit, ctx) {
+		if (PURSUE_RANGE_M <= 0 || unit._mobilityHit) return null;
+		// Longest-reaching surface weapon still loaded and not shot away.
+		let bestReach = 0;
+		for (const w of layerCfg) {
+			if (w.role !== 'antiship' && w.role !== 'navalgun') continue;
+			if (w.ammo <= 0) continue;
+			if (unit._disabledWeapons && unit._disabledWeapons.has(w.type)) continue;
+			if (w.maxRange > bestReach) bestReach = w.maxRange;
+		}
+		if (bestReach <= 0) return null;             // nothing left that hits ships
+		// Only take the helm when the target is genuinely OUT of reach, and then
+		// close past max range to holdAt so the ship commits instead of stopping
+		// on the envelope edge. Deliberately silent while the target is already
+		// engageable — otherwise a ship with Harpoons loaded (110 km reach) would
+		// abandon its patrol station for any hull within 80 km, which is a far
+		// bigger behaviour change than the stalemate this exists to fix.
+		const holdAt = bestReach * PURSUE_CLOSE_FRAC;
+		const dl = ctx && ctx.teamDatalink;
+		let best = null, bestR = Infinity;
+		const consider = (t) => {
+			if (!t || t.destroyed || t.active === false) return;
+			if (t.team && unit.team && t.team === unit.team) return;
+			const sig = t.signature;
+			if (!sig || !SHIP_ONLY.has(sig.unitClass)) return;
+			const r = horizRange(unit, t);
+			if (r <= holdAt || r > PURSUE_RANGE_M) return;      // in reach already, or too far
+			if (r < bestR) { bestR = r; best = t; }
+		};
+		if (unit.contacts) for (const [t] of unit.contacts) consider(t);
+		if (dl) for (const [t] of dl.allContacts()) consider(t);
+		if (!best) return null;
+		return { target: best, range: bestR, heading: bearing(unit, best), speed: maxSpeed };
+	}
+
+	function shotStateName(role, target) {
+		const cls = target && target.signature && target.signature.unitClass;
+		if (role === 'ciws' || role === 'ram') return 'Point defence';
+		if (role === 'sam') return (cls === 'missile' || cls === 'cruise_missile') ? 'Air defence' : 'Engaging air';
+		if (role === 'antiship') return 'Anti-ship';
+		if (role === 'navalgun') return 'Naval gunfire';
+		if (role === 'landattack') return 'Land strike';
+		return 'Engage';
+	}
+
+	return {
+		command,
+		subsystems: { weapons, countermeasures },
+		update(ctx, dt) {
+			const unit = ctx.unit;
+			const now  = ctx.now;
+
+			// Reset per-frame intent.
+			command.fireWeapon = false;
+			command.weaponType = null;
+			command.weaponTarget = null;
+			command.gunHeading = null;
+			command.gunPitch = null;
+			command.gunLaunchSpeedMps = null;
+			command.fireFlare = false;
+
+			// ---- MOVEMENT ----------------------------------------------------
+			const inbound = nearestInbound(unit);
+			const pursuit = pickPursuit(unit, ctx);
+			let stateName;
+			if (unit._landAhead) {
+				// Coastline in the corridor — hard override onto the clear bearing.
+				command.targetHeading = unit._landAheadBearing ?? unit.heading;
+				command.targetSpeed = Math.min(cruiseSpeed, maxSpeed * 0.55);
+				stateName = 'Coastal';
+			} else if (inbound && inbound.range < EVADE_RANGE_M) {
+				// Beam the threat (turn perpendicular to its bearing, the gentler
+				// way) and run flank to open the geometry.
+				const b = bearing(unit, inbound.target);
+				const optA = (b + 90) % 360, optB = (b + 270) % 360;
+				let dA = Math.abs(((optA - unit.heading + 540) % 360) - 180);
+				let dB = Math.abs(((optB - unit.heading + 540) % 360) - 180);
+				command.targetHeading = (dA <= dB) ? optA : optB;
+				command.targetSpeed = maxSpeed;
+				stateName = 'Evade';
+				if (inbound.range < FLARE_RANGE_M) command.fireFlare = true;  // CM dump
+			} else if (waypoints) {
+				const wp = waypoints[pilotState.wpIndex % waypoints.length];
+				if (horizRange(unit, { lon: wp.lon, lat: wp.lat }) < (wp.captureM || 2500)) {
+					pilotState.wpIndex++;
+				}
+				command.targetHeading = bearing(unit, { lon: wp.lon, lat: wp.lat });
+				command.targetSpeed = wp.speedMps ?? cruiseSpeed;
+				stateName = 'Transit';
+			} else if (carrierFlightOpsActive(unit)) {
+				// FLIGHT QUARTERS. A carrier conducting air operations turns
+				// into the wind and works up to launch/recovery speed — the
+				// wind over the deck is what lets a loaded jet get airborne and
+				// gives a recovering one a slower closure onto the ramp. It
+				// takes priority over station-keeping and patrol (the deck is
+				// the mission) but yields to the coastline override and to
+				// evading an inbound, because neither is optional.
+				//
+				// There's no wind field in the sim, so "into wind" is taken as
+				// the ship's base recovery course — held steady so the aircraft
+				// in the groove has a stable centreline to fly rather than a
+				// deck that wanders under them.
+				command.targetHeading = pilotState.recoveryCourse ??
+					(pilotState.recoveryCourse = unit.heading || 0);
+				command.targetSpeed = Math.max(cruiseSpeed, maxSpeed * 0.8);
+				stateName = 'Flight quarters';
+			} else if (pursuit) {
+				// Surface engagement: close on the hostile hull until our
+				// longest remaining ship-killer can reach it, then hold contact.
+				// Deliberately ranked BELOW an explicit waypoint route — a
+				// scripted transit is a tasking and shouldn't be abandoned to
+				// chase a contact — but above patrol and station-keeping, which
+				// are just "nothing better to do".
+				command.targetHeading = pursuit.heading;
+				command.targetSpeed = pursuit.speed;
+				stateName = 'Pursuit';
+			} else if (patrolRadius > 0) {
+				// Orbit the patrol station: tangential heading + radial correction
+				// (same idea as the AWACS orbit pilot).
+				const d = enu({ lon: homeLon, lat: homeLat, alt: unit.alt }, unit);
+				const radius = Math.hypot(d.e, d.n);
+				const radialBearing = (Math.atan2(d.e, d.n) / DEG + 360) % 360;
+				let h = (radialBearing + 90) % 360;
+				h += Math.max(-25, Math.min(25, (radius - patrolRadius) * 0.002));
+				command.targetHeading = (h + 360) % 360;
+				command.targetSpeed = cruiseSpeed;
+				stateName = 'Patrol';
+			} else {
+				// Station-keep: slow box around the spawn point. Drift back if we
+				// wander too far, otherwise sweep the heading slowly.
+				const drift = horizRange({ lon: homeLon, lat: homeLat }, unit);
+				if (drift > 6000) {
+					command.targetHeading = bearing(unit, { lon: homeLon, lat: homeLat });
+				} else {
+					pilotState.boxAngle = (pilotState.boxAngle + turnRate * 0.5 * dt + 360) % 360;
+					command.targetHeading = pilotState.boxAngle;
+				}
+				command.targetSpeed = cruiseSpeed * 0.6;
+				stateName = 'Station';
+			}
+
+			// Propulsion knocked out → dead in the water (still fights with
+			// whatever mounts survive). The integrator coasts the hull to a stop.
+			if (unit._mobilityHit) {
+				command.targetSpeed = 0;
+				stateName = 'Crippled';
+			}
+
+			// ---- WEAPONS -----------------------------------------------------
+			const shot = scheduleShot(unit, now, ctx);
+			if (shot) {
+				command.fireWeapon = true;
+				command.weaponType = shot.weapon.type;
+				command.weaponTarget = shot.target;
+				if (shot.aim) {
+					command.gunHeading = shot.aim.heading;
+					command.gunPitch = shot.aim.pitch;
+					command.gunLaunchSpeedMps = (shot.aim.launchSpeedMps != null)
+						? shot.aim.launchSpeedMps : null;
+				}
+				// Weapon activity is more informative in the tooltip than the
+				// movement state, except while actively dodging.
+				if (stateName !== 'Evade' && stateName !== 'Coastal') {
+					stateName = shotStateName(shot.role, shot.target);
+				}
+			}
+
+			command.activeBehaviorName = stateName;
+		},
+	};
+}
+
+// ============================================================================
+// Coastal anti-ship battery — a static shore launcher whose only job is
+// killing ships.
+//
+// makeShipPilot already knows how to run an anti-ship salvo, but it is built
+// around a moving hull: it writes course and speed for the surface integrator
+// and splits its attention across the air-defence layers it also owns. A shore
+// battery has neither concern, so this is the small static counterpart rather
+// than another special case bolted into the ship pilot.
+//
+// The defining behaviour is OVER-THE-HORIZON fire. A battery's own radar sees
+// maybe 40 km; the missile reaches several hundred. So targets come from the
+// team datalink as readily as from organic sensors — a scout aircraft or a
+// picket ship supplies the track and the battery shoots at something it cannot
+// itself see. That asymmetry is the whole point of a coastal missile regiment,
+// and it's what makes standing off a defended shore expensive.
+// ============================================================================
+export function makeCoastalBatteryPilot(params = {}) {
+	const DEG = Math.PI / 180;
+
+	const layerCfg = (params.weapons || []).map(w => ({
+		type: w.type,
+		role: w.role || 'antiship',
+		ammo: w.ammo ?? 8, maxAmmo: w.ammo ?? 8,
+		fireRate: w.fireRate ?? 6.0,
+		maxInFlight: w.maxInFlight ?? 4,
+		lastFire: -Infinity,
+		minRange: w.minRange ?? 0,
+		maxRange: w.maxRange ?? 300000,
+		reengageS: w.reengageS ?? 25,
+		salvoSize: w.salvoSize ?? 2,
+	}));
+	const weapons = new WeaponSubsystem({ weapons: layerCfg });
+
+	const SHIP_ONLY = new Set(['ship']);
+	const LAND_TARGETS = new Set(['building', 'sam_site', 'ewr', 'ground']);
+	const LAYER_ORDER = ['antiship', 'landattack'];
+
+	const command = {
+		targetHeading: params.initialHeading ?? 0, targetPitch: 0, throttle: 0,
+		targetSpeed: 0, boost: false, fireFlare: false, fireWeapon: false,
+		weaponType: null, weaponTarget: null, gunHeading: null, gunPitch: null,
+		activeBehaviorName: 'Coastal watch',
+	};
+
+	const pilotState = { salvos: {}, engageCooldown: new Map() };
+
+	function horizRange(from, to) {
+		const cosLat = Math.cos((from.lat || 0) * DEG);
+		const e = (to.lon - from.lon) * 111320 * cosLat;
+		const n = (to.lat - from.lat) * 111320;
+		return Math.hypot(e, n);
+	}
+
+	function liveInFlight(ctx, unit, type) {
+		let n = 0;
+		for (const p of (ctx.projectiles || [])) {
+			if (!p || !p.active || p.launcher !== unit || p.type !== type) continue;
+			if (p.lostLock || p.maddog) continue;
+			n++;
+		}
+		return n;
+	}
+
+	// Organic contacts first, then the shared team picture — the OTH cue.
+	function pickTarget(unit, w, now, allowed, dl, skipEngaged) {
+		let best = null, bestR = Infinity;
+		const seen = new Set();
+		const consider = (t) => {
+			if (!t || t.destroyed || t.active === false || seen.has(t)) return;
+			seen.add(t);
+			if (t.team && unit.team && t.team === unit.team) return;
+			const sig = t.signature;
+			if (!sig || !allowed.has(sig.unitClass)) return;
+			if (skipEngaged && dl && dl.isEngaged(t)) return;
+			const r = horizRange(unit, t);
+			if (r < w.minRange || r > w.maxRange) return;
+			const last = pilotState.engageCooldown.get(t);
+			if (last != null && now - last < w.reengageS) return;
+			if (r < bestR) { bestR = r; best = { target: t, range: r }; }
+		};
+		if (unit.contacts) for (const [t] of unit.contacts) consider(t);
+		if (dl) for (const [t] of dl.allContacts()) consider(t);
+		return best;
+	}
+
+	// Same committed-salvo doctrine the ship pilot uses: a hull that has
+	// already been shot at is left alone until that salvo resolves, so the
+	// battery spreads its magazine across the group instead of dumping
+	// everything on the nearest contact.
+	function pickSalvo(role, w, pickFresh, stillValid) {
+		const sv = pilotState.salvos[role];
+		if (sv && sv.remaining > 0 && sv.target &&
+			!sv.target.destroyed && sv.target.active !== false && stillValid(sv.target)) {
+			return { target: sv.target, salvo: sv };
+		}
+		pilotState.salvos[role] = null;
+		const fresh = pickFresh();
+		if (fresh && fresh.target) {
+			const nsv = { target: fresh.target, remaining: Math.max(1, w.salvoSize || 1) };
+			pilotState.salvos[role] = nsv;
+			return { target: fresh.target, salvo: nsv };
+		}
+		return null;
+	}
+
+	function scheduleShot(unit, now, ctx) {
+		const dl = ctx && ctx.teamDatalink;
+		for (const role of LAYER_ORDER) {
+			const w = layerCfg.find(x => x.role === role);
+			if (!w || w.ammo <= 0) continue;
+			if (unit._disabledWeapons && unit._disabledWeapons.has(w.type)) continue;
+			if (now - w.lastFire < w.fireRate) continue;
+			if (w.maxInFlight && liveInFlight(ctx, unit, w.type) >= w.maxInFlight) continue;
+
+			if (role === 'antiship') {
+				const sres = pickSalvo('antiship', w,
+					() => pickTarget(unit, w, now, SHIP_ONLY, dl, true),
+					(t) => { const r = horizRange(unit, t); return r >= w.minRange && r <= w.maxRange; });
+				if (sres) { sres.salvo.remaining -= 1; return { weapon: w, target: sres.target, role }; }
+			} else {
+				const pick = pickTarget(unit, w, now, LAND_TARGETS, dl, false);
+				if (pick) {
+					pilotState.engageCooldown.set(pick.target, now);
+					return { weapon: w, target: pick.target, role };
+				}
+			}
+		}
+		return null;
+	}
+
+	return {
+		command,
+		subsystems: { weapons },
+		update(ctx /*, dt */) {
+			const unit = ctx.unit;
+			command.fireWeapon = false;
+			command.weaponType = null;
+			command.weaponTarget = null;
+
+			const shot = scheduleShot(unit, ctx.now, ctx);
+			if (shot) {
+				command.fireWeapon = true;
+				command.weaponType = shot.weapon.type;
+				command.weaponTarget = shot.target;
+				command.activeBehaviorName = (shot.role === 'antiship')
+					? 'Anti-ship salvo' : 'Land strike';
+			} else {
+				const dry = layerCfg.every(w => w.ammo <= 0);
+				command.activeBehaviorName = dry ? 'Magazine dry' : 'Coastal watch';
+			}
 		},
 	};
 }

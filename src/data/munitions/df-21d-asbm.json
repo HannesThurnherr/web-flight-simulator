@@ -1,0 +1,49 @@
+{
+	"id": "df-21d-asbm",
+	"name": "DF-21D Anti-Ship Ballistic Missile",
+	"shortName": "ASBM",
+	"category": "AGM",
+	"tags": [
+		"anti-ship",
+		"ballistic",
+		"terminal-guided",
+		"coastal-defence",
+		"carrier-killer"
+	],
+	"massKg": 15000,
+	"rcsContributionM2": 0.4,
+	"description": "Land-based anti-ship ballistic missile — the long arm of a coastal defence, reaching a surface group at ranges no cruise missile covers. Boosts to ~35 km, runs a depressed ballistic midcourse, then pitches into a steep terminal dive with a manoeuvring re-entry vehicle that homes on the hull. Fast and high enough that a sea-skimmer's tricks don't apply: it never hides under the radar horizon, so an Aegis ship sees it coming a long way out — but it arrives at over Mach 3 in a near-vertical dive, which is exactly the geometry point defence is worst at. Visual stand-in: Tochka-U body.",
+	"simType": "ASBM",
+	"signature": "cruise_missile",
+	"seekerType": "anti_ship",
+	"modelTemplate": "tochka",
+	"realLengthM": 10.7,
+	"flight": {
+		"launchSpeedOffset": 30,
+		"boostDurationS": 480,
+		"boostAccel": 200,
+		"peakSpeed": 1150,
+		"minSpeed": 400,
+		"maxLifeS": 480,
+		"maxTurnDegPerSec": 18,
+		"pnGain": 3.5,
+		"dragRef": 1.2,
+		"dragRefSpeed": 1100,
+		"dragRefAltitude": 25000,
+		"vManeuverRef": 900,
+		"gAvailFloor": 0.25
+	},
+	"warhead": {
+		"killRadiusM": 40,
+		"fuzeSenseRadiusM": 55,
+		"missAbortRadiusMul": 2
+	},
+	"seeker": {
+		"maxG": 16,
+		"terminalRangeM": 40000,
+		"skimAltM": 30000,
+		"maxDiveDeg": 60,
+		"descentGain": 0.02,
+		"acquireRangeM": 90000
+	}
+}

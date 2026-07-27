@@ -1,0 +1,100 @@
+{
+	"id": "kara-cruiser",
+	"name": "Kara-class Cruiser",
+	"kind": "surface",
+	"model": "/assets/models/kara-class-cruiser.glb",
+	"modelRotation": {
+		"x": 0,
+		"y": 180,
+		"z": 0
+	},
+	"modelScale": 140.6,
+	"signature": "destroyer",
+	"hp": 110,
+	"groundOffsetM": -7,
+	"sensors": {
+		"radar": {
+			"enabled": true,
+			"active": true,
+			"mode": "search",
+			"nominalRange": 150000,
+			"referenceRcs": 5,
+			"fovHalfHDeg": 180,
+			"fovHalfVDeg": 90,
+			"notchThreshold": 60
+		}
+	},
+	"pilot": {
+		"type": "ship-combatant",
+		"defaultParams": {
+			"cruiseSpeedMps": 9,
+			"maxSpeedMps": 16,
+			"turnRateMaxDegPerS": 2.4,
+			"accelTauS": 32,
+			"patrolRadiusM": 0,
+			"evadeRangeM": 16000,
+			"flareRangeM": 7000,
+			"flares": 70,
+			"chaff": 70,
+			"weapons": [
+				{
+					"type": "gun",
+					"role": "ciws",
+					"ammo": 3000,
+					"fireRate": 0.05,
+					"maxInFlight": 0,
+					"minRange": 0,
+					"maxRange": 2300,
+					"muzzleVelMps": 1500
+				},
+				{
+					"type": "RAM",
+					"role": "ram",
+					"ammo": 16,
+					"fireRate": 1.1,
+					"maxInFlight": 3,
+					"minRange": 500,
+					"maxRange": 8000
+				},
+				{
+					"type": "SM-6",
+					"role": "sam",
+					"ammo": 16,
+					"fireRate": 1.8,
+					"maxInFlight": 4,
+					"minRange": 2000,
+					"maxRange": 90000,
+					"salvoSize": 2,
+					"reengageS": 16,
+					"reserveForBallisticN": 4
+				},
+				{
+					"type": "P-800",
+					"role": "antiship",
+					"ammo": 8,
+					"fireRate": 1.5,
+					"maxInFlight": 8,
+					"minRange": 6000,
+					"maxRange": 200000,
+					"salvoSize": 4,
+					"reengageS": 10
+				},
+				{
+					"type": "MK45",
+					"role": "navalgun",
+					"ammo": 300,
+					"fireRate": 2.2,
+					"maxInFlight": 8,
+					"minRange": 2000,
+					"maxRange": 18000,
+					"muzzleVelMps": 800,
+					"reengageS": 3
+				}
+			]
+		}
+	},
+	"physicsOverrides": {
+		"mass": 8600000,
+		"wingArea": 1
+	}
+}

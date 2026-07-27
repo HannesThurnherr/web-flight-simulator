@@ -1,0 +1,48 @@
+{
+	"id": "asbm-battery",
+	"name": "DF-21D ASBM Battery",
+	"kind": "ground",
+	"model": "/assets/models/iskander-telar.glb",
+	"modelRotation": {
+		"x": 0,
+		"y": 90,
+		"z": 0
+	},
+	"modelScale": 0.027,
+	"signature": "shorad",
+	"groundOffsetM": 0,
+	"sensors": {
+		"radar": {
+			"enabled": false,
+			"active": false,
+			"mode": "search",
+			"nominalRange": 40000,
+			"referenceRcs": 5,
+			"fovHalfHDeg": 180,
+			"fovHalfVDeg": 45,
+			"notchThreshold": 60
+		}
+	},
+	"pilot": {
+		"type": "coastal-battery",
+		"defaultParams": {
+			"weapons": [
+				{
+					"type": "ASBM",
+					"role": "antiship",
+					"ammo": 6,
+					"fireRate": 8.0,
+					"maxInFlight": 3,
+					"minRange": 60000,
+					"maxRange": 450000,
+					"salvoSize": 2,
+					"reengageS": 45
+				}
+			]
+		}
+	},
+	"physicsOverrides": {
+		"mass": 60000,
+		"wingArea": 1
+	}
+}

@@ -57,6 +57,17 @@ export const gameSettings = {
 	//       in the single-digit km territory real systems advertise.
 	irFidelity: 'arcade',
 	mouseSensitivity: 0.2,
+	// HUD overlay on missiles in flight. A fleet action puts dozens of rounds
+	// in the air at once and marking every one buries the picture under
+	// telemetry no real HUD would show you. Filtered rounds get NO overlay —
+	// no marker, no dot, no text; they stay visible by their exhaust plume,
+	// which is how you'd spot one out of the canopy anyway.
+	//   'threats' (default): hostile inbounds and the shots YOU took — the
+	//              two things a pilot acts on.
+	//   'full':    mark every tracked round. Invaluable for debugging an
+	//              engagement (who shot what at whom), unusable in a battle.
+	//   'off':     no overlay at all.
+	munitionLabels: 'threats',
 	showHud: true,
 	showHorizonLines: true,
 	soundEnabled: true,
@@ -136,6 +147,8 @@ export function updateSettingsUI() {
 	document.getElementById('sensitivityValue').textContent = gameSettings.mouseSensitivity;
 	document.getElementById('showHud').checked = gameSettings.showHud;
 	document.getElementById('showHorizonLines').checked = gameSettings.showHorizonLines;
+	const munLblEl = document.getElementById('munitionLabels');
+	if (munLblEl) munLblEl.value = gameSettings.munitionLabels || 'threats';
 	document.getElementById('soundEnabled').checked = gameSettings.soundEnabled;
 	document.getElementById('minimapRange').value = gameSettings.minimapRange.toString();
 	const iffOm = document.getElementById('iffOmniscient');

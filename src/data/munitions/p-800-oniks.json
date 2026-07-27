@@ -1,0 +1,41 @@
+{
+	"id": "p-800-oniks",
+	"name": "P-800 Oniks (SS-N-26)",
+	"shortName": "P-800",
+	"category": "AGM",
+	"tags": ["anti-ship", "sea-skimmer", "supersonic", "active-radar", "coastal-defence"],
+	"massKg": 3000,
+	"rcsContributionM2": 0.08,
+	"description": "Supersonic anti-ship cruise missile — the round the Bastion-P coastal battery fires, and the reason a surface group can't sit comfortably inside 300 km of a defended shore. Ramjet-powered, cruises fast and low, then runs the terminal leg on the deck at ~Mach 2 where a defending ship has well under a minute of reaction time. Much harder for point defence than a subsonic Harpoon: the same CIWS burst gets a third of the engagement window. Visual stand-in: Storm Shadow body.",
+	"simType": "P-800",
+	"signature": "cruise_missile",
+	"seekerType": "anti_ship",
+	"modelTemplate": "storm-shadow",
+	"realLengthM": 8.9,
+	"flight": {
+		"launchSpeedOffset": 25,
+		"boostDurationS": 700,
+		"boostAccel": 260,
+		"peakSpeed": 690,
+		"minSpeed": 320,
+		"maxLifeS": 700,
+		"maxTurnDegPerSec": 11,
+		"pnGain": 3.5,
+		"dragRef": 0.8,
+		"dragRefSpeed": 660,
+		"dragRefAltitude": 60,
+		"vManeuverRef": 600,
+		"gAvailFloor": 0.3
+	},
+	"warhead": {
+		"killRadiusM": 34,
+		"fuzeSenseRadiusM": 46,
+		"missAbortRadiusMul": 2
+	},
+	"seeker": {
+		"maxG": 8,
+		"terminalRangeM": 12000,
+		"skimAltM": 15,
+		"acquireRangeM": 40000
+	}
+}

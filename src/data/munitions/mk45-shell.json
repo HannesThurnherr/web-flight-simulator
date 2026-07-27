@@ -1,0 +1,37 @@
+{
+	"id": "mk45-shell",
+	"name": "Mk 45 5\"/62 Naval Gun Shell",
+	"shortName": "MK45",
+	"category": "GUN",
+	"tags": ["naval-gun", "ballistic", "unguided", "shore-bombardment", "anti-surface"],
+	"massKg": 32,
+	"rcsContributionM2": 0.01,
+	"description": "127 mm shell from the Mk 45 mount on the bow of an Arleigh Burke. A dumb ballistic round — the fire-control computer solves the lead + loft, the gun lays on it, gravity does the rest. Used against ships and shore targets inside ~20 km. High muzzle velocity (~800 m/s) and a real HE warhead; no guidance, no countermeasure beats it but it has to be aimed well. Visual stand-in: small SDB-class body.",
+	"simType": "MK45",
+	"signature": "bomb",
+	"seekerType": "null",
+	"modelTemplate": "gbu-39",
+	"realLengthM": 1.0,
+	"flight": {
+		"launchSpeedOffset": 800,
+		"muzzleLaunch": true,
+		"boostDurationS": 0,
+		"boostAccel": 0,
+		"peakSpeed": 800,
+		"minSpeed": 20,
+		"maxLifeS": 60,
+		"maxTurnDegPerSec": 0,
+		"pnGain": 0,
+		"dragRef": 4,
+		"dragRefSpeed": 800,
+		"dragRefAltitude": 100,
+		"vManeuverRef": 300,
+		"gAvailFloor": 0
+	},
+	"warhead": {
+		"killRadiusM": 22,
+		"fuzeSenseRadiusM": 30,
+		"missAbortRadiusMul": 3
+	},
+	"seeker": {}
+}

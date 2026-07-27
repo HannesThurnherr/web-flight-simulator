@@ -123,6 +123,12 @@ export function checkCrash(ctx) {
 	const { state } = ctx;
 	if (ctx.currentState !== 'FLYING') return;
 
+	// Death tumble in progress: a lethal hit armed state.dying (mortallyWound),
+	// and the sim loop is flying the burning wreck down. IT raises the crash
+	// menu on break-up — don't snap straight to CRASHED here, or we'd freeze
+	// the plane mid-air again (the bug this whole sequence exists to fix).
+	if (state.dying) return;
+
 	// Missile kill: projectile sets state.destroyed=true via hitNPC
 	// since `state` is passed in the target list the same way NPCs
 	// are. Handle this immediately — no 100 ms rate-limit — so the

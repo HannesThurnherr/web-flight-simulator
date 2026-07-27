@@ -1,0 +1,24 @@
+{
+	"id": "radar-truck-trm",
+	"name": "Mobile Search Radar (TRM)",
+	"kind": "ground",
+	"model": "/assets/models/radar-truck-trm.glb",
+	"modelRotation": { "x": 0, "y": 0, "z": 0 },
+	"modelScale": 0.0087,
+	"signature": "ewr",
+	"groundOffsetM": 0,
+	"sensors": {
+		"radar": {
+			"enabled": true,
+			"active": true,
+			"mode": "search",
+			"nominalRange": 120000,
+			"referenceRcs": 5,
+			"fovHalfHDeg": 180,
+			"fovHalfVDeg": 70,
+			"notchThreshold": 55
+		}
+	},
+	"pilot": { "type": "ewr" },
+	"physicsOverrides": { "mass": 18000, "wingArea": 1 }
+}

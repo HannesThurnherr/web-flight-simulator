@@ -1,0 +1,112 @@
+{
+	"id": "cvn-78-ford",
+	"name": "CVN-78 Gerald R. Ford",
+	"kind": "surface",
+	"model": "/assets/models/cvn-78-ford.glb",
+	"modelRotation": {
+		"x": 0,
+		"y": 180,
+		"z": 0
+	},
+	"modelScale": 27.9,
+	"signature": "carrier",
+	"hp": 400,
+	"groundOffsetM": -12,
+	"sensors": {
+		"radar": {
+			"enabled": true,
+			"active": true,
+			"mode": "search",
+			"nominalRange": 220000,
+			"referenceRcs": 5,
+			"fovHalfHDeg": 180,
+			"fovHalfVDeg": 90,
+			"notchThreshold": 60
+		}
+	},
+	"pilot": {
+		"type": "ship-combatant",
+		"defaultParams": {
+			"cruiseSpeedMps": 12,
+			"maxSpeedMps": 16,
+			"turnRateMaxDegPerS": 1.4,
+			"accelTauS": 60,
+			"patrolRadiusM": 0,
+			"evadeRangeM": 20000,
+			"flareRangeM": 9000,
+			"flares": 120,
+			"chaff": 120,
+			"weapons": [
+				{
+					"type": "gun",
+					"role": "ciws",
+					"ammo": 6000,
+					"fireRate": 0.05,
+					"maxInFlight": 0,
+					"minRange": 0,
+					"maxRange": 2500,
+					"muzzleVelMps": 1500
+				},
+				{
+					"type": "RAM",
+					"role": "ram",
+					"ammo": 42,
+					"fireRate": 0.8,
+					"maxInFlight": 6,
+					"minRange": 500,
+					"maxRange": 9000
+				}
+			]
+		}
+	},
+	"physicsOverrides": {
+		"mass": 100000000,
+		"wingArea": 1
+	},
+	"airWing": {
+		"airborneCap": 4,
+		"launchIntervalS": 20,
+		"squadrons": [
+			{
+				"fighterModel": "fa-18f",
+				"roles": [
+					"a2a"
+				],
+				"count": 5,
+				"missionS": 420,
+				"loadout": {
+					"AIM-120": 4,
+					"AIM-9X": 2
+				}
+			},
+			{
+				"fighterModel": "fa-18f",
+				"roles": [
+					"antiship"
+				],
+				"count": 3,
+				"missionS": 480,
+				"loadout": {
+					"HARPOON": 4,
+					"AIM-120": 2,
+					"AIM-9X": 2
+				}
+			},
+			{
+				"fighterModel": "fa-18f",
+				"roles": [
+					"sead",
+					"strike"
+				],
+				"count": 3,
+				"missionS": 450,
+				"loadout": {
+					"AGM-88": 2,
+					"GBU-39": 4,
+					"AIM-120": 2,
+					"AIM-9X": 2
+				}
+			}
+		]
+	}
+}

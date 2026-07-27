@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"><title>ocean lab</title>
+<style>html,body{margin:0;height:100%;background:#000;overflow:hidden}canvas{display:block}</style>
+</head>
+<body>
+<script type="module">
+import * as THREE from 'three';
+import { OceanFFT } from '/src/systems/oceanFFT.js';
+import { __oceanShaders } from '/src/systems/ocean.js';
+
+const { VERT, FRAG, CASCADES, WAVE_SCALE, CHOPPY_SCALE, NORMAL_STRENGTH,
+        WAVE_RMS_M, HAZE_SCALE, PATCH_RADIUS_M, SEGMENTS, EARTH_R,
+        skyPalette, realisticDayFactor, DAY_KEY } = __oceanShaders;
+
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setSize(1280, 720);
+renderer.setPixelRatio(1);
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(55, 1280 / 720, 0.5, 60000);
+
+const ffts = CASCADES.map(c => new OceanFFT(renderer, {
+  resolution: c.resolution, patchSize: c.patchSize, windSpeed: c.windSpeed,
+  amplitude: c.amplitude,
+  windDirection: new THREE.Vector2(c.windDir[0], c.windDir[1]).normalize(),
+}));
+
+const geo = new THREE.PlaneGeometry(PATCH_RADIUS_M * 2, PATCH_RADIUS_M * 2, SEGMENTS, SEGMENTS);
+const mat = new THREE.ShaderMaterial({
+  vertexShader: VERT, fragmentShader: FRAG, transparent: true,
+  uniforms: {
+    uDispY0: { value: null }, uDispX0: { value: null }, uDispZ0: { value: null },
+    uDispY1: { value: null }, uDispX1: { value: null }, uDispZ1: { value: null },
+    uPatch0: { value: CASCADES[0].patchSize },
+    uPatch1: { value: CASCADES[1].patchSize },
+    uCenterOffset: { value: new THREE.Vector2(0, 0) },
+    uWaveScale: { value: WAVE_SCALE },
+    uChoppyScale: { value: CHOPPY_SCALE },
+    uNormalStrength: { value: NORMAL_STRENGTH },
+    uEarthR: { value: EARTH_R },
+    uPatchR: { value: PATCH_RADIUS_M },
+    uSunDirLocal: { value: new THREE.Vector3(0, 0, 1) },
+    uMoonDirLocal: { value: new THREE.Vector3(0, 0, -1) },
+    uCamLocal: { value: new THREE.Vector3(0, 0, 30) },
+    uSunColor: { value: new THREE.Vector3(1, 1, 1) },
+    uMoonColor: { value: new THREE.Vector3(0.68, 0.76, 1.0) },
+    uSkyZenith: { value: new THREE.Vector3(0.09, 0.2, 0.45) },
+    uSkyHorizon: { value: new THREE.Vector3(0.5, 0.61, 0.73) },
+    uHazeColor: { value: new THREE.Vector3(0.62, 0.72, 0.86) },
+    uSunLevel: { value: 1 },
+    uMoonLevel: { value: 0 },
+    uHazeScale: { value: HAZE_SCALE },
+    uWaveRms: { value: WAVE_RMS_M },
+    uTime: { value: 0 },
+    uEncode: { value: 1 },
+    uAlpha: { value: 1 },
+  },
+});
+const mesh = new THREE.Mesh(geo, mat);
+mesh.frustumCulled = false;
+mesh.rotation.x = -Math.PI / 2;   // local ENU (z up) -> three world (y up)
+scene.add(mesh);
+
+// Backdrop sky so reflections have something to be judged against.
+const skyMat = new THREE.ShaderMaterial({
+  side: THREE.BackSide, depthWrite: false,
+  uniforms: { uZen: mat.uniforms.uSkyZenith, uHor: mat.uniforms.uSkyHorizon,
+              uSunDir: { value: new THREE.Vector3(0, 0, 1) },
+              uMoonDir: { value: new THREE.Vector3(0, 0, -1) },
+              uSunCol: mat.uniforms.uSunColor, uMoonCol: mat.uniforms.uMoonColor,
+              uLevel: mat.uniforms.uSunLevel, uMoonLevel: mat.uniforms.uMoonLevel },
+  vertexShader: `varying vec3 vD; void main(){ vD = position; gl_Position = projectionMatrix * modelViewMatrix * vec4(position,1.0); }`,
+  fragmentShader: `uniform vec3 uZen,uHor,uSunDir,uSunCol,uMoonDir,uMoonCol; uniform float uLevel,uMoonLevel; varying vec3 vD;
+    void main(){ vec3 d = normalize(vD);
+      vec3 c = mix(uHor, uZen, pow(clamp(d.y,0.0,1.0), 0.6));
+      c += uSunCol * pow(max(dot(d, normalize(uSunDir)), 0.0), 250.0) * 3.0 * uLevel;
+      c += uSunCol * pow(max(dot(d, normalize(uSunDir)), 0.0), 8.0) * 0.35 * uLevel;
+      float md = max(dot(d, normalize(uMoonDir)), 0.0);
+      c += uMoonCol * (pow(md, 6000.0) * 2.0 + pow(md, 12.0) * 0.30) * uMoonLevel;
+      // a few stars so night frames read as night
+      vec2 g = floor(d.xy * 260.0);
+      float s = fract(sin(dot(g, vec2(41.7, 289.3))) * 51237.7);
+      c += vec3(0.8,0.85,1.0) * step(0.9985, s) * (1.0 - uLevel) * 0.9;
+      c = 1.0 - exp(-max(c, 0.0));
+      c = mix(c*12.92, 1.055*pow(c, vec3(1.0/2.4)) - 0.055, step(vec3(0.0031308), c));
+      gl_FragColor = vec4(c, 1.0); }`,
+});
+scene.add(new THREE.Mesh(new THREE.SphereGeometry(50000, 32, 16), skyMat));
+
+const dirENU = (elev, az) => {
+  const e = elev * Math.PI / 180, a = az * Math.PI / 180;
+  return { e: Math.sin(a) * Math.cos(e), n: Math.cos(a) * Math.cos(e), u: Math.sin(e) };
+};
+
+// moonElev/moonAz in degrees, moonIllum 0..1 (phase). dayFactor 1 = arcade.
+window.shot = ({ time = 12, sunElev = 30, sunAz = 30, eye = 25, pitch = -4, yaw = 30, fov = 55,
+                 moonElev = -90, moonAz = 0, moonIllum = 1, dayFactor = null } = {}) => {
+  const f0 = ffts[0].update(time), f1 = ffts[1].update(time);
+  const u = mat.uniforms;
+  u.uDispY0.value = f0.displacementY; u.uDispX0.value = f0.displacementX; u.uDispZ0.value = f0.displacementZ;
+  u.uDispY1.value = f1.displacementY; u.uDispX1.value = f1.displacementX; u.uDispZ1.value = f1.displacementZ;
+  u.uTime.value = time;
+
+  const sun = dirENU(sunElev, sunAz), moon = dirENU(moonElev, moonAz);
+  u.uSunDirLocal.value.set(sun.e, sun.n, sun.u);
+  u.uMoonDirLocal.value.set(moon.e, moon.n, moon.u);
+  skyMat.uniforms.uSunDir.value.set(sun.e, sun.u, -sun.n);
+  skyMat.uniforms.uMoonDir.value.set(moon.e, moon.u, -moon.n);
+
+  // Mirror ocean.js's own per-frame palette work.
+  const p = skyPalette(sunElev);
+  const df = (dayFactor == null) ? realisticDayFactor(sunElev) : dayFactor;
+  const lift = Math.max(0, Math.min(1, df - realisticDayFactor(sunElev))) * 0.75;
+  const mixL = (a, b) => a + (b - a) * lift;
+  u.uSkyZenith.value.set(mixL(p.zen[0], DAY_KEY[1][0]), mixL(p.zen[1], DAY_KEY[1][1]), mixL(p.zen[2], DAY_KEY[1][2]));
+  u.uSkyHorizon.value.set(mixL(p.hor[0], DAY_KEY[2][0]), mixL(p.hor[1], DAY_KEY[2][1]), mixL(p.hor[2], DAY_KEY[2][2]));
+  u.uSunColor.value.set(mixL(p.sun[0], DAY_KEY[3][0]), mixL(p.sun[1], DAY_KEY[3][1]), mixL(p.sun[2], DAY_KEY[3][2]));
+  u.uSunLevel.value = p.level + (1 - p.level) * lift;
+
+  const rise = Math.max(0, Math.min(1, (moonElev + 2) / 6));
+  u.uMoonLevel.value = Math.pow(moonIllum, 1.8) * rise * rise * (3 - 2 * rise);
+  const warm = 1 - Math.max(0, Math.min(1, moonElev / 22)) ** 1;
+  u.uMoonColor.value.set(0.68 + 0.32 * warm, 0.76 - 0.06 * warm, 1.0 - 0.48 * warm);
+
+  const hz = u.uSkyHorizon.value;
+  u.uHazeColor.value.set(hz.x * 1.05, hz.y * 1.05, hz.z * 1.1);
+
+  const cy = yaw * Math.PI / 180, cp = pitch * Math.PI / 180;
+  camera.fov = fov; camera.updateProjectionMatrix();
+  camera.position.set(0, eye, 0);
+  camera.lookAt(Math.sin(cy) * 1000, eye + Math.tan(cp) * 1000, -Math.cos(cy) * 1000);
+  u.uCamLocal.value.set(0, 0, eye);
+
+  renderer.setRenderTarget(null);
+  renderer.render(scene, camera);
+  return 'ok';
+};
+window.lab = { mat, mesh, ffts, renderer, scene, camera, THREE };
+window.__labReady = true;
+</script>
+</body>
+</html>

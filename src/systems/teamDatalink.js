@@ -434,16 +434,21 @@ export class TeamDatalink {
 		// don't flicker in/out across a frame boundary. Explicit
 		// clearByMissile() is still the primary cleanup path.
 		for (const [target, rec] of this.engagements) {
-			if (!rec.missile || !rec.missile.active) {
-				if (!rec._deathStamp) rec._deathStamp = now;
-				else if (now - rec._deathStamp > ENGAGEMENT_LINGER) {
-					this.engagements.delete(target);
-					if (rec.missile) this._missileIndex.delete(rec.missile);
-				}
-			}
-			if (!target || target.destroyed) {
+			const dropRec = () => {
 				this.engagements.delete(target);
-				if (rec.missile) this._missileIndex.delete(rec.missile);
+				for (const s of rec.shots) this._missileIndex.delete(s.missile);
+			};
+			if (!target || target.destroyed) { dropRec(); continue; }
+			// Retire spent rounds individually, then linger a second on the
+			// now-empty record so the ledger doesn't flicker in/out across a
+			// frame boundary. Explicit clearByMissile() is still the primary
+			// cleanup path.
+			rec.shots = rec.shots.filter(s => s.missile && s.missile.active);
+			if (rec.shots.length === 0) {
+				if (!rec._deathStamp) rec._deathStamp = now;
+				else if (now - rec._deathStamp > ENGAGEMENT_LINGER) dropRec();
+			} else {
+				rec._deathStamp = 0;
 			}
 		}
 		// Strike claims: drop dead targets wholesale, prune expired entries.
@@ -483,22 +488,112 @@ export class TeamDatalink {
 
 	// ---- Engagement deconfliction ------------------------------------------
 
+	// One record per target, holding EVERY live shot against it — not just the
+	// most recent. The ledger used to keep a single missile per target, so a
+	// four-round anti-ship salvo was tracked as whichever round happened to be
+	// fired last: kill that one while the other three were still inbound and
+	// the target read as unengaged, so the shooter immediately committed a
+	// fresh salvo it did not need and burned its magazine twice as fast.
 	registerEngagement(launcher, missile, target, now) {
 		if (!target || !missile) return;
-		this.engagements.set(target, { shooter: launcher, missile, target, firedAt: now });
+		let rec = this.engagements.get(target);
+		if (!rec) {
+			rec = { target, shots: [] };
+			this.engagements.set(target, rec);
+		}
+		rec.shots.push({ missile, shooter: launcher, firedAt: now });
+		rec._deathStamp = 0;                 // fresh shot revives a lingering record
 		this._missileIndex.set(missile, target);
 	}
 
+	// Shots still worth counting. A missile that missed (lostLock after flyby)
+	// or went maddog no longer counts — the target is effectively unengaged and
+	// teammates should re-commit rather than watch a dead shot coast for
+	// minutes.
+	_liveShots(rec) {
+		if (!rec || !rec.shots) return [];
+		return rec.shots.filter(s => s.missile && s.missile.active &&
+			!s.missile.lostLock && !s.missile.maddog);
+	}
+
 	// True if a team-mate already has a missile tracking this target.
-	// A missile that missed (lostLock after flyby) or went maddog no longer
-	// counts — the target is effectively unengaged and teammates should
-	// re-commit instead of watching a dead shot coast for minutes.
 	isEngaged(target) {
-		const rec = this.engagements.get(target);
-		if (!rec) return false;
-		if (!rec.missile || !rec.missile.active) return false;
-		if (rec.missile.lostLock || rec.missile.maddog) return false;
-		return true;
+		return this._liveShots(this.engagements.get(target)).length > 0;
+	}
+
+	// Is there still a shot in the air that might yet KILL this target?
+	//
+	// `isEngaged` only asks "is an interceptor alive", which is the wrong
+	// question for shoot-look-shoot. A SAM that has already flown past its
+	// target is alive for many more seconds while it coasts out — during which
+	// the shooter believes the target is covered — and conversely the instant
+	// it dies the target reads as free, so the next salvo goes before anyone
+	// knows whether the first one worked.
+	//
+	// The right signal is whether the interceptor is still CLOSING. Once the
+	// range from missile to target starts opening, the shot is spent: it
+	// either killed the target (in which case the target is gone anyway) or it
+	// missed, and the shooter should re-engage immediately rather than wait
+	// out the coast. That gives a genuine look between shots instead of the
+	// SM-6 spam of firing on a timer.
+	// Is this individual shot still closing on its target? Stateful by design:
+	// it remembers last frame's range so "closing" means what it says.
+	_shotClosing(shot, target) {
+		const m = shot.missile;
+		if (!m || typeof m.lon !== 'number' || typeof target.lon !== 'number') return true;
+		const cosLat = Math.cos((m.lat || 0) * Math.PI / 180);
+		const dE = (target.lon - m.lon) * 111320 * cosLat;
+		const dN = (target.lat - m.lat) * 111320;
+		const dU = (target.alt || 0) - (m.alt || 0);
+		const d2 = dE * dE + dN * dN + dU * dU;
+		const prev = shot._prevD2;
+		shot._prevD2 = d2;
+		// First frame there's nothing to compare against — call a fresh shot
+		// unresolved, the safe direction (don't double up on a round that just
+		// left the rail).
+		return prev === undefined || d2 <= prev;
+	}
+
+	hasUnresolvedShot(target) {
+		if (!target || typeof target.lon !== 'number') return false;
+		for (const shot of this._liveShots(this.engagements.get(target))) {
+			if (this._shotClosing(shot, target)) return true;
+		}
+		return false;
+	}
+
+	// How many live rounds the team currently has running at this target.
+	// Lets a shooter size a follow-up salvo against what's already inbound
+	// instead of treating "engaged / not engaged" as the only distinction.
+	liveShotCount(target) {
+		return this._liveShots(this.engagements.get(target)).length;
+	}
+
+	// Cooperative air-defence deconfliction. True if a DIFFERENT team-mate
+	// already has a live interceptor tracking `target` — and, when a radius is
+	// given, only if that shooter is within `maxCoordRangeM` of `me` (a task
+	// group / CEC bubble; ships on the far side of the map don't coordinate).
+	// A sister ship calls this to leave an already-covered threat alone and
+	// pick a fresh one, so a salvo of inbounds gets spread across the group
+	// instead of three ships all dumping on the same leaker.
+	engagedByOther(target, me, maxCoordRangeM = Infinity) {
+		for (const shot of this._liveShots(this.engagements.get(target))) {
+			const shooter = shot.shooter;
+			if (!shooter || shooter === me) continue;                  // our own shot doesn't count
+			// Only a shot that might still WORK reserves the target. A sister
+			// ship's round that has already sailed past shouldn't keep the rest
+			// of the group standing down on a leaker.
+			if (!this._shotClosing(shot, target)) continue;
+			if (maxCoordRangeM !== Infinity && me && typeof me.lon === 'number' &&
+				typeof shooter.lon === 'number') {
+				const cosLat = Math.cos((me.lat || 0) * Math.PI / 180);
+				const dE = (shooter.lon - me.lon) * 111320 * cosLat;
+				const dN = (shooter.lat - me.lat) * 111320;
+				if (Math.hypot(dE, dN) > maxCoordRangeM) continue;     // too far to coordinate
+			}
+			return true;
+		}
+		return false;
 	}
 
 	// Optional fast-path cleanup — call when a missile's lifecycle ends.
@@ -507,8 +602,14 @@ export class TeamDatalink {
 	clearByMissile(missile) {
 		const target = this._missileIndex.get(missile);
 		if (!target) return;
-		this.engagements.delete(target);
 		this._missileIndex.delete(missile);
+		const rec = this.engagements.get(target);
+		if (!rec) return;
+		// Retire ONLY this round. Dropping the whole record here was the other
+		// half of the lossy-salvo problem: one interceptor killing one missile
+		// of a four-round salvo marked the target unengaged while three were
+		// still inbound. tick() removes the record once it's genuinely empty.
+		rec.shots = rec.shots.filter(s => s.missile !== missile);
 	}
 }
 

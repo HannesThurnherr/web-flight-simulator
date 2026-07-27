@@ -7,7 +7,7 @@ import { Missile } from './missile';
 import { SIGNATURES } from '../systems/signatures';
 import { detectRadar } from '../systems/sensorSystem';
 import { rollJamBreakLock } from '../systems/ew/jammerSubsystem.js';
-import { pushKill } from '../systems/eventLog.js';
+import { pushKill, targetLabel } from '../systems/eventLog.js';
 import { mortallyWound } from '../systems/deathSequence.js';
 import { recordAdHit } from '../systems/adStats.js';
 import { airDensity, GRAVITY } from '../plane/aeroModel.js';
@@ -144,6 +144,17 @@ export class AIM120 extends Missile {
 		this.seekerActive   = false;
 		this.pitbullFired   = false;
 		this.maddog         = false; // post-pitbull with no target found
+
+		// VLS vertical-launch turnover. A ship fires this straight up (pitch
+		// ~90°); while climbing we suppress guidance so it doesn't try to tip
+		// over at zero airspeed. Once it clears VLS_TURNOVER_HEIGHT above the
+		// deck, normal PN/loft takes over and pitches it onto the cued target.
+		// Heading was already set to the target bearing at launch, so the round
+		// is azimuth-aligned the whole climb.
+		this._vlsClimb = !!(launcher && launcher.kind === 'surface' && pitch >= 80);
+		this._vlsLaunchAlt = (startPos && typeof startPos.alt === 'number') ? startPos.alt : this.alt;
+		this._vlsTurnover = false;          // TVC pitch-over phase after the climb
+		this._vlsTurnoverElapsed = 0;
 
 		// Datalink track — the launcher's latest radar estimate of the
 		// target's state, plus velocity for dead-reckoning extrapolation
@@ -358,8 +369,32 @@ export class AIM120 extends Missile {
 			this._checkLockIntegrity(npcs, dt);
 		}
 
+		// ---- VLS vertical launch: climb → TVC turnover → normal guidance ---
+		// Climb straight up to ~70 m, then a thrust-vectored pitch-over slews
+		// the round onto the ship's datalink-cued target at a high rate (a
+		// real VLS missile does this with jet vanes — normal aero PN at this
+		// low speed only pulls ~9°/s, which reads as "flies straight up" while
+		// it slowly tips). Once it's pointed at the target, hand off to normal
+		// PN/loft guidance for the run-in.
+		const VLS_TURNOVER_HEIGHT = 70;
+		if (this._vlsClimb && (this.alt - this._vlsLaunchAlt) >= VLS_TURNOVER_HEIGHT) {
+			this._vlsClimb = false;
+			this._vlsTurnover = true;
+		}
+		if (this._vlsTurnover) this._vlsTurnoverStep(dt);
+
 		// ---- Guidance -----------------------------------------------------
-		if (!this.lostLock && !this.maddog) {
+		// Keep steering through a maddog window, not just while actively
+		// locked. _bestTargetState() falls back to dead-reckoning the last
+		// known track once maddog (see above), so the missile coasts toward
+		// where the target SHOULD be instead of flying dead-straight on
+		// whatever heading it had the instant lock dropped — the straight-
+		// line coast is what made every lock loss permanent: the angular
+		// offset to the real target only grows with no correction applied,
+		// so by the time a reacquire attempt fires the target has long since
+		// left the seeker's cone. Still gated on lostLock (miss-abort, a
+		// deliberate "the pass is over" state, unlike maddog).
+		if (!this._vlsClimb && !this._vlsTurnover && !this.lostLock) {
 			this._guide(dt);
 		}
 
@@ -394,6 +429,7 @@ export class AIM120 extends Missile {
 				if (!npc || npc === this.launcher || npc === this) continue;
 				if (npc.destroyed) continue;
 				if (npc.team && this.team && npc.team === this.team) continue;
+				if (npc.kind === 'surface') continue;   // anti-air AMRAAM/SAM never detonates on a ship
 				const missSq = this._segmentMissDistSq(prevLon, prevLat, prevAlt, this.lon, this.lat, this.alt, npc);
 				if (missSq < killRSq) {
 					this.hitNPC(npc);
@@ -566,13 +602,59 @@ export class AIM120 extends Missile {
 		if (!allTargets || allTargets.length === 0) return null;
 		const mLat  = Cesium.Math.toRadians(this.lat);
 		const observer = this._seekerObserver();
-		// A surface-launched interceptor (SAM, from a static battery) is a
-		// point-defence weapon — its whole job is killing incoming missiles /
-		// cruise missiles, so it MUST be allowed to lock munition-class
-		// returns. The reject-missiles rule below is only there to stop an
-		// air-to-air AMRAAM from locking a passing missile instead of its
-		// bandit, so it applies to air-launched shots only.
-		const interceptsMunitions = !!(this.launcher && this.launcher.isStatic);
+		// Munition-class returns raise TWO different questions, and conflating
+		// them into one flag is what let warships trade SAMs at each other's
+		// SAMs. They are scoped separately:
+		//
+		//   cruise_missile — a THREAT to the launcher. Any surface interceptor,
+		//     static battery or warship VLS alike, exists to kill these, so it
+		//     must be able to lock them. `isStatic` alone missed SHIPS
+		//     (npcSystem sets isStatic only for kind==='ground', while a
+		//     destroyer is kind==='surface'), so a ship's SM-6 was barred from
+		//     locking the very sea-skimmers it exists to intercept.
+		//
+		//   missile — another INTERCEPTOR (an enemy SAM/AAM). A static battery
+		//     may engage these when its platform opts in: NASAMS / Tor swatting
+		//     an inbound HARM is a real mission (see `engageMissiles` in
+		//     npcPilots). A SHIP must NOT. The ship pilot's own target sets
+		//     deliberately exclude 'missile' to stop the reciprocal cascade
+		//     where two destroyers shoot SM-6s at each other's SM-6s forever —
+		//     so letting the seeker lock one anyway reintroduces that cascade
+		//     through the back door, on any round that loses its assigned
+		//     target and rescans.
+		//
+		// Air-launched shots (both false) reject missile and cruise_missile
+		// alike, so an AMRAAM never abandons its bandit for a passing round.
+		const launcherIsStatic = !!(this.launcher && this.launcher.isStatic);
+		const launcherIsShip   = !!(this.launcher && this.launcher.kind === 'surface');
+		const classAllowed = (cls) => {
+			if (cls === 'missile')        return launcherIsStatic;
+			if (cls === 'cruise_missile') return launcherIsStatic || launcherIsShip;
+			return true;   // aircraft, bombs — unchanged
+		};
+
+		// Stay committed to the already-assigned target if the seeker can
+		// still see it. Without this, a clean pitbull activation (or a
+		// reacquire after a brief blink) scores every eligible contact by raw
+		// proximity and frequently hands the lock to whichever OTHER aircraft
+		// happens to be closer or more centered in the cone at that instant —
+		// observed empirically: a missile fired at target A locking target B
+		// on its very first seeker activation, no prior lock trouble at all.
+		// That's how "many missiles converge on one target while the one they
+		// were actually fired at goes unengaged" happens. A real homing
+		// missile commits to its assigned track; it doesn't opportunistically
+		// retarget just because the geometry briefly favors a neighbor. Only
+		// fall back to scanning for a replacement when the assigned target is
+		// destroyed or genuinely undetectable (out of cone/range, notched,
+		// terrain-masked).
+		if (this.target && !this.target.destroyed && this.target.active !== false) {
+			const tsig = this.target.signature;
+			const selfEligible = tsig && classAllowed(tsig.unitClass) &&
+				this.target.kind !== 'surface';
+			if (selfEligible && detectRadar(observer, this.target, this._seekerRadar)) {
+				return this.target;
+			}
+		}
 
 		// DL track gives a sanity reference so the seeker prefers the
 		// thing closest to where it expected the target to be, rather
@@ -587,10 +669,13 @@ export class AIM120 extends Missile {
 			if (t.team && this.team && t.team === this.team) continue;
 			const sig = t.signature;
 			if (!sig) continue;
-			// The seeker is trained to reject missile-class returns (so an
-			// air-to-air AMRAAM doesn't lock a passing missile) — UNLESS this
-			// is a surface interceptor, whose target IS a munition.
-			if (!interceptsMunitions && (sig.unitClass === 'missile' || sig.unitClass === 'cruise_missile')) continue;
+			// Munition-class gate — see classAllowed above.
+			if (!classAllowed(sig.unitClass)) continue;
+			// An active-radar AAM / SAM is a pure anti-air seeker. A ship is a
+			// huge radar return sitting right under the engagement, so at pitbull
+			// the seeker would happily abandon its bandit and lock the hull. Never
+			// let it: anti-ship is the Harpoon's job, not the AMRAAM's / SM-6's.
+			if (t.kind === 'surface') continue;
 
 			// Run the same radar pipeline a fighter would — FOV, RCS
 			// aspect, range-equation with RCS^0.25 scaling, terrain LOS,
@@ -660,15 +745,29 @@ export class AIM120 extends Missile {
 				this._reacqAttempt = 0;
 				this._reacqTimer = 0;
 				this.maddog = false;
+				// Keep the dead-reckoning fallback fresh every frame we're
+				// actually tracking, so if lock drops again the missile coasts
+				// from THIS moment's true state — not from stale pre-pitbull
+				// data, which could be tens of seconds (and kilometres) old.
+				const h = Cesium.Math.toRadians(this.target.heading || 0);
+				const p = Cesium.Math.toRadians(this.target.pitch || 0);
+				const spd = this.target.speed || 0;
+				this._dlTrack = {
+					lon: this.target.lon, lat: this.target.lat, alt: this.target.alt,
+					vE: spd * Math.sin(h) * Math.cos(p),
+					vN: spd * Math.cos(h) * Math.cos(p),
+					vU: spd * Math.sin(p),
+					updatedAt: this._age,
+				};
 				return;
 			}
 		}
 
 		// Case B: target gone, destroyed, or undetected this frame.
-		// Accumulate the lock-lost timer and run the reacquire scan on
-		// an exponentially backed-off cadence — first retry comes fast
-		// (0.25 s) so a brief notch blip recovers cleanly, but a target
-		// that holds beam through 4 attempts is genuinely lost.
+		// Accumulate the lock-lost timer and run the reacquire scan on an
+		// exponentially backed-off cadence — first retry comes fast (0.25 s)
+		// so a brief notch blip recovers cleanly, slowing toward one attempt
+		// every reacquireMaxIntervalS for a target that's taking longer.
 		this._lockLostTimer = (this._lockLostTimer || 0) + dt;
 		this._reacqTimer    = (this._reacqTimer    || 0) + dt;
 		this._reacqAttempt  = this._reacqAttempt   ?? 0;
@@ -682,9 +781,22 @@ export class AIM120 extends Missile {
 
 		const nextIv = Math.min(maxIv, baseIv * Math.pow(backoffMul, this._reacqAttempt));
 
-		if (this._reacqAttempt < maxAttempts && this._reacqTimer >= nextIv) {
+		// Keep retrying for the rest of the flight rather than permanently
+		// blinding the seeker after `maxAttempts`. That cap made sense when a
+		// maddog missile flew dead-straight with no correction — a target
+		// that beat ~12 s of backed-off retries while the missile coasted
+		// blind really was gone for good. Now guidance keeps steering toward
+		// the dead-reckoned estimate through the whole maddog window (see the
+		// dlTrack refresh above + the guidance gate in update()), so the
+		// angle to the real target recovers rather than diverging — measured
+		// empirically swinging back from a 44° peak toward 30° over ~15+ s,
+		// well past where the old fixed attempt budget gave up. `_reacqAttempt`
+		// is still capped (via maxAttempts) so it only affects the backoff
+		// MATH (nextIv is clamped at maxIv regardless); it no longer gates
+		// whether we scan at all.
+		if (this._reacqTimer >= nextIv) {
 			this._reacqTimer = 0;
-			this._reacqAttempt++;
+			this._reacqAttempt = Math.min(this._reacqAttempt + 1, maxAttempts);
 			const picked = this._scanForLock(allTargets);
 			if (picked) {
 				this.target = picked;
@@ -695,10 +807,9 @@ export class AIM120 extends Missile {
 			}
 		}
 
-		// Still no detection and the drop timer has elapsed → maddog.
-		// Guidance falls through to dead-reckoning on the last DL track.
-		// Once we're past maxAttempts the reacquire scan no longer
-		// fires, so a target that beat the back-off window stays beaten.
+		// Still no detection and the drop timer has elapsed → maddog (status
+		// flag: "not currently seeker-confirmed, coasting on the dead-
+		// reckoned estimate"). Reacquire scans keep running above regardless.
 		if (this._lockLostTimer >= seeker.lockDropTimeoutS && !this.maddog) {
 			this.maddog = true;
 		}
@@ -707,6 +818,45 @@ export class AIM120 extends Missile {
 	// ============================================================================
 	// Guidance
 	// ============================================================================
+
+	// VLS thrust-vectored pitch-over. After the vertical climb, slew heading +
+	// pitch onto the SHIP-PROVIDED target (datalink track first, the assigned
+	// target object as a fallback) at a high TVC rate — no seeker acquisition
+	// needed, the cue comes from the launching ship. Exits to normal guidance
+	// once pointed at the target (or after a safety timeout), at which point
+	// PN/loft fly the run-in.
+	_vlsTurnoverStep(dt) {
+		this._vlsTurnoverElapsed += dt;
+		let tgt = this._bestTargetState();
+		if (!tgt && this.target && typeof this.target.lon === 'number' && !this.target.destroyed) {
+			tgt = { lon: this.target.lon, lat: this.target.lat, alt: this.target.alt };
+		}
+		// No cue at all (target gone, no datalink) → stop turning over and let
+		// normal guidance / maddog take it.
+		if (!tgt) { this._vlsTurnover = false; return; }
+
+		const cosLat = Math.cos(this.lat * Math.PI / 180);
+		const dE = (tgt.lon - this.lon) * 111320 * cosLat;
+		const dN = (tgt.lat - this.lat) * 111320;
+		const dU = (tgt.alt - this.alt);
+		const horiz = Math.hypot(dE, dN);
+		const desiredHeading = (Math.atan2(dE, dN) * 180 / Math.PI + 360) % 360;
+		const desiredPitch   = Math.atan2(dU, Math.max(1, horiz)) * 180 / Math.PI;
+
+		const step = 75 * dt;                                  // deg/s TVC slew
+		let dH = desiredHeading - this.heading;
+		while (dH < -180) dH += 360;
+		while (dH >  180) dH -= 360;
+		this.heading += Math.max(-step, Math.min(step, dH));
+		const dP = desiredPitch - this.pitch;
+		this.pitch += Math.max(-step, Math.min(step, dP));
+		this.pitch = Math.max(-85, Math.min(85, this.pitch));
+
+		// Pointed at the target (or timed out) → hand off to normal guidance.
+		if ((Math.abs(dP) < 12 && Math.abs(dH) < 25) || this._vlsTurnoverElapsed > 3.5) {
+			this._vlsTurnover = false;
+		}
+	}
 
 	// Lead-pursuit + proportional navigation, with an optional loft for long
 	// range shots during motor burn. Now reads its target state from the
@@ -717,8 +867,13 @@ export class AIM120 extends Missile {
 		const tgt = this._bestTargetState();
 		if (!tgt) return;
 
+		// Endgame aim-point bias for a shot that isn't going to work — see
+		// Missile._aimPoint. Applied here rather than at the warhead so a
+		// failed intercept reads as the round sailing past, not as a
+		// detonation the target somehow survives.
+		const aim = (this.target && tgt === this.target) ? (this._aimPoint() || tgt) : tgt;
 		const myPos     = Cesium.Cartesian3.fromDegrees(this.lon, this.lat, this.alt);
-		const targetPos = Cesium.Cartesian3.fromDegrees(tgt.lon, tgt.lat, tgt.alt);
+		const targetPos = Cesium.Cartesian3.fromDegrees(aim.lon, aim.lat, aim.alt);
 
 		const losECEF = Cesium.Cartesian3.subtract(targetPos, myPos, new Cesium.Cartesian3());
 		const rangeToTarget = Cesium.Cartesian3.magnitude(losECEF);
@@ -814,7 +969,7 @@ export class AIM120 extends Missile {
 			pitchError:   dP,
 			tgo,
 			mode,
-			targetName: (this.target && this.target.name) || 'TGT',
+			targetName: this.target ? targetLabel(this.target) : '—',
 		};
 	}
 

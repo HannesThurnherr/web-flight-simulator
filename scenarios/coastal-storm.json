@@ -1,0 +1,474 @@
+{
+	"schemaVersion": 2,
+	"id": "coastal-storm",
+	"name": "COASTAL STORM \u2014 Ionian Littoral",
+	"description": "A two-fleet surface action fought inside a defended littoral, off the south-east corner of Sicily. RED holds the coast: a Bastion-P coastal regiment reaching 300 km with supersonic P-800s, a DF-21D ballistic battery ranging the whole basin from behind the ridge, an EWR feeding both over datalink, a Kara-class surface group screening the cape and two corvette pickets pushed out ahead of it. BLUE (yours) is a US surface action group \u2014 Ticonderoga, Zumwalt and two Burkes \u2014 approaching from seaward, ~90 km out, and it has to fight through the screen before its guns can reach the shore batteries. Both sides fly CAP and maritime strike. The ships mean it: with anti-ship magazines dry they run each other down to gun range rather than sit out of reach.",
+	"anchor": {
+		"mode": "world",
+		"worldLon": 15.95,
+		"worldLat": 36.25,
+		"playerSpawn": {
+			"lon": 16.2,
+			"lat": 36.08,
+			"alt": 4200,
+			"heading": 315,
+			"speed": 240
+		}
+	},
+	"autoSpawn": true,
+	"spawns": [
+		{
+			"type": "platform",
+			"team": "friendly",
+			"platformId": "cvn-78-ford",
+			"origin": {
+				"lon": 16.18,
+				"lat": 36.1,
+				"alt": 0
+			},
+			"tag": "blue-cvn"
+		},
+		{
+			"type": "platform",
+			"team": "friendly",
+			"platformId": "sh-60b-seahawk",
+			"origin": {
+				"lon": 16.05,
+				"lat": 36.18,
+				"alt": 900
+			},
+			"pilotOverrides": {
+				"altitudeM": 900,
+				"radiusM": 9000,
+				"speedMps": 65
+			},
+			"tag": "blue-helo"
+		},
+		{
+			"type": "platform",
+			"team": "friendly",
+			"platformId": "ticonderoga-cg",
+			"origin": {
+				"lon": 15.95,
+				"lat": 36.25,
+				"alt": 0
+			},
+			"tag": "blue-cg"
+		},
+		{
+			"type": "platform",
+			"team": "friendly",
+			"platformId": "zumwalt-ddg",
+			"origin": {
+				"lon": 15.99,
+				"lat": 36.22,
+				"alt": 0
+			},
+			"tag": "blue-ddg-1"
+		},
+		{
+			"type": "platform",
+			"team": "friendly",
+			"platformId": "arleigh-burke",
+			"origin": {
+				"lon": 15.91,
+				"lat": 36.22,
+				"alt": 0
+			},
+			"tag": "blue-ddg-2"
+		},
+		{
+			"type": "platform",
+			"team": "friendly",
+			"platformId": "arleigh-burke",
+			"origin": {
+				"lon": 15.95,
+				"lat": 36.19,
+				"alt": 0
+			},
+			"tag": "blue-ddg-3"
+		},
+		{
+			"type": "platform",
+			"team": "friendly",
+			"platformId": "e-2d-hawkeye",
+			"origin": {
+				"lon": 16.3,
+				"lat": 36.03,
+				"alt": 8500
+			},
+			"pilotOverrides": {
+				"altitudeM": 8500,
+				"radiusM": 20000
+			},
+			"tag": "blue-awacs"
+		},
+		{
+			"type": "platform",
+			"team": "hostile-red",
+			"platformId": "kara-cruiser",
+			"origin": {
+				"lon": 15.45,
+				"lat": 36.52,
+				"alt": 0
+			},
+			"tag": "red-cg-1"
+		},
+		{
+			"type": "platform",
+			"team": "hostile-red",
+			"platformId": "kara-cruiser",
+			"origin": {
+				"lon": 15.49,
+				"lat": 36.49,
+				"alt": 0
+			},
+			"tag": "red-cg-2"
+		},
+		{
+			"type": "platform",
+			"team": "hostile-red",
+			"platformId": "kara-cruiser",
+			"origin": {
+				"lon": 15.41,
+				"lat": 36.48,
+				"alt": 0
+			},
+			"tag": "red-cg-3"
+		},
+		{
+			"type": "platform",
+			"team": "hostile-red",
+			"platformId": "gawron-corvette",
+			"origin": {
+				"lon": 15.58,
+				"lat": 36.38,
+				"alt": 0
+			},
+			"tag": "red-corvette-2"
+		},
+		{
+			"type": "platform",
+			"team": "hostile-red",
+			"platformId": "gawron-corvette",
+			"origin": {
+				"lon": 15.62,
+				"lat": 36.44,
+				"alt": 0
+			},
+			"tag": "red-corvette-1"
+		},
+		{
+			"type": "platform",
+			"team": "hostile-red",
+			"platformId": "bastion-p-battery",
+			"origin": {
+				"lon": 15.05,
+				"lat": 36.78,
+				"alt": 0
+			},
+			"tag": "red-bastion-1"
+		},
+		{
+			"type": "platform",
+			"team": "hostile-red",
+			"platformId": "bastion-p-battery",
+			"origin": {
+				"lon": 14.95,
+				"lat": 36.85,
+				"alt": 0
+			},
+			"tag": "red-bastion-2"
+		},
+		{
+			"type": "platform",
+			"team": "hostile-red",
+			"platformId": "asbm-battery",
+			"origin": {
+				"lon": 14.88,
+				"lat": 36.92,
+				"alt": 0
+			},
+			"tag": "red-asbm"
+		},
+		{
+			"type": "platform",
+			"team": "hostile-red",
+			"platformId": "ewr",
+			"origin": {
+				"lon": 15.1,
+				"lat": 36.8,
+				"alt": 0
+			},
+			"tag": "red-ewr"
+		},
+		{
+			"type": "platform",
+			"team": "hostile-red",
+			"platformId": "sa-15-tor",
+			"origin": {
+				"lon": 15.02,
+				"lat": 36.74,
+				"alt": 0
+			},
+			"tag": "red-sam-1"
+		},
+		{
+			"type": "platform",
+			"team": "hostile-red",
+			"platformId": "nasams-sam",
+			"origin": {
+				"lon": 14.98,
+				"lat": 36.88,
+				"alt": 0
+			},
+			"tag": "red-sam-2"
+		},
+		{
+			"type": "platform",
+			"team": "hostile-red",
+			"platformId": "command-post",
+			"origin": {
+				"lon": 15.13,
+				"lat": 36.72,
+				"alt": 0
+			},
+			"tag": "red-cp"
+		},
+		{
+			"type": "platform",
+			"team": "hostile-red",
+			"platformId": "zsu-23-shilka",
+			"origin": {
+				"lon": 15.15,
+				"lat": 36.7,
+				"alt": 0
+			},
+			"tag": "red-aaa-1"
+		},
+		{
+			"type": "platform",
+			"team": "hostile-red",
+			"platformId": "zsu-23-shilka",
+			"origin": {
+				"lon": 15.11,
+				"lat": 36.69,
+				"alt": 0
+			},
+			"tag": "red-aaa-2"
+		},
+		{
+			"type": "fighter",
+			"fighterModel": "fa-18f",
+			"team": "friendly",
+			"count": 2,
+			"jitterM": 2500,
+			"origin": {
+				"lon": 16.1,
+				"lat": 36.14,
+				"alt": 8000
+			},
+			"headingDeg": 315,
+			"altitudeM": {
+				"from": 7500,
+				"to": 9000
+			},
+			"speedMps": 250,
+			"loadout": {
+				"AIM-120": 6,
+				"AIM-9X": 2
+			},
+			"pilot": {
+				"type": "air-superiority",
+				"params": {
+					"zone": {
+						"lon": 15.98,
+						"lat": 36.24,
+						"altM": 8000,
+						"radiusM": 30000
+					}
+				}
+			},
+			"recoverTo": "blue-cvn"
+		},
+		{
+			"type": "fighter",
+			"fighterModel": "f-16",
+			"team": "friendly",
+			"count": 2,
+			"jitterM": 2500,
+			"origin": {
+				"lon": 16.22,
+				"lat": 36.12,
+				"alt": 7000
+			},
+			"headingDeg": 300,
+			"altitudeM": {
+				"from": 6500,
+				"to": 7500
+			},
+			"speedMps": 245,
+			"loadout": {
+				"AGM-88": 2,
+				"GBU-39": 4,
+				"AIM-120": 2,
+				"AIM-9X": 2
+			}
+		},
+		{
+			"type": "fighter",
+			"fighterModel": "su-35",
+			"team": "hostile-red",
+			"count": 3,
+			"jitterM": 4000,
+			"origin": {
+				"lon": 15.25,
+				"lat": 36.9,
+				"alt": 8500
+			},
+			"headingDeg": 140,
+			"altitudeM": {
+				"from": 8000,
+				"to": 9500
+			},
+			"speedMps": 260,
+			"loadout": {
+				"R-77": 4,
+				"R-73": 2
+			},
+			"pilot": {
+				"type": "air-superiority",
+				"params": {
+					"zone": {
+						"lon": 15.3,
+						"lat": 36.7,
+						"altM": 8500,
+						"radiusM": 34000
+					}
+				}
+			}
+		},
+		{
+			"type": "fighter",
+			"fighterModel": "su-35",
+			"team": "hostile-red",
+			"count": 2,
+			"jitterM": 3000,
+			"origin": {
+				"lon": 14.9,
+				"lat": 36.7,
+				"alt": 5500
+			},
+			"headingDeg": 120,
+			"altitudeM": {
+				"from": 5000,
+				"to": 6000
+			},
+			"speedMps": 250,
+			"loadout": {
+				"P-800": 2,
+				"R-77": 2,
+				"R-73": 2
+			}
+		},
+		{
+			"type": "fighter",
+			"fighterModel": "su-35",
+			"team": "hostile-red",
+			"count": 2,
+			"jitterM": 3000,
+			"origin": {
+				"lon": 15.5,
+				"lat": 36.95,
+				"alt": 9000
+			},
+			"headingDeg": 170,
+			"altitudeM": {
+				"from": 8500,
+				"to": 9500
+			},
+			"speedMps": 265,
+			"loadout": {
+				"R-37M": 2,
+				"R-77": 2,
+				"R-73": 2
+			}
+		},
+		{
+			"type": "platform",
+			"team": "hostile-red",
+			"platformId": "96l6e-radar",
+			"origin": {
+				"lon": 15.0,
+				"lat": 36.83,
+				"alt": 0
+			},
+			"tag": "red-acq-radar"
+		},
+		{
+			"type": "platform",
+			"team": "hostile-red",
+			"platformId": "radar-truck-trm",
+			"origin": {
+				"lon": 15.18,
+				"lat": 36.76,
+				"alt": 0
+			},
+			"tag": "red-radar-truck"
+		}
+	],
+	"objectives": [
+		{
+			"id": "obj-protect-cvn",
+			"kind": "protect",
+			"label": "Keep the Ford alive \u2014 she generates the air",
+			"required": true,
+			"tag": "blue-cvn"
+		},
+		{
+			"id": "obj-red-sag",
+			"kind": "destroy",
+			"label": "Sink the Kara-class flagship",
+			"required": true,
+			"tag": "red-cg-1"
+		},
+		{
+			"id": "obj-red-sag-2",
+			"kind": "destroy",
+			"label": "Sink the second Kara",
+			"required": true,
+			"tag": "red-cg-2"
+		},
+		{
+			"id": "obj-bastion",
+			"kind": "destroy",
+			"label": "Destroy the Bastion-P coastal battery",
+			"required": true,
+			"tag": "red-bastion-1"
+		},
+		{
+			"id": "obj-asbm",
+			"kind": "destroy",
+			"label": "Destroy the DF-21D ASBM battery",
+			"required": false,
+			"tag": "red-asbm"
+		},
+		{
+			"id": "obj-ewr",
+			"kind": "destroy",
+			"label": "Blind the coastal EWR",
+			"required": false,
+			"tag": "red-ewr"
+		},
+		{
+			"id": "obj-protect-cg",
+			"kind": "protect",
+			"label": "Keep the Ticonderoga afloat",
+			"required": true,
+			"tag": "blue-cg"
+		}
+	],
+	"triggers": [],
+	"createdAt": "2026-07-27T16:00:00.000Z",
+	"modifiedAt": "2026-07-27T16:00:00.000Z"
+}

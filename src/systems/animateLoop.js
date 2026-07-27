@@ -17,6 +17,7 @@ import { getViewer } from '../world/cesiumWorld';
 import { particles } from '../utils/particles';
 import { updateGroundWrecks } from './deathSequence.js';
 import { update } from './simLoop';
+import { getTimeScale } from './timeScale.js';
 import {
 	isTakramReady,
 	renderTakramComposer,
@@ -73,8 +74,20 @@ export function startAnimateLoop(ctx) {
 			// CRASHED keeps ticking so NPCs continue fighting and the
 			// player can press M to watch from above. update() gates
 			// player-specific work on isFlying internally.
+			//
+			// Time acceleration (commander view) runs the SAME update N
+			// times with the SAME dt rather than once with N*dt — see
+			// timeScale.js. A bigger dt would let fast movers tunnel
+			// through their targets between steps; sub-stepping keeps
+			// every integrator's accuracy identical to real time.
 			if (currentState === 'FLYING' || currentState === 'CRASHED') {
-				update(dt, ctx);
+				const steps = getTimeScale();
+				// A frame hitch (tab refocus, tile stream stall) can hand us a
+				// huge dt. At 1x that's the long-standing behaviour, but
+				// multiplying a spike by 8 sub-steps would fast-forward the
+				// world by seconds, so clamp the step while accelerating.
+				const stepDt = steps > 1 ? Math.min(dt, 1 / 30) : dt;
+				for (let s = 0; s < steps; s++) update(stepDt, ctx);
 			} else if (currentState === 'EDITING') {
 				// Phase 10b — scenario editor mode. Tick the commander
 				// view so its pan/tilt/zoom drives the Cesium camera
@@ -128,8 +141,15 @@ export function startAnimateLoop(ctx) {
 			// player watches from spectator view.
 			try {
 				if (currentState === 'FLYING' || currentState === 'CRASHED') {
-					particles.update(dt);
-					updateGroundWrecks(dt);
+					// Sub-stepped alongside the sim so effects age at the same
+					// rate the world runs — otherwise smoke and wreckage linger
+					// 8x too long at 8x speed.
+					const steps = getTimeScale();
+					const stepDt = steps > 1 ? Math.min(dt, 1 / 30) : dt;
+					for (let s = 0; s < steps; s++) {
+						particles.update(stepDt);
+						updateGroundWrecks(stepDt);
+					}
 				}
 			} catch (e) { }
 
@@ -154,10 +174,11 @@ export function startAnimateLoop(ctx) {
 
 			camera.layers.set(1);
 
-			// Layer 1 (cockpit-space): the player plane mesh at a
-			// different FOV. We deliberately DON'T atmospheric-process
-			// this pass — the airframe at chase distance shouldn't get
-			// fogged by the air column we're flying through.
+			// Layer 1 (cockpit-space): the player plane mesh (chase view)
+			// or the 3D cockpit (first-person view) at a fixed 75° FOV.
+			// We deliberately DON'T atmospheric-process this pass — the
+			// airframe / pit shouldn't get fogged by the air column
+			// we're flying through.
 			renderer.render(scene, camera);
 		} else {
 			document.getElementById('threeContainer').classList.add('hidden');

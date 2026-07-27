@@ -17,7 +17,7 @@
 			"fovHalfHDeg": 180,
 			"fovHalfVDeg": 45,
 			"notchThreshold": 0,
-			"targetKinds": ["ground"]
+			"targetKinds": ["ground", "surface"]
 		}
 	},
 	"pilot": {

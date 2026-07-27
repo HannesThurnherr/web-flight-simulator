@@ -47,6 +47,9 @@ const _scratchSunDir   = new Cesium.Cartesian3();
 const _scratchEnuMat   = new Cesium.Matrix4();
 const _scratchUpVec    = new Cesium.Cartesian3();
 const _scratchIcrfFix  = new Cesium.Matrix3();
+const _scratchMoonICRF = new Cesium.Cartesian3();
+const _scratchMoonDir  = new Cesium.Cartesian3();
+const _scratchSunFromEarth = new Cesium.Cartesian3();
 
 // Register the lights once at scene bring-up. The scene module owns the
 // Light instances; this module just holds references and mutates their
@@ -71,7 +74,7 @@ export function setFog(fog) {
 // position + ICRF-to-fixed matrix; if EOP data isn't loaded yet we
 // fall back to the TEME→pseudo-fixed approximation, which is accurate
 // to a few arcmin — well within the ramp band's tolerance.
-function _sunDirectionENU(time, lon, lat, alt, out) {
+export function _sunDirectionENU(time, lon, lat, alt, out) {
 	Cesium.Simon1994PlanetaryPositions.computeSunPositionInEarthInertialFrame(time, _scratchSunICRF);
 	const ok = Cesium.Transforms.computeIcrfToFixedMatrix(time, _scratchIcrfFix)
 		|| Cesium.Transforms.computeTemeToPseudoFixedMatrix(time, _scratchIcrfFix);
@@ -103,6 +106,58 @@ function _sunDirectionENU(time, lon, lat, alt, out) {
 	out.elevDeg = Math.asin(Math.max(-1, Math.min(1, out.u))) * 180 / Math.PI;
 	return out;
 }
+// Moon direction in the player's local ENU frame, plus how much light it is
+// actually throwing. Same machinery as the sun above (Simon1994 + ICRF→fixed),
+// so the direction agrees with the Moon Cesium draws in its own sky box.
+//
+// `out.illum` is the illuminated fraction of the disc: the phase angle i is the
+// Sun–Moon–Earth angle, the illuminated fraction is (1 + cos i)/2, and for a
+// sun this far away i ≈ 180° − elongation, which reduces to
+// (1 − cos elongation)/2 with elongation measured at the Earth's centre. Full
+// moon → 1, new moon → 0.
+//
+// `out.level` is what a renderer should actually multiply by: brightness falls
+// off much faster than the illuminated fraction (a half moon is nearer a tenth
+// of a full moon than a half), and it fades out as the moon sets.
+export function _moonDirectionENU(time, lon, lat, alt, out) {
+	Cesium.Simon1994PlanetaryPositions.computeMoonPositionInEarthInertialFrame(time, _scratchMoonICRF);
+	Cesium.Simon1994PlanetaryPositions.computeSunPositionInEarthInertialFrame(time, _scratchSunFromEarth);
+	const ok = Cesium.Transforms.computeIcrfToFixedMatrix(time, _scratchIcrfFix)
+		|| Cesium.Transforms.computeTemeToPseudoFixedMatrix(time, _scratchIcrfFix);
+	if (!ok) {
+		out.e = 0; out.n = 0; out.u = -1; out.elevDeg = -90; out.illum = 0; out.level = 0;
+		return out;
+	}
+	Cesium.Matrix3.multiplyByVector(_scratchIcrfFix, _scratchMoonICRF, _scratchMoonICRF);
+	Cesium.Matrix3.multiplyByVector(_scratchIcrfFix, _scratchSunFromEarth, _scratchSunFromEarth);
+
+	// Phase, from the Earth-centred sun/moon directions (before we re-base the
+	// moon on the observer — the difference is irrelevant at these distances).
+	Cesium.Cartesian3.normalize(_scratchSunFromEarth, _scratchSunFromEarth);
+	Cesium.Cartesian3.normalize(_scratchMoonICRF, _scratchMoonDir);
+	const elong = Cesium.Cartesian3.dot(_scratchSunFromEarth, _scratchMoonDir);
+	out.illum = Math.max(0, Math.min(1, (1 - elong) * 0.5));
+
+	Cesium.Cartesian3.fromDegrees(lon, lat, alt || 0, undefined, _scratchPlayerECEF);
+	Cesium.Cartesian3.subtract(_scratchMoonICRF, _scratchPlayerECEF, _scratchMoonDir);
+	Cesium.Cartesian3.normalize(_scratchMoonDir, _scratchMoonDir);
+
+	Cesium.Transforms.eastNorthUpToFixedFrame(_scratchPlayerECEF, undefined, _scratchEnuMat);
+	const md = _scratchMoonDir;
+	const m = _scratchEnuMat;
+	out.e = md.x * m[0] + md.y * m[1] + md.z * m[2];
+	out.n = md.x * m[4] + md.y * m[5] + md.z * m[6];
+	out.u = md.x * m[8] + md.y * m[9] + md.z * m[10];
+	out.elevDeg = Math.asin(Math.max(-1, Math.min(1, out.u))) * 180 / Math.PI;
+
+	// Phase falloff (steeper than linear) × horizon fade over the last few
+	// degrees, so the glitter path doesn't blink out as the moon touches down.
+	const phase = Math.pow(out.illum, 1.8);
+	const rise = Math.max(0, Math.min(1, (out.elevDeg + 2) / 6));
+	out.level = phase * rise * rise * (3 - 2 * rise);
+	return out;
+}
+
 const _sunOut = { e: 0, n: 0, u: 1, elevDeg: 90 };
 
 // Map sun elevation (degrees) to a 0..1 daylight factor.

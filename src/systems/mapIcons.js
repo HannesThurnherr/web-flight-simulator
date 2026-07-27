@@ -40,9 +40,12 @@ export function teamColor(team) {
 // ---- Category resolution ----------------------------------------------------
 
 // Air/munition categories rotate to heading; ground categories are static.
+// Ships rotate too — course is meaningful on a naval plot, so a destroyer
+// icon points down its heading just like an airframe.
 const ROTATING = new Set([
 	'fighter', 'stealth', 'bomber', 'awacs', 'drone', 'ew_jet',
 	'aam', 'arm', 'cruise', 'bomb', 'sam_msl',
+	'ship', 'destroyer', 'frigate', 'carrier', 'asm', 'shell',
 ]);
 
 export function categoryRotates(cat) {
@@ -74,6 +77,17 @@ export function categoryForUnit(u) {
 		return 'sam';
 	}
 
+	// Surface combatants. Checked before the airborne fallback because a
+	// ship is neither a ground unit (not static) nor an aircraft — without
+	// this it would render as a fighter delta. Sub-categorise by hull class
+	// so a carrier reads differently from an escort.
+	if (cls === 'ship') {
+		if (pid.includes('carrier') || pid.includes('cvn') || /\bcv\b/.test(pid)) return 'carrier';
+		if (pid.includes('frigate') || pid.includes('ffg') || pid.includes('corvette')) return 'frigate';
+		if (pid.includes('burke') || pid.includes('ddg') || pid.includes('destroyer')) return 'destroyer';
+		return 'ship';
+	}
+
 	// Airborne.
 	if (pid.includes('growler') || pid.includes('ea-18')) return 'ew_jet';
 	if (cls === 'awacs' || cls === 'cargo') return 'awacs';
@@ -88,10 +102,16 @@ export function categoryForMissile(m) {
 	if (!m) return 'aam';
 	const t = (m.type || '').toUpperCase();
 	const cls = (m.signature && m.signature.unitClass) || '';
+	// Naval gun shell first — it's a ballistic 'bomb'-class round but reads
+	// as a dumb projectile, not a glide bomb, so give it its own mark.
+	if (t === 'MK45' || t.startsWith('MK45') || t === 'NAVAL-SHELL') return 'shell';
 	if (t.startsWith('GBU') || cls === 'bomb') return 'bomb';
 	if (t === 'AGM-88' || t.startsWith('HARM')) return 'arm';
-	if (cls === 'cruise_missile' || t === 'STORM-SHADOW' || t.startsWith('AGM-86') || t === 'MALD') return 'cruise';
-	if (t === 'NASAMS-MSL' || t === 'TOR-MSL' || (m.launcher && m.launcher.isStatic)) return 'sam_msl';
+	// Anti-ship missiles (Harpoon / NSM) — sea-skimmers. Checked before the
+	// generic cruise test because they share the cruise_missile signature.
+	if (t === 'HARPOON' || t === 'NSM' || t.startsWith('HARPOON') || t === 'TLAM-ASM') return 'asm';
+	if (cls === 'cruise_missile' || t === 'STORM-SHADOW' || t === 'TOMAHAWK' || t.startsWith('AGM-86') || t === 'MALD') return 'cruise';
+	if (t === 'NASAMS-MSL' || t === 'TOR-MSL' || t === 'SM-6' || t === 'SM-2' || t === 'RAM' || (m.launcher && m.launcher.isStatic) || (m.launcher && m.launcher.kind === 'surface')) return 'sam_msl';
 	return 'aam';
 }
 
@@ -202,6 +222,46 @@ const GLYPHS = {
 		`<path d="M24 5 L26.4 13 L26.4 34 L24 38 L21.6 34 L21.6 13 Z"/>` +
 		`<path d="M21.6 29 L16 35 L21.6 33 Z M26.4 29 L32 35 L26.4 33 Z" fill="${C}"/>` +
 		`<path d="M22 38 L24 45 L26 38 Z" fill="${C}" stroke="none"/>`,
+
+	// Generic surface combatant: top-down hull, sharp bow up, flat stern,
+	// with a centred superstructure block.
+	ship:
+		`<path d="M24 4 L30 18 L30 40 L18 40 L18 18 Z" fill="${C}" fill-opacity="0.32" stroke="${C}" stroke-width="2.2" stroke-linejoin="round"/>` +
+		`<rect x="21" y="22" width="6" height="12" rx="1" fill="${C}"/>`,
+
+	// Destroyer (Arleigh Burke): long hull, bow gun turret, blocky
+	// superstructure + mast, aft helo deck line.
+	destroyer:
+		`<path d="M24 3 L31 17 L31 43 L17 43 L17 17 Z" fill="${C}" fill-opacity="0.28" stroke="${C}" stroke-width="2.2" stroke-linejoin="round"/>` +
+		`<circle cx="24" cy="13" r="2.4" fill="${C}"/>` +                       // forward 5" gun
+		`<rect x="20" y="20" width="8" height="13" rx="1" fill="${C}" fill-opacity="0.6" stroke="${C}" stroke-width="1.6"/>` + // superstructure
+		`<path d="M24 20 L24 33" stroke="${C}" stroke-width="1.4" stroke-opacity="0.7"/>` +
+		`<path d="M20 38 L28 38 M20 40.5 L28 40.5" stroke="${C}" stroke-width="1.3" stroke-opacity="0.7"/>`, // aft helo deck
+
+	// Frigate / corvette: shorter, leaner hull, single deckhouse.
+	frigate:
+		`<path d="M24 6 L29 18 L29 40 L19 40 L19 18 Z" fill="${C}" fill-opacity="0.3" stroke="${C}" stroke-width="2.2" stroke-linejoin="round"/>` +
+		`<rect x="21" y="22" width="6" height="10" rx="1" fill="${C}" fill-opacity="0.7" stroke="${C}" stroke-width="1.4"/>` +
+		`<path d="M24 14 l0 -3" stroke="${C}" stroke-width="2"/>`,
+
+	// Carrier: wide flight deck with an angled bow, starboard island, and a
+	// dashed centreline.
+	carrier:
+		`<path d="M22 3 L31 9 L31 44 L17 44 L17 12 Z" fill="${C}" fill-opacity="0.26" stroke="${C}" stroke-width="2.2" stroke-linejoin="round"/>` +
+		`<rect x="27" y="22" width="3.4" height="9" rx="0.8" fill="${C}"/>` +    // starboard island
+		`<path d="M23 8 L23 42" fill="none" stroke="${C}" stroke-width="1.4" stroke-dasharray="3 3" stroke-opacity="0.8"/>`,
+
+	// Anti-ship missile (Harpoon / NSM): sea-skimming dart with swept delta
+	// wings set well aft + a small motor flame.
+	asm:
+		`<path d="M24 4 L26.6 13 L26.6 37 L24 41 L21.4 37 L21.4 13 Z"/>` +
+		`<path d="M21.4 27 L12 35 L21.4 32 Z M26.6 27 L36 35 L26.6 32 Z" fill="${C}"/>` +
+		`<path d="M22.2 41 L24 45 L25.8 41 Z" fill="${C}" stroke="none"/>`,
+
+	// Naval gun shell: small ballistic round (ogive) with a faint arc trail.
+	shell:
+		`<path d="M24 13 C27 17 27 29 24.5 33 L23.5 33 C21 29 21 17 24 13 Z"/>` +
+		`<path d="M22 34 L26 34 L25 38 L23 38 Z" fill="${C}"/>`,
 
 	// Generic fallback: ringed dot.
 	dot:

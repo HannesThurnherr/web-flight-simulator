@@ -1,0 +1,88 @@
+{
+	"id": "gawron-corvette",
+	"name": "Gawron-class Corvette",
+	"kind": "surface",
+	"model": "/assets/models/gawron-corvette.glb",
+	"modelRotation": {
+		"x": 0,
+		"y": 180,
+		"z": 0
+	},
+	"modelScale": 34.5,
+	"signature": "frigate",
+	"hp": 60,
+	"groundOffsetM": 1,
+	"sensors": {
+		"radar": {
+			"enabled": true,
+			"active": true,
+			"mode": "search",
+			"nominalRange": 90000,
+			"referenceRcs": 5,
+			"fovHalfHDeg": 180,
+			"fovHalfVDeg": 90,
+			"notchThreshold": 60
+		}
+	},
+	"pilot": {
+		"type": "ship-combatant",
+		"defaultParams": {
+			"cruiseSpeedMps": 11,
+			"maxSpeedMps": 20,
+			"turnRateMaxDegPerS": 4.5,
+			"accelTauS": 18,
+			"patrolRadiusM": 0,
+			"evadeRangeM": 14000,
+			"flareRangeM": 6000,
+			"flares": 50,
+			"chaff": 50,
+			"weapons": [
+				{
+					"type": "gun",
+					"role": "ciws",
+					"ammo": 2000,
+					"fireRate": 0.05,
+					"maxInFlight": 0,
+					"minRange": 0,
+					"maxRange": 2200,
+					"muzzleVelMps": 1500
+				},
+				{
+					"type": "RAM",
+					"role": "ram",
+					"ammo": 21,
+					"fireRate": 1.0,
+					"maxInFlight": 4,
+					"minRange": 500,
+					"maxRange": 9000
+				},
+				{
+					"type": "P-800",
+					"role": "antiship",
+					"ammo": 4,
+					"fireRate": 1.5,
+					"maxInFlight": 4,
+					"minRange": 6000,
+					"maxRange": 200000,
+					"salvoSize": 2,
+					"reengageS": 12
+				},
+				{
+					"type": "MK45",
+					"role": "navalgun",
+					"ammo": 200,
+					"fireRate": 2.4,
+					"maxInFlight": 6,
+					"minRange": 1500,
+					"maxRange": 15000,
+					"muzzleVelMps": 800,
+					"reengageS": 3
+				}
+			]
+		}
+	},
+	"physicsOverrides": {
+		"mass": 2000000,
+		"wingArea": 1
+	}
+}

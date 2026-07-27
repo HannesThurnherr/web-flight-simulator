@@ -8,6 +8,8 @@ import { getTeamDatalink } from '../systems/teamDatalink.js';
 import { MUNITIONS } from '../weapon/munitions.js';
 import { munitionIdForSimType } from '../weapon/munitionFactory.js';
 import { playerDesignation, designationQueue } from '../systems/designation.js';
+import { targetLabel } from '../systems/eventLog.js';
+import { gameSettings } from './settings.js';
 
 // Team → HUD accent color. Shared across the on-screen diamond, minimap
 // icons, and (in future) the radar scope. Friendlies get the familiar
@@ -971,6 +973,13 @@ export class HUD {
 		const camera = scene.camera;
 		const activeIds = new Set();
 		const playerTeam = state.team || 'friendly';
+		// Munition-marker declutter (System Config / L in flight). A fleet
+		// action puts dozens of rounds up at once, and tagging every friendly
+		// SM-6 with type, phase, speed and range turns the windscreen into a
+		// wall of text no real HUD would show. Filtered rounds lose the WHOLE
+		// overlay, dot included — they stay visible the honest way, by their
+		// own exhaust plume.
+		const labelMode = gameSettings.munitionLabels || 'threats';
 
 		for (let i = 0; i < projectiles.length; i++) {
 			const m = projectiles[i];
@@ -993,6 +1002,21 @@ export class HUD {
 			const detected = isOwnTeam ||
 				(state.contacts && state.contacts.has(m));
 			if (!detected) continue;
+
+			// Declutter gate. Anything filtered out here gets NO overlay at
+			// all — no marker, no dot, no text. The round is still perfectly
+			// visible in the world by its own exhaust plume and smoke trail,
+			// which is how you'd actually see it out of the canopy.
+			//
+			// `projectiles` is playerPool.concat(npcPool), so anything below
+			// playerPool.length is a round the player fired themselves.
+			const isPlayerShot = i < playerPool.length;
+			const show = labelMode === 'full' ||
+				(labelMode === 'threats' && (!isOwnTeam || isPlayerShot));
+			// Falling through without adding to activeIds means the prune pass
+			// below tears down any marker this round already had — so cycling
+			// the mode mid-flight clears the screen immediately.
+			if (!show) continue;
 
 			const id = m.id || (m.id = `m${i}-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`);
 			activeIds.add(id);
@@ -1117,7 +1141,10 @@ export class HUD {
 			const rng     = typeof d.rangeToTarget === 'number'
 				? `${(d.rangeToTarget / 1000).toFixed(1)}km`.padStart(6)
 				: '  —  ';
-			const tgt     = (d.targetName || (m.target && m.target.name) || '—').slice(0, 10);
+			// Live target, not the debug snapshot — `debug` stops refreshing once
+			// a round goes maddog, so it used to keep naming a target the missile
+			// had already abandoned. Last column, so it's free to be wider.
+			const tgt     = (m.target ? targetLabel(m.target) : (d.targetName || '—')).slice(0, 16);
 			const hdgErr  = typeof d.headingError === 'number' ? d.headingError : 0;
 			const errTxt  = `err ${hdgErr.toFixed(0)}°`;
 			const errCol  = Math.abs(hdgErr) > 20 ? '#ff4040'

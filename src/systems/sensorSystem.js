@@ -150,6 +150,17 @@ const _cartoEnd0 = new Cesium.Cartographic();
 const _cartoEnd1 = new Cesium.Cartographic();
 const _cartoSamp = new Cesium.Cartographic();
 
+// Scratch ECEF endpoints for the surface-search LOS, raised to masthead
+// height (see SURFACE_MAST_M / detectRadar).
+const _mastObs = new Cesium.Cartesian3();
+const _mastTgt = new Cesium.Cartesian3();
+// Naval radars are mounted high on a mast and look at the other ship's tall
+// superstructure, so the surface-search radar horizon is far longer than the
+// ships' hull-centre reference points imply. Raise both LOS endpoints by this
+// much before the curvature check: ~20 m over the hull centre puts the line at
+// a realistic masthead height, giving two destroyers a ~50 km mutual horizon.
+const SURFACE_MAST_M = 20;
+
 // Walk the chord between two ECEF points and return the closest sample
 // at which terrain rises above the LOS (with curvature correction +
 // clearance margin). Returns null when the chord is clear, otherwise
@@ -226,6 +237,30 @@ function isTerrainBlockedCachedPair(observer, target, fromCart, toCart) {
 	const hit = perObs.get(target);
 	if (hit && hit.validUntilMs > nowMs) return hit.blocked;
 	const blocked = isTerrainBlocked(fromCart, toCart);
+	perObs.set(target, { blocked, validUntilMs: nowMs + TERRAIN_CACHE_TTL_MS });
+	return blocked;
+}
+
+// Same TTL scheme for the SURFACE-SEARCH LOS (masthead-raised endpoints,
+// 2 m clearance — see detectRadar). Deliberately a separate bucket: the
+// two paths ask a different geometric question about the same pair and
+// must never share an answer. Previously the surface path ran uncached,
+// re-walking up to 64 globe.getHeight samples per (ship, munition) pair
+// every frame — precisely the branch a saturation raid hits hardest.
+const _surfaceTerrainCache = new WeakMap();
+const SURFACE_LOS_CLEARANCE_M = 2;
+function isSurfaceLosBlockedCached(observer, target, fromCart, toCart) {
+	const walk = () => chordTerrainHit(fromCart, toCart, null, SURFACE_LOS_CLEARANCE_M) !== null;
+	if (!observer || !target) return walk();
+	let perObs = _surfaceTerrainCache.get(observer);
+	if (!perObs) {
+		perObs = new WeakMap();
+		_surfaceTerrainCache.set(observer, perObs);
+	}
+	const nowMs = performance.now();
+	const hit = perObs.get(target);
+	if (hit && hit.validUntilMs > nowMs) return hit.blocked;
+	const blocked = walk();
 	perObs.set(target, { blocked, validUntilMs: nowMs + TERRAIN_CACHE_TTL_MS });
 	return blocked;
 }
@@ -604,7 +639,9 @@ export function explainRadarRejection(observer, target, radar) {
 	const tgtLosSpeed = Math.abs(tgtLosCos) * tgtSpeed;
 	const notchThreshold = (radar.notchThreshold != null) ? radar.notchThreshold : 90;
 	const lookUpClear = los.losHat.z > NOTCH_LOOKUP_CLEAR_SIN;
-	if (NOTCH_ENABLED && !lookUpClear && tgtLosSpeed < notchThreshold) {
+	const isSurfaceTarget = target.kind === 'surface' ||
+		(target.signature && target.signature.unitClass === 'ship');
+	if (NOTCH_ENABLED && !lookUpClear && !isSurfaceTarget && tgtLosSpeed < notchThreshold) {
 		return `NOTCH (LOS-vel ${tgtLosSpeed.toFixed(0)} < ${notchThreshold} m/s — beaming)`;
 	}
 	return 'DETECTED';
@@ -705,10 +742,53 @@ export function detectRadar(observer, target, radar, los = null) {
 		if (los.losLenMeters > effectiveRange) return null;
 	}
 
+	// Surface target? Ships sit on the sea and need surface-search rules for
+	// both the terrain-LOS margin (below) and the Doppler notch (further
+	// down). Computed once here.
+	const isSurfaceTarget = target.kind === 'surface' || sig.unitClass === 'ship';
+	// Sea-skimming anti-ship / cruise missiles hug the wavetops (~20 m), far
+	// below the 30 m AIR-search clearance margin, so that margin masks them
+	// until point-blank and only CIWS ever reacts, leaving the SM-6 / RAM
+	// layers without a shot. A SHIP'S radar (naval surface-search) is built to
+	// pull low movers off the sea, so it tracks a sea-skimmer the same way it
+	// tracks a hull: masthead-raised observer, tight 2 m clearance, munition
+	// left at its TRUE low altitude (it has no mast). Gated to surface
+	// observers so over-land cruise-missile terrain masking for air / ground
+	// radars is unchanged.
+	//
+	// 'bomb' rides this path too. That class covers ballistic naval-gun
+	// shells and glide weapons, which spend their terminal seconds well
+	// under the air-search margin — at 2 km a target had to be above ~101 m
+	// to clear it. The point-defence doctrine explicitly lists inbound
+	// shells as CIWS/RAM targets, but they were masked right through the
+	// engagement window, so that layer could never actually fire on one.
+	const isLowSeaMover = !isSurfaceTarget &&
+		observer.kind === 'surface' &&
+		(sig.unitClass === 'cruise_missile' || sig.unitClass === 'bomb');
+
 	// 4) Terrain LOS — a ridge in the way kills the return. Cached
 	//    per (observer, target) pair with a 250 ms TTL so dense
 	//    scenarios don't pay 6 getHeight calls per pair per frame.
-	if (isTerrainBlockedCachedPair(observer, target, los.obsECEF, los.tgtECEF)) return null;
+	//
+	//    Surface targets get a TIGHT clearance instead of the air-search
+	//    margin. A hull sits only tens of metres above the water, so the
+	//    generous 30 m clearance (which keeps aircraft from "seeing through"
+	//    a grazed ridgeline) would reject every ship-to-ship line over flat
+	//    sea — no ship could ever detect another ship. With a 2 m clearance
+	//    only genuine land/islands rising above the LOS block it. The endpoints
+	//    are also raised to masthead height (SURFACE_MAST_M) so the curvature
+	//    term yields a realistic ~50 km horizon between two destroyer-height
+	//    sensors instead of the ~30 km their low hull-centre points would give.
+	if (isSurfaceTarget || isLowSeaMover) {
+		const tgtMastM = isSurfaceTarget ? SURFACE_MAST_M : 0;  // a munition has no mast
+		const obsHi = Cesium.Cartesian3.fromDegrees(
+			observer.lon, observer.lat, (observer.alt || 0) + SURFACE_MAST_M, undefined, _mastObs);
+		const tgtHi = Cesium.Cartesian3.fromDegrees(
+			target.lon, target.lat, (target.alt || 0) + tgtMastM, undefined, _mastTgt);
+		if (isSurfaceLosBlockedCached(observer, target, obsHi, tgtHi)) return null;
+	} else if (isTerrainBlockedCachedPair(observer, target, los.obsECEF, los.tgtECEF)) {
+		return null;
+	}
 
 	// 5) Pulse-Doppler main-lobe clutter notch.
 	//
@@ -729,7 +809,11 @@ export function detectRadar(observer, target, radar, los = null) {
 	// ground SAM see a fighter crossing/beaming overhead instead of going
 	// blind the instant the target turns perpendicular.
 	const lookUpClear = los.losHat.z > NOTCH_LOOKUP_CLEAR_SIN;
-	if (NOTCH_ENABLED && !lookUpClear && tgtLosSpeed < notchThreshold) return null;
+	// Surface-search exemption (see isSurfaceTarget above). The Doppler notch
+	// models AIR-search MTI, which rejects slow/beaming targets as clutter — a
+	// 9 m/s ship would always be notched. A naval surface-search radar pulls
+	// ships out of sea clutter without it, so surface targets bypass the notch.
+	if (NOTCH_ENABLED && !lookUpClear && !isSurfaceTarget && !isLowSeaMover && tgtLosSpeed < notchThreshold) return null;
 
 	// Signal strength 0..1, cheap proxy for return-power margin. Used for
 	// RWR strength and for the lock-integrity hysteresis in seekers.

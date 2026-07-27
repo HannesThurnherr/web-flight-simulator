@@ -117,6 +117,17 @@ export class WeaponSystem {
 			// 'fighter' — and waste shots on it. No warhead.
 			{ id: 'agm',     name: 'MALD-X DECOY',      ammo: 0,  maxAmmo: 0,  fireRate: 0,
 			  lastFire: 0, type: 'MALD',    lockRange: 0,      lockCone: 0,     lockTime: 0 },
+			// AGM-84 Harpoon — air-launched anti-ship missile. id='missile' so
+			// it rides the radar-lock pipeline, but the lock envelope filters to
+			// SHIP-class targets only (see findTargetsInEnvelope): lock a hostile
+			// ship and fire, and the sea-skimming seeker homes on the moving
+			// hull. (AAMs, conversely, no longer accept ships as locks.)
+			{ id: 'missile', name: 'AGM-84 HARPOON',    ammo: 0,  maxAmmo: 0,  fireRate: 0,
+			  lastFire: 0, type: 'HARPOON',  lockRange: 110000, lockCone: 0.80, lockTime: 0.6 },
+			// BGM-109 Tomahawk (TLAM) — land-attack cruise. Same fire path as
+			// the ALCM / Storm Shadow (id='agm', TGP-designated GPS coord).
+			{ id: 'agm',     name: 'TOMAHAWK TLAM',     ammo: 0,  maxAmmo: 0,  fireRate: 0,
+			  lastFire: 0, type: 'TOMAHAWK', lockRange: 0,      lockCone: 0,     lockTime: 0 },
 			// 6e.2 — EW JAMMER pseudo-weapon. Not a projectile launcher;
 			// pressing fire toggles the currently-designated victim into
 			// state.jammer.offensiveTargets (sustained beam). `ammo` is
@@ -963,7 +974,14 @@ export class WeaponSystem {
 		// tank and firing produces a missile that thrashes around
 		// for a few seconds and dives into the ground. So just gate
 		// it: AAMs don't accept ground-class targets as locks.
-		const isAAM = (weapon && weapon.id === 'missile');
+		// Distinguish the missile's role by its seeker so the lock envelope only
+		// offers sensible targets: an anti-ship missile locks SHIPS; an air-to-
+		// air missile locks AIR (never ground or ships — firing an AAM at a hull
+		// just thrashes the seeker into the sea).
+		const _munId  = munitionIdForSimType(weapon && weapon.type);
+		const _seeker = _munId && MUNITIONS[_munId] ? MUNITIONS[_munId].seekerType : null;
+		const isAntiShip = _seeker === 'anti_ship';
+		const isAAM = (weapon && weapon.id === 'missile') && !isAntiShip;
 		for (const npc of playerState.npcs) {
 			if (npc.destroyed) continue;
 			// Team filter — never lock onto friendlies (AWACS, wingman,
@@ -974,7 +992,11 @@ export class WeaponSystem {
 			// don't go through findTargetsInEnvelope — they take a
 			// designation directly — so the gate here is air-only and
 			// doesn't collaterally block strike weapons.
-			if (isAAM && npc.kind === 'ground') continue;
+			if (isAntiShip) {
+				if (npc.kind !== 'surface') continue;          // anti-ship → ships only
+			} else if (isAAM && (npc.kind === 'ground' || npc.kind === 'surface')) {
+				continue;                                       // AAM → air targets only
+			}
 
 			const dot = this.calculateDotProduct(playerState, npc);
 			if (dot <= lockCone) continue;

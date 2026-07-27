@@ -1,0 +1,48 @@
+{
+	"id": "bastion-p-battery",
+	"name": "Bastion-P Coastal Battery",
+	"kind": "ground",
+	"model": "/assets/models/iskander-telar.glb",
+	"modelRotation": {
+		"x": 0,
+		"y": 90,
+		"z": 0
+	},
+	"modelScale": 0.027,
+	"signature": "shorad",
+	"groundOffsetM": 0,
+	"sensors": {
+		"radar": {
+			"enabled": true,
+			"active": true,
+			"mode": "search",
+			"nominalRange": 60000,
+			"referenceRcs": 5,
+			"fovHalfHDeg": 180,
+			"fovHalfVDeg": 45,
+			"notchThreshold": 60
+		}
+	},
+	"pilot": {
+		"type": "coastal-battery",
+		"defaultParams": {
+			"weapons": [
+				{
+					"type": "P-800",
+					"role": "antiship",
+					"ammo": 12,
+					"fireRate": 2.5,
+					"maxInFlight": 8,
+					"minRange": 8000,
+					"maxRange": 300000,
+					"salvoSize": 4,
+					"reengageS": 20
+				}
+			]
+		}
+	},
+	"physicsOverrides": {
+		"mass": 40000,
+		"wingArea": 1
+	}
+}

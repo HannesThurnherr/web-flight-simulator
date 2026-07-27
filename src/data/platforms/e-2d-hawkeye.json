@@ -1,0 +1,38 @@
+{
+	"id": "e-2d-hawkeye",
+	"name": "E-2D Advanced Hawkeye",
+	"kind": "airborne",
+	"model": "/assets/models/e-2d-hawkeye.glb",
+	"modelRotation": {
+		"x": 0,
+		"y": 180,
+		"z": 0
+	},
+	"modelScale": 0.1811,
+	"signature": "awacs",
+	"sensors": {
+		"radar": {
+			"enabled": true,
+			"active": true,
+			"mode": "search",
+			"nominalRange": 400000,
+			"referenceRcs": 5,
+			"fovHalfHDeg": 180,
+			"fovHalfVDeg": 90,
+			"notchThreshold": 60
+		}
+	},
+	"pilot": {
+		"type": "orbit",
+		"defaultParams": {
+			"radiusM": 22000,
+			"altitudeM": 8500,
+			"throttle": 0.6,
+			"speedMps": 135
+		}
+	},
+	"physicsOverrides": {
+		"mass": 24000,
+		"wingArea": 65
+	}
+}

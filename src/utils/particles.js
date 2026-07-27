@@ -12,9 +12,78 @@ const particles = {
 	// WebGL context — which is what turned the whole globe grey. Oldest
 	// particles are evicted first.
 	maxParticles: 1400,
+
+	// Per-FRAME spawn budget, on top of the global cap above. A Harpoon salvo
+	// killed by point defence fires a dozen spawnExplosion calls in a single
+	// frame; at full count each one contributes its whole cloud, so the result
+	// is a dozen explosions' worth of near-black smoke stacked in one place —
+	// far denser than any single blast, and dense enough to curtain the view.
+	// It also blows straight through the global cap, which then evicts the
+	// oldest particles mid-animation and makes earlier blasts pop out.
+	//
+	// So: the first explosion in a frame is untouched, and simultaneous ones
+	// share a budget. A mass detonation reads as one big explosion instead of
+	// N overlapping ones, which is what it should look like anyway.
+	_frameSpawns: 0,
+	_burstFull: 220,
+	_burstScale() {
+		const spent = this._frameSpawns;
+		if (spent <= this._burstFull) return 1;
+		return Math.max(0.15, this._burstFull / spent);
+	},
+
 	_scratchMatrix: new Cesium.Matrix4(),
 	_scratchCameraMatrix: new Cesium.Matrix4(),
 	_scratchThreeMatrix: new THREE.Matrix4(),
+	_scratchCart: new Cesium.Cartesian3(),
+
+	// Bake a particle's camera-space render matrix.
+	//
+	// THIS MUST RUN BEFORE A PARTICLE IS FIRST RENDERED. These meshes are
+	// matrixAutoUpdate = false, so their matrix starts as IDENTITY — and in
+	// this renderer's camera-space convention (matrices baked as
+	// viewMatrix × modelMatrix against an identity THREE camera) identity
+	// means "exactly at the eye", not "at the origin of the world".
+	//
+	// That is the screen blackout. A wreckage chunk is MeshPhong at
+	// colour 0.0-0.06 (near black), side: DoubleSide, and metres across —
+	// one sitting unbaked on the eyeball fills the entire view regardless of
+	// where the camera is or which way it looks. Every other particle is a
+	// FrontSide sphere, invisible from the inside, which is exactly why they
+	// never showed the bug and wreckage always did.
+	//
+	// The window was real and repeating, not a one-frame race:
+	// updateGroundWrecks() spawns fire/smoke and runs AFTER particles.update()
+	// in animateLoop, so everything it spawned was drawn unbaked EVERY frame.
+	// Baking at spawn closes it for every caller and any future call ordering.
+	_bake(p) {
+		const viewer = this.viewer;
+		if (!viewer || !viewer.camera || !viewer.camera.viewMatrix) return false;
+		const pos = Cesium.Cartesian3.fromDegrees(p.lon, p.lat, p.alt, undefined, this._scratchCart);
+		const modelMatrix = Cesium.Transforms.eastNorthUpToFixedFrame(pos, undefined, this._scratchMatrix);
+		const cam = Cesium.Matrix4.multiply(viewer.camera.viewMatrix, modelMatrix, this._scratchCameraMatrix);
+		for (let j = 0; j < 16; j++) this._scratchThreeMatrix.elements[j] = cam[j];
+		p.matrix.copy(this._scratchThreeMatrix);
+		if (p._rotEuler) {
+			const q = new THREE.Quaternion().setFromEuler(p._rotEuler);
+			const s = p.scale ? p.scale.clone() : new THREE.Vector3(1, 1, 1);
+			p.matrix.multiply(new THREE.Matrix4().compose(new THREE.Vector3(0, 0, 0), q, s));
+		} else if (p.scale && (p.scale.x !== 1 || p.scale.y !== 1 || p.scale.z !== 1)) {
+			p.matrix.scale(p.scale);
+		}
+		p.updateMatrixWorld(true);
+		return cam;
+	},
+
+	// The ONLY way a particle should enter the scene: positioned first, added
+	// second. If the viewer isn't up yet we can't position it, so it stays
+	// invisible until update() bakes it rather than being drawn at the eye.
+	_addParticle(m) {
+		m.matrixAutoUpdate = false;
+		m.visible = !!this._bake(m);
+		this.scene.add(m);
+		this.list.push(m);
+	},
 
 	init(scene, viewer) {
 		this.scene = scene;
@@ -37,7 +106,8 @@ const particles = {
 
 	spawnExplosion(lon, lat, alt, opts = {}) {
 		const isBig = !!opts.big;
-		const fireCount = opts.count || (isBig ? 64 : 36);
+		const burst = this._burstScale();
+		const fireCount = Math.max(4, Math.round((opts.count || (isBig ? 64 : 36)) * burst));
 
 		const flashSize = isBig ? 6.0 : 3.0;
 		const flashGeom = new THREE.SphereGeometry(flashSize, 12, 10);
@@ -48,9 +118,7 @@ const particles = {
 		flash.lon = lon; flash.lat = lat; flash.alt = alt;
 		flash.isSmoke = false;
 		flash._expand = true; flash._expandAmount = isBig ? 5.0 : 3.0;
-		flash.matrixAutoUpdate = false;
-		this.scene.add(flash);
-		this.list.push(flash);
+		this._addParticle(flash);
 
 		for (let i = 0; i < fireCount; i++) {
 			const size = (isBig ? 0.6 : 0.35) + Math.random() * (isBig ? 2.4 : 0.9);
@@ -71,12 +139,10 @@ const particles = {
 			};
 			m.isSmoke = false;
 			m._expand = true; m._expandAmount = isBig ? 2.8 : 1.8;
-			m.matrixAutoUpdate = false;
-			this.scene.add(m);
-			this.list.push(m);
+			this._addParticle(m);
 		}
 
-		const sparkCount = isBig ? 32 : 18;
+		const sparkCount = Math.max(3, Math.round((isBig ? 32 : 18) * burst));
 		for (let i = 0; i < sparkCount; i++) {
 			const geom = new THREE.SphereGeometry(0.06 + Math.random() * 0.14, 6, 6);
 			const mat = new THREE.MeshBasicMaterial({ color: 0xffffcc, blending: THREE.AdditiveBlending, transparent: true });
@@ -94,12 +160,12 @@ const particles = {
 			};
 			m.isSmoke = false;
 			m._expand = true; m._expandAmount = 0.6;
-			m.matrixAutoUpdate = false;
-			this.scene.add(m);
-			this.list.push(m);
+			this._addParticle(m);
 		}
 
-		const smokeCount = typeof opts.smokeCount !== 'undefined' ? opts.smokeCount : (isBig ? 8 : 5);
+		const smokeCount = Math.max(1, Math.round(
+			(typeof opts.smokeCount !== 'undefined' ? opts.smokeCount : (isBig ? 8 : 5)) * burst));
+		this._frameSpawns += 1 + fireCount + sparkCount + smokeCount;
 		for (let i = 0; i < smokeCount; i++) {
 			const size = (isBig ? 3.0 : 1.8) + Math.random() * (isBig ? 4.0 : 1.6);
 			const geom = new THREE.SphereGeometry(size, 12, 10);
@@ -117,9 +183,7 @@ const particles = {
 				up: 0.6 + Math.random() * 2.6
 			};
 			m.isSmoke = true;
-			m.matrixAutoUpdate = false;
-			this.scene.add(m);
-			this.list.push(m);
+			this._addParticle(m);
 		}
 
 		this._enforceCap();
@@ -180,9 +244,7 @@ const particles = {
 			m._localVel.up -= (4 + Math.random() * 6);
 			m._fallGravityMultiplier = opts.fallMultiplier || 2.2;
 			m.isSmoke = false;
-			m.matrixAutoUpdate = false;
-			this.scene.add(m);
-			this.list.push(m);
+			this._addParticle(m);
 		}
 		this._enforceCap();
 	},
@@ -207,9 +269,7 @@ const particles = {
 				up: Math.sin(p) * speed
 			};
 			m.isSmoke = false;
-			m.matrixAutoUpdate = false;
-			this.scene.add(m);
-			this.list.push(m);
+			this._addParticle(m);
 		}
 	},
 
@@ -238,16 +298,17 @@ const particles = {
 			};
 			m.isSmoke = false;
 			m._expand = true; m._expandAmount = 1.4;
-			m.matrixAutoUpdate = false;
-			this.scene.add(m);
-			this.list.push(m);
+			this._addParticle(m);
 		}
 	},
 
 	// Continuous smoke puffs — used by the burning-aircraft death trail.
 	// `dark` makes oily black smoke (shot-down jet); otherwise light gray.
 	spawnSmoke(lon, lat, alt, opts = {}) {
-		const count = opts.count || 2;
+		// Dark smoke is the densest thing on screen, so it shares the frame
+		// budget too — a salvo going up together also fires a burst of these.
+		const count = Math.max(1, Math.round((opts.count || 2) * this._burstScale()));
+		this._frameSpawns += count;
 		const dark = opts.dark;
 		for (let i = 0; i < count; i++) {
 			const size = (opts.size || 1.4) + Math.random() * 1.6;
@@ -268,17 +329,15 @@ const particles = {
 				up: 0.4 + Math.random() * 1.8,
 			};
 			m.isSmoke = true;
-			m.matrixAutoUpdate = false;
-			this.scene.add(m);
-			this.list.push(m);
+			this._addParticle(m);
 		}
 		try { if (this.viewer) this.viewer.scene && this.viewer.scene.requestRender(); } catch (e) { /* no-op */ }
 	},
 
 	update(dt) {
 		if (!this.viewer) return;
+		this._frameSpawns = 0;          // new frame → fresh burst budget
 		this._enforceCap();
-		const viewMatrix = this.viewer.camera.viewMatrix;
 		for (let i = this.list.length - 1; i >= 0; i--) {
 			const p = this.list[i];
 			p.life -= dt * (p.isSmoke ? 1.1 : 1.0);
@@ -322,23 +381,41 @@ const particles = {
 				p.scale.set(grow, grow, grow);
 			}
 
-			const pos = Cesium.Cartesian3.fromDegrees(p.lon, p.lat, p.alt, undefined, new Cesium.Cartesian3());
-			const modelMatrix = Cesium.Transforms.eastNorthUpToFixedFrame(pos, undefined, this._scratchMatrix);
-			const cameraSpaceMatrix = Cesium.Matrix4.multiply(viewMatrix, modelMatrix, this._scratchCameraMatrix);
+			// Position it (same bake the spawner already ran, see _bake).
+			const cameraSpaceMatrix = this._bake(p);
+			if (!cameraSpaceMatrix) continue;
+			p.visible = true;                 // spawned before the viewer was up
 
-			for (let j = 0; j < 16; j++) this._scratchThreeMatrix.elements[j] = cameraSpaceMatrix[j];
-
-			p.matrix.copy(this._scratchThreeMatrix);
-			if (p._rotEuler) {
-				const rotScale = new THREE.Matrix4();
-				const q = new THREE.Quaternion().setFromEuler(p._rotEuler);
-				const s = p.scale ? p.scale.clone() : new THREE.Vector3(1, 1, 1);
-				rotScale.compose(new THREE.Vector3(0, 0, 0), q, s);
-				p.matrix.multiply(rotScale);
-			} else if (p.scale && (p.scale.x !== 1 || p.scale.y !== 1 || p.scale.z !== 1)) {
-				p.matrix.scale(p.scale);
+			// ---- Camera-proximity fade ---------------------------------------
+			// NOT the blackout fix — that's _bake() running at spawn time. This
+			// is a separate, milder artefact: flying through your own explosion
+			// puts a 3-7 m smoke puff a couple of metres from the eye, and one
+			// that close covers most of the screen. Fading a particle out as the
+			// camera reaches its own radius (the standard soft-particle trick)
+			// keeps the cloud reading correctly from any normal distance while
+			// stopping it curtaining the view at point-blank.
+			//
+			// Cesium.Matrix4 is column-major, so 12/13/14 is the camera-space
+			// translation — the particle's position relative to the eye, free.
+			if (p.material && p.material.opacity !== undefined) {
+				if (p._radiusBase === undefined) {
+					let r = 1;
+					if (p.geometry) {
+						if (!p.geometry.boundingSphere) p.geometry.computeBoundingSphere();
+						if (p.geometry.boundingSphere) r = p.geometry.boundingSphere.radius || 1;
+					}
+					p._radiusBase = r;
+				}
+				const scl = p.scale ? Math.max(p.scale.x, p.scale.y, p.scale.z) : 1;
+				const radius = p._radiusBase * scl;
+				const camDist = Math.hypot(cameraSpaceMatrix[12], cameraSpaceMatrix[13], cameraSpaceMatrix[14]);
+				const gone = radius * 0.75;              // fully transparent inside this
+				const full = radius * 2.5 + 2;           // untouched beyond this
+				if (camDist < full) {
+					const k = (camDist - gone) / Math.max(0.001, full - gone);
+					p.material.opacity *= Math.max(0, Math.min(1, k));
+				}
 			}
-			p.updateMatrixWorld(true);
 		}
 	}
 };

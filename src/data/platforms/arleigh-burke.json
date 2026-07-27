@@ -1,0 +1,110 @@
+{
+	"id": "arleigh-burke",
+	"name": "DDG-51 Arleigh Burke",
+	"kind": "surface",
+	"model": "/assets/models/arleigh-burke.glb",
+	"modelRotation": {
+		"x": 0,
+		"y": 180,
+		"z": 0
+	},
+	"modelScale": 966,
+	"signature": "destroyer",
+	"hp": 100,
+	"groundOffsetM": -8,
+	"sensors": {
+		"radar": {
+			"enabled": true,
+			"active": true,
+			"mode": "search",
+			"nominalRange": 180000,
+			"referenceRcs": 5,
+			"fovHalfHDeg": 180,
+			"fovHalfVDeg": 90,
+			"notchThreshold": 60
+		}
+	},
+	"pilot": {
+		"type": "ship-combatant",
+		"defaultParams": {
+			"cruiseSpeedMps": 9,
+			"maxSpeedMps": 16,
+			"turnRateMaxDegPerS": 2.5,
+			"accelTauS": 30,
+			"patrolRadiusM": 0,
+			"evadeRangeM": 16000,
+			"flareRangeM": 7000,
+			"flares": 80,
+			"chaff": 80,
+			"weapons": [
+				{
+					"type": "gun",
+					"role": "ciws",
+					"ammo": 3000,
+					"fireRate": 0.05,
+					"maxInFlight": 0,
+					"minRange": 0,
+					"maxRange": 2500,
+					"muzzleVelMps": 1500
+				},
+				{
+					"type": "RAM",
+					"role": "ram",
+					"ammo": 21,
+					"fireRate": 1.0,
+					"maxInFlight": 4,
+					"minRange": 500,
+					"maxRange": 9000
+				},
+				{
+					"type": "SM-6",
+					"role": "sam",
+					"ammo": 24,
+					"fireRate": 1.5,
+					"maxInFlight": 6,
+					"minRange": 2000,
+					"maxRange": 120000,
+					"salvoSize": 2,
+					"reengageS": 14,
+					"reserveForBallisticN": 6
+				},
+				{
+					"type": "HARPOON",
+					"role": "antiship",
+					"ammo": 8,
+					"fireRate": 1.2,
+					"maxInFlight": 8,
+					"minRange": 5000,
+					"maxRange": 110000,
+					"salvoSize": 4,
+					"reengageS": 10
+				},
+				{
+					"type": "MK45",
+					"role": "navalgun",
+					"ammo": 300,
+					"fireRate": 2.0,
+					"maxInFlight": 8,
+					"minRange": 2000,
+					"maxRange": 20000,
+					"muzzleVelMps": 800,
+					"reengageS": 3
+				},
+				{
+					"type": "TOMAHAWK",
+					"role": "landattack",
+					"ammo": 8,
+					"fireRate": 6.0,
+					"maxInFlight": 4,
+					"minRange": 15000,
+					"maxRange": 400000,
+					"reengageS": 12
+				}
+			]
+		}
+	},
+	"physicsOverrides": {
+		"mass": 9000000,
+		"wingArea": 1
+	}
+}

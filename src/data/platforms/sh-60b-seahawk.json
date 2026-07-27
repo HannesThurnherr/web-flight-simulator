@@ -1,0 +1,38 @@
+{
+	"id": "sh-60b-seahawk",
+	"name": "SH-60B Seahawk",
+	"kind": "airborne",
+	"model": "/assets/models/sh-60b-seahawk.glb",
+	"modelRotation": {
+		"x": 0,
+		"y": 180,
+		"z": 0
+	},
+	"modelScale": 0.009,
+	"signature": "drone_isr",
+	"groundOffsetM": 0,
+	"sensors": {
+		"radar": {
+			"enabled": true,
+			"active": true,
+			"mode": "search",
+			"nominalRange": 120000,
+			"referenceRcs": 5,
+			"fovHalfHDeg": 180,
+			"fovHalfVDeg": 80,
+			"notchThreshold": 25
+		}
+	},
+	"pilot": {
+		"type": "orbit",
+		"defaultParams": {
+			"altitudeM": 900,
+			"radiusM": 9000,
+			"speedMps": 65
+		}
+	},
+	"physicsOverrides": {
+		"mass": 9900,
+		"wingArea": 1
+	}
+}

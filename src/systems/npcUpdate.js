@@ -30,6 +30,8 @@ import { isRadiating } from './sensorSystem.js';
 import { applyNpcMeshMatrix } from './npcRendering.js';
 import { tickFormationModes } from './formation.js';
 import { groundHeightAt } from '../world/terrain.js';
+import { integrateSurfaceKinematics, computeShipNav } from './surfaceMovement.js';
+import { updateShipSinking, updateShipDamageSmoke } from './shipDamage.js';
 import { Contrail } from '../plane/contrail.js';
 import { recordAdShot, adTargetColumn } from './adStats.js';
 
@@ -38,7 +40,9 @@ import { recordAdShot, adTargetColumn } from './adStats.js';
 // column so the matching hit can be attributed when the round detonates.
 // Fighters (not static) and ground-attack munitions aren't counted.
 function _recordAdShot(npc, projectile, target) {
-	if (!npc || !npc.isStatic || !projectile) return;
+	// Count static AD batteries AND surface ships — both are air-defence
+	// platforms whose intercept rates the diagnostic matrix should show.
+	if (!npc || !(npc.isStatic || npc.kind === 'surface') || !projectile) return;
 	const column = adTargetColumn(target);
 	if (!column) return;
 	const type = npc.platformId || npc.type || 'AD';
@@ -195,9 +199,26 @@ export function npcSystemUpdate(sys, dt, playerState, simTime = 0) {
 		// without re-raycasting every tick.
 		if (npc.terrainCheckTimer <= 0) {
 			npc.terrainCheckTimer = 0.5;
-			const cartographic = Cesium.Cartographic.fromDegrees(npc.lon, npc.lat);
-			const terrainHeight = sys.viewer.scene.globe.getHeight(cartographic);
-			if (terrainHeight !== undefined) npc._cachedTerrainH = terrainHeight;
+			if (npc.kind === 'surface') {
+				// Ships: one sampler owns both the sea-surface clamp height
+				// and the coastline lookahead. Seed the sea reference from the
+				// async spawn-time sample until live tiles stream in.
+				if (npc._seaRefH == null && sys._pendingGroundHeight &&
+					sys._pendingGroundHeight.has(npc.name)) {
+					npc._seaRefH = sys._pendingGroundHeight.get(npc.name);
+				}
+				const nav = computeShipNav(sys.viewer, npc);
+				if (nav.seaSurfaceH != null) {
+					npc._seaRefH = nav.seaSurfaceH;
+					npc._cachedTerrainH = nav.seaSurfaceH;
+				}
+				npc._landAhead = nav.landAhead;
+				npc._landAheadBearing = nav.landAheadBearing;
+			} else {
+				const cartographic = Cesium.Cartographic.fromDegrees(npc.lon, npc.lat);
+				const terrainHeight = sys.viewer.scene.globe.getHeight(cartographic);
+				if (terrainHeight !== undefined) npc._cachedTerrainH = terrainHeight;
+			}
 		}
 
 		// Ground clamp for static ground units. Runs BEFORE the pilot tick
@@ -228,7 +249,7 @@ export function npcSystemUpdate(sys, dt, playerState, simTime = 0) {
 		// Run the AI: pilot reads sensors/state, writes its command. A
 		// mortally-wounded aircraft is along for the ride — no more flying
 		// or shooting — so skip its pilot entirely while it spirals in.
-		if (npc.pilot && !npc.dying) {
+		if (npc.pilot && !npc.dying && !npc.sinking) {
 			// Combined world projectile pool — lets WeaponSubsystem
 			// count in-flight missiles from this NPC and enforce
 			// maxInFlight, which produces shoot-look-shoot rather
@@ -250,6 +271,11 @@ export function npcSystemUpdate(sys, dt, playerState, simTime = 0) {
 			npc.targetPitch   = cmd.targetPitch;
 			npc.throttle      = cmd.throttle;
 			npc.isBoosting    = cmd.boost;
+			// Surface units command a SPEED (not a pitch) and carry their own
+			// kinematic limits in the command; the integrator reads these.
+			if (cmd.targetSpeed !== undefined) npc.targetSpeed = cmd.targetSpeed;
+			if (cmd.turnRateMaxDegPerS !== undefined) npc._turnRateMaxDegPerS = cmd.turnRateMaxDegPerS;
+			if (cmd.accelTauS !== undefined) npc._accelTauS = cmd.accelTauS;
 
 			// Phase 3c — radar mode management. NPC radar sits in 'search'
 			// (= TWS in our naming) most of the time, briefly flashes to
@@ -266,7 +292,14 @@ export function npcSystemUpdate(sys, dt, playerState, simTime = 0) {
 				for (const p of ctxProjectiles) {
 					if (!p || !p.active) continue;
 					if (p.launcher !== npc) continue;
-					if (p.type === 'AIM-120' || p.type === 'METEOR' || p.type === 'NASAMS-MSL' || p.type === 'TOR-MSL' || p.type === 'R-77' || p.type === 'R-37M') {
+					// Read the munition spec instead of matching a hardcoded
+					// simType list. The list had gone stale — it omitted the
+					// ship-launched SM-6, so a destroyer supporting one through
+					// midcourse stayed in 'search' and the target's RWR never
+					// saw the lock it was actually under. Fire-and-forget
+					// seekers (Harpoon, Tomahawk, IR) correctly don't hold the
+					// illuminator in track.
+					if (p.data && p.data.seekerType === 'active_radar') {
 						hasLiveRadarMsl = true;
 						break;
 					}
@@ -330,7 +363,19 @@ export function npcSystemUpdate(sys, dt, playerState, simTime = 0) {
 						const bullet = sys._spawnNpcBullet(npc, aim);
 						_recordAdShot(npc, bullet, cmd.weaponTarget);
 					} else {
-						const projectile = sys._spawnNpcMissile(npc, cmd.weaponType, cmd.weaponTarget);
+						// A pre-computed launch attitude (cmd.gunHeading/Pitch)
+						// rides along for ballistic rounds with no terminal seeker
+						// (naval gun shells) — the ship pilot solves the loft and
+						// the launcher fires on that bearing. SAM/cruise launches
+						// leave these null and use the seeker-based geometry.
+						const aim = (cmd.gunHeading != null || cmd.gunPitch != null)
+							? { heading: cmd.gunHeading, pitch: cmd.gunPitch,
+								// Carry the solved muzzle speed too — a gun's
+								// barrel sets it, not the shell, and dropping it
+								// here let fire control and the round disagree.
+								launchSpeedMps: cmd.gunLaunchSpeedMps }
+							: null;
+						const projectile = sys._spawnNpcMissile(npc, cmd.weaponType, cmd.weaponTarget, aim);
 						_recordAdShot(npc, projectile, cmd.weaponTarget);
 						// Register with the team datalink so
 						// wingmen don't immediately double-up on
@@ -371,6 +416,30 @@ export function npcSystemUpdate(sys, dt, playerState, simTime = 0) {
 			npc.speed   = 0;
 			npc.roll    = 0;
 			npc.isBoosting = false;
+		} else if (npc.kind === 'surface') {
+			if (npc.sinking) {
+				// ---- Going down: list, settle under the waterline, pour smoke,
+				// then flip destroyed. No steering, no weapons (pilot is gated
+				// off below). The waterline clip plane swallows the hull as alt
+				// drops.
+				updateShipSinking(npc, dt);
+			} else {
+				// ---- Surface ships: kinematic (NOT aerodynamic) integration.
+				// A slow first-order body — bounded turn rate (turning circle),
+				// speed lag, hull pinned to the sea surface. No PlanePhysics, no
+				// stick synthesis, no terrain-impact death (ships float; the
+				// pilot's lookahead steers them off coastlines). The exact same
+				// integrator a future player ShipController will drive, so player
+				// control stays a drop-in. Keeps a non-zero speed so the sensor
+				// Doppler-notch path treats it like any moving contact.
+				integrateSurfaceKinematics(npc, dt, {
+					turnRateMaxDegPerS: npc._turnRateMaxDegPerS,
+					accelTauS:          npc._accelTauS,
+					seaSurfaceH:        npc._cachedTerrainH,
+				});
+				// Trail smoke/fire off a damaged-but-afloat hull.
+				updateShipDamageSmoke(npc, dt);
+			}
 		} else {
 			let input;
 			if (npc.dying) {

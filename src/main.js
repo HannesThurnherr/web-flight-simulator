@@ -476,6 +476,10 @@ uiContainer.classList.add('hidden');
 threeContainer.classList.add('hidden');
 
 updateLoadingUI(currentState);
+// Dev handle: expose the live context for debugging/inspection from the
+// console (unit state, scenario, sensors). Harmless in production; nothing
+// reads it except a human at the devtools prompt.
+if (typeof window !== 'undefined') window.__ctx = ctx;
 startAnimateLoop(ctx);
 
 window.addEventListener('resize', () => {

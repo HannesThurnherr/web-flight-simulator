@@ -1,0 +1,60 @@
+{
+	"id": "sm-6",
+	"name": "RIM-174 SM-6 (Standard ERAM)",
+	"shortName": "SM-6",
+	"category": "SAM",
+	"tags": [
+		"sam",
+		"long-range",
+		"active-radar",
+		"area-defence",
+		"vls"
+	],
+	"massKg": 1500,
+	"rcsContributionM2": 0.05,
+	"description": "Ship-launched long-range area-air-defence missile — the Aegis fleet's outer layer and the ONLY thing afloat with a realistic shot at an anti-ship ballistic missile. Active-radar terminal (ERAM seeker from the AMRAAM) plus datalink midcourse lets it engage aircraft and cruise missiles well past the radar horizon via cooperative engagement. VLS hot-launch, then tips over toward the cued track. Because it is the fleet's only ABM, ships hold the last cells of the magazine back for ballistic threats rather than spending them on the cruise-missile raid that precedes one. Visual stand-in: AMRAAM body scaled up.",
+	"simType": "SM-6",
+	"signature": "missile_sam",
+	"seekerType": "active_radar",
+	"modelTemplate": "aim120",
+	"realLengthM": 6.6,
+	"flight": {
+		"launchSpeedOffset": 30,
+		"boostDurationS": 6.0,
+		"boostAccel": 300,
+		"peakSpeed": 1500,
+		"minSpeed": 80,
+		"maxLifeS": 240,
+		"maxTurnDegPerSec": 42,
+		"pnGain": 4.0,
+		"dragRef": 7,
+		"dragRefSpeed": 1200,
+		"dragRefAltitude": 15000,
+		"vManeuverRef": 620,
+		"gAvailFloor": 0.05
+	},
+	"warhead": {
+		"killRadiusM": 26,
+		"fuzeSenseRadiusM": 48,
+		"missAbortRadiusMul": 2
+	},
+	"loft": {
+		"terminalRangeM": 20000,
+		"maxLoftRangeM": 150000,
+		"maxLoftDeg": 35
+	},
+	"seeker": {
+		"activeRangeM": 45000,
+		"fovHalfAngleDeg": 40,
+		"nominalDetectRangeM": 62000,
+		"referenceRcs": 0.6,
+		"notchThresholdAcquire": 30,
+		"notchThresholdTrack": 25,
+		"lockDropTimeoutS": 4.0,
+		"reacquireIntervalS": 0.25,
+		"reacquireBackoffMul": 2.0,
+		"reacquireMaxIntervalS": 4.0,
+		"reacquireMaxAttempts": 6,
+		"datalink": true
+	}
+}

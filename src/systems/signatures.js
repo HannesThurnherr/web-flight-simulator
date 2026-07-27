@@ -195,6 +195,43 @@ export const SIGNATURES = {
 		visualSize: 12,
 		unitClass: 'building',
 	},
+
+	// ------------------------------------------------------------------
+	// Surface combatants. Ships are enormous radar/visual/IR targets
+	// compared to anything airborne — a steel hull is hundreds of m² of
+	// reflector, the stacks pour heat, and the silhouette is the longest
+	// thing on the battlefield. The whole point of a low-observable hull
+	// (Burke's sloped sides) is shaving that down, but it's still orders
+	// of magnitude above a fighter — so a ship is detectable far past the
+	// horizon and the gameplay tension is reach/saturation, not stealth.
+	// `unitClass: 'ship'` is a new class; air-to-air pickers exclude it
+	// (planes can't AAM a ship), anti-ship seekers home on it, and the
+	// map renders a naval silhouette.
+	// ------------------------------------------------------------------
+	// Arleigh Burke-class DDG. Sloped superstructure trims RCS hard for a
+	// 9,000-ton hull, but the SPY array faces + masts still light up.
+	destroyer: {
+		rcs: 1400,
+		irEmission: 900,
+		visualSize: 155,
+		unitClass: 'ship',
+	},
+	// Smaller frigate / corvette escort. Less hull, less plant.
+	frigate: {
+		rcs: 700,
+		irEmission: 650,
+		visualSize: 130,
+		unitClass: 'ship',
+	},
+	// Aircraft carrier (future) — a floating airfield. Vast in every
+	// channel; visible from absurd range. Here now so carrier-vs-ASM
+	// scenarios drop in without touching this file later.
+	carrier: {
+		rcs: 4000,
+		irEmission: 1600,
+		visualSize: 330,
+		unitClass: 'ship',
+	},
 };
 
 // ============================================================================

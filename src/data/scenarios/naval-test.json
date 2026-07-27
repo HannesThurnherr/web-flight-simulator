@@ -1,0 +1,40 @@
+{
+	"id": "naval-test",
+	"name": "Naval Test — Surface Action Group",
+	"description": "A friendly Arleigh Burke destroyer holds station in the open Ionian Sea, supported by a friendly RQ-4 maritime-ISR drone overhead, while a hostile Burke sits ~40 km north — beyond the ship's own radar horizon. The drone cues the hostile ship over datalink so the friendly ship can take an over-the-horizon Harpoon shot (cooperative engagement). Two hostile fighters run in from the north to exercise the layered air defence (SM-6 / RAM / CIWS). Spectate a ship from the tactical map to watch it fight.",
+	"autoSpawn": false,
+	"spawns": [
+		{
+			"type": "platform",
+			"platformId": "arleigh-burke",
+			"team": "friendly",
+			"origin": { "lon": 18.50, "lat": 36.00, "alt": 0 },
+			"tag": "blue-ddg"
+		},
+		{
+			"type": "platform",
+			"platformId": "arleigh-burke",
+			"team": "hostile-red",
+			"origin": { "lon": 18.50, "lat": 36.36, "alt": 0 },
+			"tag": "red-ddg"
+		},
+		{
+			"type": "platform",
+			"platformId": "rq-4-global-hawk",
+			"team": "friendly",
+			"origin": { "lon": 18.50, "lat": 36.12, "alt": 17000 },
+			"pilotOverrides": { "altitudeM": 17000, "radiusM": 12000 },
+			"tag": "blue-isr"
+		},
+		{
+			"type": "fighter",
+			"team": "hostile-red",
+			"count": 2,
+			"origin": { "lon": 18.55, "lat": 36.55, "alt": 0 },
+			"altitudeM": 2500,
+			"headingDeg": 180,
+			"speedMps": 250,
+			"jitterM": 3000
+		}
+	]
+}

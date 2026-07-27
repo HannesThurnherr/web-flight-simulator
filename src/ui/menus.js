@@ -49,6 +49,8 @@ function refreshPauseVolumeWidgets() {
 }
 import { getEvents } from '../systems/eventLog';
 import { toggleNvg } from './nvg';
+import { toggleCockpitView } from '../systems/cockpit/cockpit.js';
+import { stepTimeScale } from '../systems/timeScale.js';
 import { isInTestMode, returnToEditor } from './scenarioEditor';
 
 // Toggle the "RETURN TO EDITOR" pause-menu button based on whether
@@ -182,6 +184,8 @@ export function setupModalListeners(ctx) {
 		gameSettings.mouseSensitivity = parseFloat(document.getElementById('sensitivitySlider').value);
 		gameSettings.showHud          = document.getElementById('showHud').checked;
 		gameSettings.showHorizonLines = document.getElementById('showHorizonLines').checked;
+		const munLblEl = document.getElementById('munitionLabels');
+		if (munLblEl) gameSettings.munitionLabels = munLblEl.value;
 		gameSettings.soundEnabled     = document.getElementById('soundEnabled').checked;
 		gameSettings.minimapRange     = parseInt(document.getElementById('minimapRange').value);
 		// Phase 6d — sensor-fidelity panel.
@@ -375,6 +379,22 @@ export function setupGlobalKeybinds(ctx) {
 			}
 		}
 
+		// First-person cockpit ↔ chase view. The 3D pit (HUD glass,
+		// MFDs, standby dials, stick/throttle) is the default; C drops
+		// back to the classic external chase cam. Same gating as the
+		// other flight-only binds so commander/planner keep their keys.
+		if (key === 'c' && ctx.currentState === 'FLYING' &&
+			!(ctx.commanderView && ctx.commanderView.active) &&
+			!(ctx.strikePlannerView && ctx.strikePlannerView.active)) {
+			const on = toggleCockpitView();
+			if (ctx.hud && ctx.hud.showRadarToast) {
+				ctx.hud.showRadarToast(on ? 'VIEW: COCKPIT' : 'VIEW: CHASE',
+					'rgba(96, 255, 144, 0.95)', 1.2);
+			}
+			e.preventDefault();
+			return;
+		}
+
 		// Night-vision overlay. White-phosphor monochrome with grain
 		// + vignette; stacks on top of whatever lighting mode is
 		// active (most useful in realistic mode at night).
@@ -382,6 +402,27 @@ export function setupGlobalKeybinds(ctx) {
 			!(ctx.commanderView && ctx.commanderView.active) &&
 			!(ctx.strikePlannerView && ctx.strikePlannerView.active)) {
 			toggleNvg();
+			e.preventDefault();
+			return;
+		}
+
+		// Munition-marker declutter. Cycles threats → off → full → threats.
+		// Bound to a key as well as the System Config dropdown because the
+		// right amount of overlay changes minute to minute: you want everything
+		// marked while you sort out an engagement and a clean windscreen when a
+		// fleet's worth of SAMs is crossing it.
+		if (key === 'l' && ctx.currentState === 'FLYING' &&
+			!(ctx.commanderView && ctx.commanderView.active) &&
+			!(ctx.strikePlannerView && ctx.strikePlannerView.active)) {
+			const order = ['threats', 'off', 'full'];
+			const next = order[(order.indexOf(gameSettings.munitionLabels || 'threats') + 1) % order.length];
+			gameSettings.munitionLabels = next;
+			saveSettings();
+			if (ctx.hud && ctx.hud.showRadarToast) {
+				const text = { threats: 'MSL MARKERS: THREATS + OWN SHOTS',
+					off: 'MSL MARKERS: OFF', full: 'MSL MARKERS: ALL' }[next];
+				ctx.hud.showRadarToast(text, 'rgba(96, 255, 144, 0.95)', 1.2);
+			}
 			e.preventDefault();
 			return;
 		}
@@ -525,6 +566,19 @@ export function setupGlobalKeybinds(ctx) {
 			if (ctx.commanderView.setPausedBadge) {
 				ctx.commanderView.setPausedBadge(ctx.currentState === 'PAUSED');
 			}
+			e.preventDefault();
+			return;
+		}
+
+		// Time scale — map mode only. Sub-stepped in the animate loop, so the
+		// world genuinely runs N times faster with unchanged physics accuracy
+		// (see timeScale.js). Deliberately gated to the commander view: silently
+		// fast-forwarding the world while the player is hand-flying would be
+		// disorienting, and closing the map resets it to 1x.
+		if ((key === ',' || key === '.') && ctx.commanderView && ctx.commanderView.active) {
+			const n = stepTimeScale(key === '.' ? +1 : -1);
+			if (ctx.commanderView.refreshControls) ctx.commanderView.refreshControls();
+			ctx.hud.showRadarToast(`TIME ${n}x`, 900);
 			e.preventDefault();
 			return;
 		}

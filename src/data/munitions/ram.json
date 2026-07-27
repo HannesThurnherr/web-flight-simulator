@@ -1,0 +1,40 @@
+{
+	"id": "ram",
+	"name": "RIM-116 Rolling Airframe Missile",
+	"shortName": "RAM",
+	"category": "SAM",
+	"tags": ["sam", "short-range", "ir", "point-defence"],
+	"massKg": 74,
+	"rcsContributionM2": 0.02,
+	"description": "Short-range ship self-defence missile — the inner missile layer between the SM/ESSM area SAMs and the CIWS gun. Passive IR terminal homing (real RAM is dual-mode RF/IR); spins in flight for stability. Cheap, fast, high-G, carried in big 21-cell launchers to soak a saturation raid of sea-skimming anti-ship missiles. ~9 km effective. Visual stand-in: Sidewinder body.",
+	"simType": "RAM",
+	"signature": "missile_ir",
+	"seekerType": "ir",
+	"modelTemplate": "aim9",
+	"realLengthM": 2.8,
+	"flight": {
+		"launchSpeedOffset": 25,
+		"boostDurationS": 3.0,
+		"boostAccel": 300,
+		"peakSpeed": 730,
+		"minSpeed": 60,
+		"maxLifeS": 20,
+		"maxTurnDegPerSec": 120,
+		"pnGain": 4.5,
+		"dragRef": 18,
+		"dragRefSpeed": 600,
+		"dragRefAltitude": 200,
+		"vManeuverRef": 400,
+		"gAvailFloor": 0.1
+	},
+	"warhead": {
+		"killRadiusM": 7,
+		"fuzeSenseRadiusM": 14
+	},
+	"seeker": {
+		"coneHalfAngleDeg": 50,
+		"maxG": 30,
+		"flareResistance": 0.8,
+		"trackRangeM": 12000
+	}
+}

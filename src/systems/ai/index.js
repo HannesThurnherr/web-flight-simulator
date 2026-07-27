@@ -12,6 +12,7 @@ import {
 	EngageBehavior,
 	FormationBehavior,
 	PatrolRtbBehavior,
+	RecoverToCarrierBehavior,
 	PatrolCapBehavior,
 	WaypointFollowBehavior,
 	StrikeBehavior,
@@ -56,6 +57,10 @@ export function createFighterPilot(unit, opts = {}) {
 	// tactical, because flying into an SA-15 ring to chase a bandit is how
 	// the whole CAP dies one by one.
 	p.addBehavior(new SamAvoidBehavior());
+	// An aircraft ordered home by its carrier is out of the fight — recovery
+	// outranks Engage so it doesn't get pulled back in on the way to the ramp,
+	// but stays below missile evasion and terrain avoidance.
+	p.addBehavior(new RecoverToCarrierBehavior());
 	p.addBehavior(new CrankBehavior());
 	p.addBehavior(new TerrainAvoidBehavior());
 	p.addBehavior(new EngageBehavior());
@@ -109,6 +114,8 @@ export function createPatrolPilot(unit, opts = {}) {
 	p.addBehavior(new ForwardTerrainAvoidBehavior());
 	p.addBehavior(new MissileEvasionBehavior());
 	p.addBehavior(new SamAvoidBehavior());
+	// Inert unless a carrier has ordered this jet home (see carrierOps.js).
+	p.addBehavior(new RecoverToCarrierBehavior());
 	p.addBehavior(new CrankBehavior());
 	p.addBehavior(new TerrainAvoidBehavior());
 	p.addBehavior(new EngageBehavior());
@@ -155,6 +162,8 @@ export function createStrikePilot(unit, opts = {}) {
 	p.addBehavior(new ForwardTerrainAvoidBehavior());
 	p.addBehavior(new MissileEvasionBehavior());
 	p.addBehavior(new SamAvoidBehavior());
+	// Inert unless a carrier has ordered this jet home (see carrierOps.js).
+	p.addBehavior(new RecoverToCarrierBehavior());
 	p.addBehavior(new CrankBehavior());
 	p.addBehavior(new TerrainAvoidBehavior());
 	p.addBehavior(new EngageBehavior());
@@ -212,6 +221,8 @@ export function createEscortPilot(unit, opts = {}) {
 	p.addBehavior(new ForwardTerrainAvoidBehavior());
 	p.addBehavior(new MissileEvasionBehavior());
 	p.addBehavior(new SamAvoidBehavior());
+	// Inert unless a carrier has ordered this jet home (see carrierOps.js).
+	p.addBehavior(new RecoverToCarrierBehavior());
 	p.addBehavior(new CrankBehavior());
 	p.addBehavior(new TerrainAvoidBehavior());
 	p.addBehavior(new EngageBehavior());
@@ -256,6 +267,8 @@ export function createAirSuperiorityPilot(unit, opts = {}) {
 	p.addBehavior(new ForwardTerrainAvoidBehavior());
 	p.addBehavior(new MissileEvasionBehavior());
 	p.addBehavior(new SamAvoidBehavior());
+	// Inert unless a carrier has ordered this jet home (see carrierOps.js).
+	p.addBehavior(new RecoverToCarrierBehavior());
 	p.addBehavior(new CrankBehavior());
 	p.addBehavior(new TerrainAvoidBehavior());
 	p.addBehavior(new EngageBehavior());
@@ -294,6 +307,8 @@ export function createProtectPilot(unit, opts = {}) {
 	p.addBehavior(new ForwardTerrainAvoidBehavior());
 	p.addBehavior(new MissileEvasionBehavior());
 	p.addBehavior(new SamAvoidBehavior());
+	// Inert unless a carrier has ordered this jet home (see carrierOps.js).
+	p.addBehavior(new RecoverToCarrierBehavior());
 	p.addBehavior(new CrankBehavior());
 	p.addBehavior(new TerrainAvoidBehavior());
 	p.addBehavior(new EngageBehavior());
@@ -356,6 +371,8 @@ export function createWingmanPilot(unit, opts = {}) {
 	}));
 	p.addBehavior(new ForwardTerrainAvoidBehavior());
 	p.addBehavior(new MissileEvasionBehavior());
+	// Inert unless a carrier has ordered this jet home (see carrierOps.js).
+	p.addBehavior(new RecoverToCarrierBehavior());
 	p.addBehavior(new CrankBehavior());
 	p.addBehavior(new TerrainAvoidBehavior());
 	p.addBehavior(new FormationBehavior());

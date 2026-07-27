@@ -43,6 +43,7 @@ import { MUNITIONS } from '../../weapon/munitions.js';
 import { PLANES } from '../../plane/planes.js';
 import { createPatrolPilot, createStrikePilot, createEscortPilot } from '../ai/index.js';
 import { applyMission } from '../ai/missions.js';
+import { adoptIntoAirWing } from '../carrierOps.js';
 
 // Resolve scenario.anchor → an absolute reference point used by
 // `origin.relTo: "anchor"`. Two modes:
@@ -200,6 +201,7 @@ export function buildScenarioFromJson(data) {
 	// "go back to where you took off from," not "go to where you
 	// currently are," so we capture once at scenario start and reuse.
 	let _playerSpawnPose = null;
+	const _pendingRecoverLinks = [];
 
 	// Tag registration. Stores npc under `tag` for count===1, or
 	// under both the bare tag (first iteration) AND `tag-N` for
@@ -495,6 +497,15 @@ export function buildScenarioFromJson(data) {
 							applyNpcLoadout(npc, resolvedLoadout, { setEngageRange: !keepLeash });
 						}
 						if (npc && s.tag) _registerTag(s.tag, npc, count, i);
+						// `recoverTo: "<tag>"` binds an already-airborne flight to a
+						// carrier, so a standing CAP belongs to the ship it launched
+						// from: counts against her deck cap, gets called home when it
+						// runs dry, and traps instead of orbiting forever.
+						if (npc && s.recoverTo) {
+							_pendingRecoverLinks.push({
+								npc, tag: s.recoverTo, fighterModel: s.fighterModel || null,
+							});
+						}
 					}
 
 				} else if (s.type === 'platform') {
@@ -539,6 +550,20 @@ export function buildScenarioFromJson(data) {
 					}
 				}
 			}
+
+			// Resolve carrier assignments now that every platform is tagged —
+			// a flight may be declared before the ship it belongs to.
+			for (const link of _pendingRecoverLinks) {
+				const carrier = _taggedUnits.get(link.tag);
+				if (carrier) {
+					try {
+						adoptIntoAirWing(carrier, link.npc, { fighterModel: link.fighterModel });
+					} catch (e) { /* optional */ }
+				} else {
+					console.warn('[scenario] recoverTo tag not found:', link.tag);
+				}
+			}
+			_pendingRecoverLinks.length = 0;
 
 			// 10d — seed objective evaluator state from the JSON.
 			// Each objective starts as 'pending'. Some kinds need
@@ -678,6 +703,14 @@ const NPC_WEAPON_DEFAULTS = {
 	'STORM-SHADOW': { fireRate: 8.0, maxInFlight: 1, minRange: 8000, maxRange: 250000 }, // cruise standoff
 	'AGM-86':       { fireRate: 8.0, maxInFlight: 1, minRange: 8000, maxRange: 250000 }, // ALCM
 	'AGM-88':       { fireRate: 6.0, maxInFlight: 2, minRange: 5000, maxRange: 100000 }, // HARM (home-on-jam)
+	// Air-launched anti-ship. Employed by GroundAttackBehavior, which only
+	// offers these against a `ship` target and never offers a coordinate bomb
+	// against one (see A2G_ANTISHIP_SIMTYPES in behaviors.js). Release reach is
+	// pulled well inside the missile's kinematic max for the same reason as the
+	// glide bombs above — a maritime striker should have to enter the SAM
+	// umbrella to shoot, not lob from 100 km with impunity.
+	'HARPOON':      { fireRate: 6.0, maxInFlight: 2, minRange: 8000, maxRange: 70000  },
+	'P-800':        { fireRate: 6.0, maxInFlight: 2, minRange: 8000, maxRange: 90000  },
 };
 
 // Apply a per-NPC loadout after spawn. Loadout is a map of simType →
